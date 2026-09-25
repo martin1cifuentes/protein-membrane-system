@@ -1,0 +1,30 @@
+# Local build, installed dependencies, and run data
+/out/
+/browser/node_modules/
+/browser/dist/
+
+# .NET build products and user settings
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Python environments, bytecode, and tool caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment values
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Documentation
+/docs/

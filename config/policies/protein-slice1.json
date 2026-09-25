@@ -1,0 +1,103 @@
+{
+  "version": "protein-slice1-1.0.0",
+  "evidenceReferences": [
+    "docs/Protein-in-membrane-system/semantic-blueprint/boundaries/Protein Preparation/Protein Preparation.md",
+    "config/policies/README.md"
+  ],
+  "lipids": [],
+  "proteinChemicalStates": [
+    {
+      "id": "canonical-protein-neutral-reference",
+      "version": "1.0.0",
+      "applicableChemistry": "canonical-amino-acid-assembly",
+      "disulfideCandidateMaxSgDistanceAngstrom": 2.5,
+      "evidenceReferences": [
+        "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addHydrogens",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields",
+        "https://academic.oup.com/bioinformatics/article/24/4/498/207792",
+        "docs/Protein-in-membrane-system/semantic-blueprint/boundaries/Protein Preparation/Protein Preparation.md"
+      ],
+      "forceFieldFiles": [
+        {
+          "id": "openmm-amber19-protein-ff19sb",
+          "version": "8.6.0",
+          "family": "Amber19-ff19SB",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/protein.ff19SB.xml",
+          "sha256": "086bfdb1c05e7d5cb1d330e6c39fab5056a95e89492cdbd3044c746db13e9d09"
+        }
+      ],
+      "defaultVariants": {
+        "ASP": "ASP",
+        "GLU": "GLU",
+        "CYS": "CYS",
+        "LYS": "LYS"
+      },
+      "permittedVariants": [
+        "ASP", "ASH", "GLU", "GLH", "CYS", "CYX", "HID", "HIE", "HIP", "LYS", "LYN"
+      ],
+      "limitations": [
+        "Nominal pH 7.0 is a static aqueous reference, not a site-specific pKa determination.",
+        "Every histidine state, consequentially uncertain side-chain state, disulfide assignment, and nonstandard terminus requires case-specific review; proximity alone does not establish a bond.",
+        "ARG and TYR use their standard ff19SB residue templates; this catalogue does not introduce alternative variants for them.",
+        "Only canonical protein chemistry without retained non-protein partners is covered; a successful force-field match does not establish membrane placement or biological correctness."
+      ]
+    }
+  ],
+  "proteinStructuralPolicies": [
+    {
+      "id": "canonical-protein-bounded-geometry",
+      "version": "1.0.0",
+      "applicableProteinClass": "canonical-amino-acid-assembly",
+      "evidenceReferences": [
+        "https://doi.org/10.1107/S0108767391001071",
+        "https://journals.iucr.org/d/issues/2004/12/01/ba5073/",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC7079509/",
+        "config/policies/README.md"
+      ],
+      "measurement": {
+        "requiredKinds": ["covalentBond", "chainContinuity"],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.20,
+          "C": 1.70,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.80
+        },
+        "neighborSearchRadiusAngstrom": 4.0,
+        "excludedBondHops": 3,
+        "maximumReportedPairs": 128
+      },
+      "criteria": [
+        {
+          "kind": "covalentBond",
+          "minimumObservedAngstrom": 0.75,
+          "maximumObservedAngstrom": 2.25,
+          "allowNotApplicable": false
+        },
+        {
+          "kind": "chainContinuity",
+          "minimumObservedAngstrom": 1.0,
+          "maximumObservedAngstrom": 1.728,
+          "allowNotApplicable": true
+        }
+      ],
+      "limitations": [
+        "This is a coarse screen for gross covalent-distance and consecutive peptide C-N discontinuities on the exact selected and prepared atom graph.",
+        "The 0.75-2.25 Å covalent and 1.0-1.728 Å peptide ranges are deliberately broad local policy choices anchored to published target geometry and the identified ff19SB equilibrium bond-length range; they are not universal outlier scores.",
+        "No bond-angle, chirality, peptide-planarity, rotamer, pair-specific steric-clash, experimental validation, prediction-confidence, or biological-assembly judgment is made by these two measurements.",
+        "An unavailable required measurement, incomplete correspondence, or an unrepresentable chemical state prevents positive protein preparation."
+      ]
+    }
+  ],
+  "membranePolicies": [],
+  "placementPolicies": [],
+  "placementWitnesses": [],
+  "preparationPolicies": [],
+  "equilibrationQualifications": [],
+  "ppmVersion": "",
+  "ppmExecutableSha256": "",
+  "packmolVersion": "",
+  "packmolExecutableSha256": "",
+  "maximumSourceAtoms": 100000
+}
