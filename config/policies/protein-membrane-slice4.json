@@ -1,0 +1,1040 @@
+{
+  "version": "preparation-slice4-1.2.0",
+  "evidenceReferences": [
+    "docs/Protein-in-membrane-system/semantic-blueprint/boundaries/Protein Preparation/Protein Preparation.md",
+    "config/policies/README.md",
+    "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
+    "https://www.rcsb.org/ligand/CLR",
+    "https://www.rcsb.org/pages/usage-policy",
+    "https://pubs.acs.org/doi/10.1021/acs.jctc.1c01217",
+    "https://www.rcsb.org/structure/6QWR",
+    "https://doi.org/10.1073/pnas.2002598117",
+    "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf",
+    "https://cggit.cc.lehigh.edu/biomembhub/ppm2_server_code/-/tree/0de704acd10fbf7f4fbafb9bc925e01b06f38ceb",
+    "https://doi.org/10.1021/acs.jctc.1c01217",
+    "https://docs.openmm.org/latest/userguide/application/02_running_sims.html",
+    "https://www.iapws.org/relguide/IAPWS-95.html"
+  ],
+  "lipids": [
+    {
+      "speciesId": "DLPC",
+      "chemistryId": "Lipid21:DLPC:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/DLPC.cif",
+      "coordinateTemplateSha256": "320656994c91ba7d9141e148e9460699329c242391ac168d5a50ade0c3d1a5f1",
+      "atomCount": 106,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 63.973,
+      "volumeAngstromCubed": 933.23,
+      "headAtomIndices": [
+        20
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure DLPC simulation at 303 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "DLPE",
+      "chemistryId": "Lipid21:DLPE:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/DLPE.cif",
+      "coordinateTemplateSha256": "4217e333d58bdcae992afea6dbbcc53ed1c3f9954672160ac5b913b9ba83800a",
+      "atomCount": 97,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 54.855,
+      "volumeAngstromCubed": 907.0,
+      "headAtomIndices": [
+        11
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from fully hydrated fluid DLPE at 35 \u00b0C in Nagle and Tristram-Nagle Table 6; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "DMPC",
+      "chemistryId": "Lipid21:DMPC:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/DMPC.cif",
+      "coordinateTemplateSha256": "4933a983a2175925c06c757151ce8d861bf4ca296612ffb13638ba19005dd36b",
+      "atomCount": 118,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 62.227,
+      "volumeAngstromCubed": 1039.32,
+      "headAtomIndices": [
+        20
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure DMPC simulation at 303 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "DPPC",
+      "chemistryId": "Lipid21:DPPC:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/DPPC.cif",
+      "coordinateTemplateSha256": "f253537dbda03c2d58b6136c75df59e149d0bc9c6f1b3264e6d4d554a21bab97",
+      "atomCount": 130,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 49.655,
+      "volumeAngstromCubed": 1163.5,
+      "headAtomIndices": [
+        20
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure DPPC simulation at 323 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "DOPC",
+      "chemistryId": "Lipid21:DOPC:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/DOPC.cif",
+      "coordinateTemplateSha256": "adc01d6ef132ff49702b763f55c198a800d62cff9e22645aa8994032c07c469b",
+      "atomCount": 138,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 64.583,
+      "volumeAngstromCubed": 1232.84,
+      "headAtomIndices": [
+        20
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "alkene",
+          "atomNames": [
+            "C28",
+            "C29",
+            "C210",
+            "C211"
+          ],
+          "expected": "cis"
+        },
+        {
+          "kind": "alkene",
+          "atomNames": [
+            "C38",
+            "C39",
+            "C310",
+            "C311"
+          ],
+          "expected": "cis"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure DOPC simulation at 303 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "POPC",
+      "chemistryId": "Lipid21:POPC:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/POPC.cif",
+      "coordinateTemplateSha256": "1bfa5da0ab3abd32fc795ab7a582ad71a30f8395b94ec33bf85347a3660044ae",
+      "atomCount": 134,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 66.562,
+      "volumeAngstromCubed": 1190.32,
+      "headAtomIndices": [
+        20
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "alkene",
+          "atomNames": [
+            "C28",
+            "C29",
+            "C210",
+            "C211"
+          ],
+          "expected": "cis"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure POPC simulation at 303 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "POPE",
+      "chemistryId": "Lipid21:POPE:sn-2R",
+      "category": "lipid",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/POPE.cif",
+      "coordinateTemplateSha256": "dd74d4d3ce2cb15fe86f308e9a2167b5b0a4adea806c4d2d0fb2b2ab7b729d2f",
+      "atomCount": 125,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 56.358,
+      "volumeAngstromCubed": 1129.94,
+      "headAtomIndices": [
+        11
+      ],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "O21",
+            "C1",
+            "C3",
+            "HS"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "alkene",
+          "atomNames": [
+            "C28",
+            "C29",
+            "C210",
+            "C211"
+          ],
+          "expected": "cis"
+        }
+      ],
+      "limitations": [
+        "Coordinates are one selected molecule from the pinned OpenMM 8.6.0 patch; exact Lipid21 template and sn-2R geometry were checked.",
+        "The XY footprint is the source patch's area divided by 64 lipids per leaflet, an initial packing estimate, not a validated area of this species in every mixture or at 303 K.",
+        "The listed molecular volume is from Lipid21 pure POPE simulation at 310 K; it is not a measured mixture partial volume, a 303 K value for other temperatures, or a completed-system observation."
+      ]
+    },
+    {
+      "speciesId": "CHL1",
+      "chemistryId": "Lipid21:CHL1:cholesterol:CCD-CLR",
+      "category": "sterol",
+      "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+      "templateSha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a",
+      "coordinateTemplatePath": "membrane-templates/CHL1.cif",
+      "coordinateTemplateSha256": "6d4d04bd0357e76e19d6d0b64267f5aa618e0fa586063d5c1e0d8c74097250ec",
+      "atomCount": 74,
+      "netChargeElementary": 0.0,
+      "areaPerMoleculeAngstromSquared": 0.0,
+      "volumeAngstromCubed": 630.0,
+      "headAtomIndices": [],
+      "forceFieldFamily": "Lipid21",
+      "forceFieldVersion": "8.6.0",
+      "stereoChecks": [
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C2",
+            "C4",
+            "H3",
+            "O3"
+          ],
+          "expected": "positive"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C14",
+            "C7",
+            "C9",
+            "H8"
+          ],
+          "expected": "positive"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C10",
+            "C11",
+            "C8",
+            "H9"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C1",
+            "C19",
+            "C5",
+            "C9"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C12",
+            "C14",
+            "C17",
+            "C18"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C13",
+            "C15",
+            "C8",
+            "H14"
+          ],
+          "expected": "negative"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C13",
+            "C16",
+            "C20",
+            "H17"
+          ],
+          "expected": "positive"
+        },
+        {
+          "kind": "tetrahedral",
+          "atomNames": [
+            "C17",
+            "C21",
+            "C22",
+            "H20"
+          ],
+          "expected": "positive"
+        }
+      ],
+      "limitations": [
+        "Coordinates derive from the CC0 RCSB CCD CLR ideal model; its eight declared stereocenters are preserved by the atom-name map and mmCIF round trip.",
+        "A transferable cholesterol footprint for mixed or asymmetric packing is not established; areaPerMoleculeAngstromSquared is zero and construction must not infer a viable packing area from it.",
+        "630 \u00c5\u00b3 is an experimental approximate partial molecular volume for cholesterol in fluid phosphatidylcholine bilayers, not a universal local or mixture volume."
+      ]
+    }
+  ],
+  "proteinChemicalStates": [
+    {
+      "id": "canonical-protein-neutral-reference",
+      "version": "1.0.0",
+      "applicableChemistry": "canonical-amino-acid-assembly",
+      "disulfideCandidateMaxSgDistanceAngstrom": 2.5,
+      "evidenceReferences": [
+        "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addHydrogens",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields",
+        "https://academic.oup.com/bioinformatics/article/24/4/498/207792",
+        "docs/Protein-in-membrane-system/semantic-blueprint/boundaries/Protein Preparation/Protein Preparation.md"
+      ],
+      "forceFieldFiles": [
+        {
+          "id": "openmm-amber19-protein-ff19sb",
+          "version": "8.6.0",
+          "family": "Amber19-ff19SB",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/protein.ff19SB.xml",
+          "sha256": "086bfdb1c05e7d5cb1d330e6c39fab5056a95e89492cdbd3044c746db13e9d09"
+        }
+      ],
+      "defaultVariants": {
+        "ASP": "ASP",
+        "GLU": "GLU",
+        "CYS": "CYS",
+        "LYS": "LYS"
+      },
+      "permittedVariants": [
+        "ASP",
+        "ASH",
+        "GLU",
+        "GLH",
+        "CYS",
+        "CYX",
+        "HID",
+        "HIE",
+        "HIP",
+        "LYS",
+        "LYN"
+      ],
+      "limitations": [
+        "Nominal pH 7.0 is a static aqueous reference, not a site-specific pKa determination.",
+        "Every histidine state, consequentially uncertain side-chain state, disulfide assignment, and nonstandard terminus requires case-specific review; proximity alone does not establish a bond.",
+        "ARG and TYR use their standard ff19SB residue templates; this catalogue does not introduce alternative variants for them.",
+        "Only canonical protein chemistry without retained non-protein partners is covered; a successful force-field match does not establish membrane placement or biological correctness."
+      ]
+    }
+  ],
+  "proteinStructuralPolicies": [
+    {
+      "id": "canonical-protein-bounded-geometry",
+      "version": "1.0.0",
+      "applicableProteinClass": "canonical-amino-acid-assembly",
+      "evidenceReferences": [
+        "https://doi.org/10.1107/S0108767391001071",
+        "https://journals.iucr.org/d/issues/2004/12/01/ba5073/",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC7079509/",
+        "config/policies/README.md"
+      ],
+      "measurement": {
+        "requiredKinds": [
+          "covalentBond",
+          "chainContinuity"
+        ],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.2,
+          "C": 1.7,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.8
+        },
+        "neighborSearchRadiusAngstrom": 4.0,
+        "excludedBondHops": 3,
+        "maximumReportedPairs": 128
+      },
+      "criteria": [
+        {
+          "kind": "covalentBond",
+          "minimumObservedAngstrom": 0.75,
+          "maximumObservedAngstrom": 2.25,
+          "allowNotApplicable": false
+        },
+        {
+          "kind": "chainContinuity",
+          "minimumObservedAngstrom": 1.0,
+          "maximumObservedAngstrom": 1.728,
+          "allowNotApplicable": true
+        }
+      ],
+      "limitations": [
+        "This is a coarse screen for gross covalent-distance and consecutive peptide C-N discontinuities on the exact selected and prepared atom graph.",
+        "The 0.75-2.25 \u00c5 covalent and 1.0-1.728 \u00c5 peptide ranges are deliberately broad local policy choices anchored to published target geometry and the identified ff19SB equilibrium bond-length range; they are not universal outlier scores.",
+        "No bond-angle, chirality, peptide-planarity, rotamer, pair-specific steric-clash, experimental validation, prediction-confidence, or biological-assembly judgment is made by these two measurements.",
+        "An unavailable required measurement, incomplete correspondence, or an unrepresentable chemical state prevents positive protein preparation."
+      ]
+    }
+  ],
+  "membranePolicies": [
+    {
+      "id": "lipid21-neutral-planar-physical-leaflets",
+      "version": "1.0.0",
+      "coveredSpeciesIds": [
+        "DLPC",
+        "DLPE",
+        "DMPC",
+        "DPPC",
+        "DOPC",
+        "POPC",
+        "POPE",
+        "CHL1"
+      ],
+      "allowsMixedLeaflets": true,
+      "allowsAsymmetricLeaflets": true,
+      "coversArbitraryCoherentFractions": true,
+      "evidenceReferences": [
+        "https://pubs.acs.org/doi/10.1021/acs.jctc.1c01217",
+        "https://lipid.phys.cmu.edu/bba/bba.pdf",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC2695672/",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields",
+        "docs/Protein-in-membrane-system/requirements-elicitation/Research-Family-0002-Membrane-Model-and-Study-Conditions/2-Valid State Space.md",
+        "config/policies/README.md"
+      ],
+      "limitations": [
+        "Membrane-local assessment establishes exact neutral lipid or sterol molecular representations and coherent independently specified physical leaflets only; it does not predict phase, miscibility, native biological sidedness, leaflet stress, or completed-system qualification.",
+        "Arbitrary coherent fractions are accepted as stated intentions and exact representable combinations, not as blanket evidence that every mixture or asymmetry is scientifically suitable.",
+        "CHL1 has no qualified construction footprint in this catalogue; a cholesterol-containing assessed model needs further attempt-specific packing qualification before construction.",
+        "The fixed target is 0.15 M NaCl and optional equilibration target is 303 K; published single-component volume or area references at other temperatures cannot be treated as those achieved conditions."
+      ]
+    }
+  ],
+  "placementPolicies": [
+    {
+      "id": "alkl-6qwr-dmpc-spanning-placement",
+      "version": "1.0.0",
+      "coveredTopologyKinds": [
+        "membrane-spanning"
+      ],
+      "coveredSpeciesIds": [
+        "DMPC"
+      ],
+      "allowsMixtures": false,
+      "allowsAsymmetry": false,
+      "allowsTransferFromPpmDopc": false,
+      "requiredEvidenceMethods": [
+        "Independently witnessed placement relationship"
+      ],
+      "geometryCriteria": [
+        {
+          "measurementName": "atomsWithinCore",
+          "unit": "atoms",
+          "minimum": 1,
+          "maximum": null
+        },
+        {
+          "measurementName": "atomsAboveCore",
+          "unit": "atoms",
+          "minimum": 1,
+          "maximum": null
+        },
+        {
+          "measurementName": "atomsBelowCore",
+          "unit": "atoms",
+          "minimum": 1,
+          "maximum": null
+        }
+      ],
+      "interfaceBandAngstrom": 1.0,
+      "predictionCriterion": null,
+      "evidenceReferences": [
+        "https://www.rcsb.org/structure/6QWR",
+        "https://doi.org/10.1073/pnas.2002598117",
+        "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf",
+        "config/policies/README.md"
+      ],
+      "limitations": [
+        "This policy covers the canonical, prepared first 6QWR AlkL NMR model with its independently documented transmembrane beta-barrel topology in symmetric pure DMPC only; other proteins and lipid mixtures require their own evidence.",
+        "The three nonzero atom-count criteria confirm observed spanning geometry; the source-specific residue witness, rather than PPM energy or these counts alone, supplies the topology, contact and sidedness interpretation.",
+        "PPM calculates an implicit symmetric DOPC orientation. Its candidate transfers to the chosen DMPC model only when the independently identified AlkL/DMPC topology witness matches the measured exact prepared construct.",
+        "The primary NMR DMPC experiment used 20 mM ionic strength and 303 K; the paper supplemental DMPC simulation used 150 mM KCl. The product target is 150 mM NaCl and is not claimed to reproduce either condition or establish a packed bilayer.",
+        "The documented AlkL outer-membrane environment includes lipopolysaccharide; a neutral DMPC model is a deliberately simplified study model, not the native outer membrane or proof of biological function."
+      ]
+    }
+  ],
+  "placementWitnesses": [
+    {
+      "id": "alkl-6qwr-model1-dmpc-regional-topology",
+      "version": "1.0.0",
+      "sourceCoordinateSha256": "f4c1503a60321c0cfe513e8211e43e20e2199aa5f71f22429e0e0ae8c97b0779",
+      "sourceModelIndex": 0,
+      "biologicalAssemblyId": null,
+      "chainCopies": [
+        {
+          "sourceChain": "A",
+          "copyId": "A"
+        }
+      ],
+      "retainedPartnerSourceIds": [],
+      "preparedCoordinateSha256": null,
+      "preparedBondGraphSha256": "c3ad823d50c7088490c998e0a094d09e04c11ca4f84563e132525bc57ab37036",
+      "upper": {
+        "physicalSide": "upper",
+        "fractions": [
+          {
+            "speciesId": "DMPC",
+            "fraction": 1.0
+          }
+        ]
+      },
+      "lower": {
+        "physicalSide": "lower",
+        "fractions": [
+          {
+            "speciesId": "DMPC",
+            "fraction": 1.0
+          }
+        ]
+      },
+      "conditions": {
+        "nominalPh": 7.0,
+        "targetNaClMolar": 0.15,
+        "optionalTemperatureKelvin": 303.0
+      },
+      "topologyKind": "membrane-spanning",
+      "biologicalSidedness": "extracellular-upper; periplasmic-lower",
+      "source": "Schubeis et al. PNAS 2020 solid-state NMR AlkL in DMPC; RCSB 6QWR first model; supplemental Figure S11 regional topology, independent of PPM candidate",
+      "evidenceReferences": [
+        "https://www.rcsb.org/structure/6QWR",
+        "https://doi.org/10.1073/pnas.2002598117",
+        "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+      ],
+      "residues": [
+        {
+          "residue": {
+            "model": 0,
+            "chain": "A",
+            "residue": 1,
+            "insertionCode": "",
+            "copyId": "A"
+          },
+          "role": "topology",
+          "expectedRegion": "lower-water",
+          "evidenceReference": "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+        },
+        {
+          "residue": {
+            "model": 0,
+            "chain": "A",
+            "residue": 38,
+            "insertionCode": "",
+            "copyId": "A"
+          },
+          "role": "topology",
+          "expectedRegion": "upper-water",
+          "evidenceReference": "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+        },
+        {
+          "residue": {
+            "model": 0,
+            "chain": "A",
+            "residue": 73,
+            "insertionCode": "",
+            "copyId": "A"
+          },
+          "role": "contact",
+          "expectedRegion": "core-contact",
+          "evidenceReference": "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+        },
+        {
+          "residue": {
+            "model": 0,
+            "chain": "A",
+            "residue": 1,
+            "insertionCode": "",
+            "copyId": "A"
+          },
+          "role": "sidedness",
+          "expectedRegion": "lower-water",
+          "evidenceReference": "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+        },
+        {
+          "residue": {
+            "model": 0,
+            "chain": "A",
+            "residue": 38,
+            "insertionCode": "",
+            "copyId": "A"
+          },
+          "role": "sidedness",
+          "expectedRegion": "upper-water",
+          "evidenceReference": "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf"
+        }
+      ],
+      "limitations": [],
+      "predictionResolutions": []
+    }
+  ],
+  "preparationPolicies": [
+    {
+      "id": "alkl-6qwr-dmpc-explicit-minimization",
+      "version": "1.2.0",
+      "applicableMolecularClass": "canonical-amino-acid-assembly",
+      "scope": {
+        "sourceCoordinateSha256": "f4c1503a60321c0cfe513e8211e43e20e2199aa5f71f22429e0e0ae8c97b0779",
+        "sourceModelIndex": 0,
+        "biologicalAssemblyId": null,
+        "chainCopies": [
+          {
+            "sourceChain": "A",
+            "copyId": "A"
+          }
+        ],
+        "retainedPartnerSourceIds": [],
+        "preparedBondGraphSha256": "c3ad823d50c7088490c998e0a094d09e04c11ca4f84563e132525bc57ab37036",
+        "upper": {
+          "physicalSide": "upper",
+          "fractions": [
+            {
+              "speciesId": "DMPC",
+              "fraction": 1.0
+            }
+          ]
+        },
+        "lower": {
+          "physicalSide": "lower",
+          "fractions": [
+            {
+              "speciesId": "DMPC",
+              "fraction": 1.0
+            }
+          ]
+        },
+        "conditions": {
+          "nominalPh": 7.0,
+          "targetNaClMolar": 0.15,
+          "optionalTemperatureKelvin": 303.0
+        },
+        "topologyKind": "membrane-spanning",
+        "chemicalStatePolicyId": "canonical-protein-neutral-reference",
+        "chemicalStatePolicyVersion": "1.0.0",
+        "proteinStructuralPolicyId": "canonical-protein-bounded-geometry",
+        "proteinStructuralPolicyVersion": "1.0.0",
+        "membraneSupportPolicyId": "lipid21-neutral-planar-physical-leaflets",
+        "membraneSupportPolicyVersion": "1.0.0",
+        "residueVariantsSha256": "6b124e55f47c23fc57d7059d88da3adbcc80453fa334176059b8f5e037932951"
+      },
+      "evidenceReferences": [
+        "https://www.rcsb.org/structure/6QWR",
+        "https://doi.org/10.1073/pnas.2002598117",
+        "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf",
+        "https://doi.org/10.1021/acs.jctc.1c01217",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html",
+        "https://www.iapws.org/relguide/IAPWS-95.html",
+        "config/policies/README.md"
+      ],
+      "forceFieldFiles": [
+        {
+          "id": "openmm-amber19-protein-ff19sb",
+          "version": "8.6.0",
+          "family": "Amber19-ff19SB",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/protein.ff19SB.xml",
+          "sha256": "086bfdb1c05e7d5cb1d330e6c39fab5056a95e89492cdbd3044c746db13e9d09"
+        },
+        {
+          "id": "openmm-amber19-lipid21",
+          "version": "8.6.0",
+          "family": "Lipid21",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/lipid21.xml",
+          "sha256": "4ed8dc7485a3df14f55e1d9d12fb2a99813495293ba07c2d910fe0f66185e23a"
+        },
+        {
+          "id": "openmm-amber19-tip3p-jc-ions",
+          "version": "8.6.0",
+          "family": "Amber19-TIP3P-JC",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+          "sha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9"
+        }
+      ],
+      "maximumMinimizationIterations": 20000,
+      "finalUnrestrainedRmsForceTargetKjMolNm": 10.0,
+      "exportCoordinateReadBackToleranceAngstrom": 0.01,
+      "exportCellLengthReadBackToleranceAngstrom": 0.01,
+      "exportCellAngleReadBackToleranceDegrees": 0.1,
+      "systemSettings": {
+        "nonbondedMethod": "PME",
+        "nonbondedCutoffNanometers": 1.0,
+        "constraints": "HBonds",
+        "rigidWater": true,
+        "ewaldErrorTolerance": 0.0005,
+        "switchDistanceNanometers": null,
+        "useDispersionCorrection": true,
+        "removeCMMotion": true,
+        "hydrogenMassDaltons": null
+      },
+      "construction": {
+        "id": "alkl-6qwr-pure-dmpc-openmm-native",
+        "version": "2.0.0",
+        "evidenceReferences": [
+          "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
+          "https://github.com/openmm/openmm/blob/8.6.0/wrappers/python/openmm/app/modeller.py",
+          "https://www.rcsb.org/structure/6QWR",
+          "https://doi.org/10.1073/pnas.2002598117",
+          "config/policies/README.md"
+        ],
+        "coveredTopologyKinds": [
+          "membrane-spanning"
+        ],
+        "coveredSpeciesIds": [
+          "DMPC",
+          "HOH",
+          "NA",
+          "CL"
+        ],
+        "providerName": "OpenMM Modeller.addMembrane",
+        "providerVersion": "8.6.0.dev-c6173db",
+        "nativePatchPath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/DMPC.pdb",
+        "nativePatchSha256": "19d8513a792ddf6f34edc16028da4410dc6d686945bede006ab1e5a27accb4ba",
+        "lipidTypeArgument": "DMPC",
+        "positiveIonArgument": "Na+",
+        "negativeIonArgument": "Cl-",
+        "minimumPaddingNanometers": 1.0,
+        "waterMolarityForIonRounding": 55.4,
+        "maximumAtomCount": 120000,
+        "maximumCellDimensionAngstrom": 180.0,
+        "maximumConstructionSeconds": 900,
+        "approximationStatement": "The pinned OpenMM 8.6 native DMPC builder tiles whole source patches, removes and internally relaxes lipids around the exact oriented protein, and adds water and ions. The same invocation proposes the finite counts and cell; one-nanometer minimum padding can grow to whole patch dimensions. Its initial contacts require explicit assessment and required minimization; the water-equivalent salt estimate is not an equilibrated concentration."
+      },
+      "water": {
+        "speciesId": "HOH",
+        "chemistryId": "Amber19:TIP3P:HOH",
+        "category": "water",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/TIP3P-HOH.cif",
+        "coordinateTemplateSha256": "1ca97950cfbf6433587f3164c79c69fab50b5fa86a8f8a564fcc47c5f1464abc",
+        "atomCount": 3,
+        "netChargeElementary": 0.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One HOH molecule from the pinned OpenMM TIP3P coordinate source; a reference identity asset; native addMembrane supplies actual waters, not achieved hydration."
+        ]
+      },
+      "sodium": {
+        "speciesId": "NA",
+        "chemistryId": "Joung-Cheatham:TIP3P:Na+",
+        "category": "ion",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/JC-NA.cif",
+        "coordinateTemplateSha256": "e6de3c01860782cf347475b74a56cecbcf8ff00bcd8b81fa66fe1d2649118b89",
+        "atomCount": 1,
+        "netChargeElementary": 1.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One NA atom matching the pinned Amber19 TIP3P/Joung-Cheatham ion parameters; native addMembrane supplies its position."
+        ]
+      },
+      "chloride": {
+        "speciesId": "CL",
+        "chemistryId": "Joung-Cheatham:TIP3P:Cl-",
+        "category": "ion",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/JC-CL.cif",
+        "coordinateTemplateSha256": "796c4d55e43f6041833805e839654714feb8b68e1c2c1ccc2f972f996b2e4d1f",
+        "atomCount": 1,
+        "netChargeElementary": -1.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One CL atom matching the pinned Amber19 TIP3P/Joung-Cheatham ion parameters; native addMembrane supplies its position."
+        ]
+      },
+      "localStateObservation": {
+        "contactRolePairs": [
+          {
+            "firstMoleculeRole": "protein",
+            "secondMoleculeRole": "lipid"
+          },
+          {
+            "firstMoleculeRole": "water",
+            "secondMoleculeRole": "water"
+          },
+          {
+            "firstMoleculeRole": "water",
+            "secondMoleculeRole": "ion"
+          },
+          {
+            "firstMoleculeRole": "ion",
+            "secondMoleculeRole": "ion"
+          }
+        ],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.2,
+          "C": 1.7,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.8,
+          "P": 1.8,
+          "Na": 2.27,
+          "Cl": 1.75
+        },
+        "contactSearchRadiusAngstrom": 6.0,
+        "maximumReportedPairs": 128,
+        "usePeriodicBoundary": true,
+        "requiredMetricNames": [
+          "minimumIntermolecularDistanceAngstrom",
+          "minimumIntermolecularHeavyAtomDistanceAngstrom",
+          "upperLipidHeadMeanZAngstrom",
+          "lowerLipidHeadMeanZAngstrom",
+          "leafletHeadSeparationAngstrom",
+          "proteinBilayerMidplaneOffsetAngstrom"
+        ]
+      },
+      "constructionCriteria": [
+        {
+          "measurementName": "minimumIntermolecularHeavyAtomDistanceAngstrom",
+          "unit": "angstrom",
+          "scope": "wholeSystem",
+          "minimum": 1.5,
+          "maximum": null
+        },
+        {
+          "measurementName": "leafletHeadSeparationAngstrom",
+          "unit": "angstrom",
+          "scope": "bilayer",
+          "minimum": 24.0,
+          "maximum": 46.0
+        },
+        {
+          "measurementName": "proteinBilayerMidplaneOffsetAngstrom",
+          "unit": "angstrom",
+          "scope": "proteinVsBilayer",
+          "minimum": -20.0,
+          "maximum": 20.0
+        }
+      ],
+      "contactCriteria": [
+        {
+          "stageKind": null,
+          "firstMoleculeRole": "protein",
+          "secondMoleculeRole": "lipid",
+          "minimumPairsWithinSearchRadius": 1,
+          "minimumNearestDistanceAngstrom": null,
+          "maximumNearestDistanceAngstrom": 6.0
+        },
+        {
+          "stageKind": "Minimization",
+          "firstMoleculeRole": "protein",
+          "secondMoleculeRole": "lipid",
+          "minimumPairsWithinSearchRadius": 1,
+          "minimumNearestDistanceAngstrom": null,
+          "maximumNearestDistanceAngstrom": 6.0
+        }
+      ],
+      "assessmentCriteria": [],
+      "stageProteinGeometryMeasurement": {
+        "requiredKinds": [
+          "covalentBond",
+          "chainContinuity",
+          "nonbondedDistance"
+        ],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.2,
+          "C": 1.7,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.8,
+          "P": 1.8,
+          "Na": 2.27,
+          "Cl": 1.75
+        },
+        "neighborSearchRadiusAngstrom": 4.0,
+        "excludedBondHops": 3,
+        "maximumReportedPairs": 128
+      },
+      "stageProteinGeometryCriteria": [
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "covalentBond",
+            "minimumObservedAngstrom": 0.75,
+            "maximumObservedAngstrom": 2.25,
+            "allowNotApplicable": false
+          }
+        },
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "chainContinuity",
+            "minimumObservedAngstrom": 1.0,
+            "maximumObservedAngstrom": 1.728,
+            "allowNotApplicable": false
+          }
+        },
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "nonbondedDistance",
+            "minimumObservedAngstrom": 0.75,
+            "maximumObservedAngstrom": null,
+            "allowNotApplicable": false
+          }
+        }
+      ],
+      "optionalEquilibration": null,
+      "limitations": [
+        "This exact first-model 6QWR AlkL monomer/pure symmetric DMPC/no-partner/fixed-condition basis authorizes bounded initial construction and required unrestrained minimization only.",
+        "The 24\u201346 \u00c5 initial phosphate-head separation and \u00b120 \u00c5 protein offset are coarse pre-minimization exclusion ranges around the published 303 K DMPC D_HH and exact placement geometry; they are not validation of an equilibrated bilayer or every AlkL/DMPC configuration.",
+        "No independently validated class-specific completed-stage positive qualification ranges are yet bound; a completed minimized stage may be assessed indeterminate and is never promoted to thermally equilibrated or production-ready by this policy.",
+        "The 1.5 \u00c5 severe initial heavy-atom intermolecular contact floor is an eligibility screen for this exact pre-minimization class. All-atom distance remains diagnostic; fresh all-atom and heavy-atom distances and protein\u2013bilayer organization must be remeasured after minimization.",
+        "The pinned OpenMM 8.6 native salt-pair rule rounds from the actual final water-equivalent count and separately neutralizes the selected protein charge; the finite-cell estimate is reported beside the 0.15 M target and is not a measured bulk salt concentration."
+      ]
+    }
+  ],
+  "equilibrationQualifications": [],
+  "ppmVersion": "PPM-2.0-source-0de704acd10f-gfortran-11.4",
+  "ppmExecutableSha256": "d58c7189f27b7e81150ba4f013cdc039aea9cd71c550e86b4796c5df9360f275",
+  "maximumSourceAtoms": 100000,
+  "ppmResidueLibraryPath": "../../out/ppm2/res.lib",
+  "ppmResidueLibrarySha256": "26ef3b6ee3d237b0c29bcf549b721e33b0b157ccba198b728daa65dc2f817435"
+}

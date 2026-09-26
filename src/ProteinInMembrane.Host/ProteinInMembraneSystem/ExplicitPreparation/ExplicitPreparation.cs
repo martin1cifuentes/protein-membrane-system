@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace ProteinInMembrane.Host.ProteinInMembraneSystem.ExplicitPreparation;
@@ -29,6 +30,79 @@ public sealed class ExplicitPreparation
         CancellationToken cancellationToken)
         => _equilibration.RunAsync(minimized, policy, workingDirectory, progress, cancellationToken);
 
+    public static bool PolicyScopeMatches(PreparationPolicyScope? scope, StudyRevision revision,
+        AssessedPreparedProtein protein, AssessedMembraneModel membrane, PlacementProposal proposal)
+    {
+        if (scope is null || !HashLike(scope.SourceCoordinateSha256) ||
+            !HashLike(scope.PreparedBondGraphSha256) || !HashLike(scope.ResidueVariantsSha256) ||
+            scope.SourceModelIndex < 0 || string.IsNullOrWhiteSpace(scope.ChemicalStatePolicyId) ||
+            string.IsNullOrWhiteSpace(scope.ChemicalStatePolicyVersion) ||
+            string.IsNullOrWhiteSpace(scope.ProteinStructuralPolicyId) ||
+            string.IsNullOrWhiteSpace(scope.ProteinStructuralPolicyVersion) ||
+            string.IsNullOrWhiteSpace(scope.MembraneSupportPolicyId) ||
+            string.IsNullOrWhiteSpace(scope.MembraneSupportPolicyVersion) ||
+            scope.ChainCopies.IsDefaultOrEmpty || scope.RetainedPartnerSourceIds.IsDefault ||
+            scope.ChainCopies.Distinct().Count() != scope.ChainCopies.Length ||
+            scope.RetainedPartnerSourceIds.Any(string.IsNullOrWhiteSpace) ||
+            scope.RetainedPartnerSourceIds.Distinct(StringComparer.Ordinal).Count() !=
+                scope.RetainedPartnerSourceIds.Length ||
+            !Enum.IsDefined(scope.TopologyKind) ||
+            scope.Upper?.PhysicalSide != LeafletSide.Upper ||
+            scope.Lower?.PhysicalSide != LeafletSide.Lower ||
+            !SameLeaflet(scope.Upper, membrane.Intended.Upper) ||
+            !SameLeaflet(scope.Lower, membrane.Intended.Lower))
+            return false;
+        var intended = protein.Intended;
+        if (intended.Partners.IsDefault) return false;
+        var retained = intended.Partners.Where(item => item.Retain).Select(item => item.SourceId).ToArray();
+        return scope.SourceCoordinateSha256.Equals(intended.Source.Sha256, StringComparison.OrdinalIgnoreCase) &&
+            scope.SourceModelIndex == intended.ModelIndex &&
+            scope.BiologicalAssemblyId == intended.BiologicalAssemblyId &&
+            !intended.Chains.IsDefaultOrEmpty && intended.Chains.Distinct().Count() == intended.Chains.Length &&
+            scope.ChainCopies.ToHashSet().SetEquals(intended.Chains) &&
+            retained.Distinct(StringComparer.Ordinal).Count() == retained.Length &&
+            scope.RetainedPartnerSourceIds.ToHashSet(StringComparer.Ordinal).SetEquals(retained) &&
+            scope.PreparedBondGraphSha256.Equals(protein.Molecule.TopologySha256,
+                StringComparison.OrdinalIgnoreCase) &&
+            scope.ChemicalStatePolicyId == protein.ChemicalStatePolicyId &&
+            scope.ChemicalStatePolicyVersion == protein.ChemicalStatePolicyVersion &&
+            scope.ProteinStructuralPolicyId == protein.StructuralAssessmentPolicyId &&
+            scope.ProteinStructuralPolicyVersion == protein.StructuralAssessmentPolicyVersion &&
+            scope.MembraneSupportPolicyId == membrane.PolicyId &&
+            scope.MembraneSupportPolicyVersion == membrane.PolicyVersion &&
+            scope.ResidueVariantsSha256.Equals(PreparationPolicyFingerprint.ComputeResidueVariants(protein.ResidueVariants),
+                StringComparison.OrdinalIgnoreCase) &&
+            scope.Conditions == revision.Conditions && scope.Conditions == membrane.Intended.Conditions &&
+            scope.TopologyKind == proposal.TopologyKind &&
+            proposal.PreparedProteinId == protein.Id && proposal.MembraneModelId == membrane.Intended.Id &&
+            revision.IntendedProtein?.Id == intended.Id && revision.Membrane?.Id == membrane.Intended.Id;
+    }
+
+    private static bool SameLeaflet(LeafletComposition? declared, LeafletComposition actual)
+    {
+        if (declared is null || declared.PhysicalSide != actual.PhysicalSide ||
+            declared.Fractions.IsDefaultOrEmpty || actual.Fractions.IsDefaultOrEmpty ||
+            declared.Fractions.Length != actual.Fractions.Length ||
+            declared.Fractions.Any(item => string.IsNullOrWhiteSpace(item.SpeciesId) ||
+                !double.IsFinite(item.Fraction) || item.Fraction < 0) ||
+            actual.Fractions.Any(item => string.IsNullOrWhiteSpace(item.SpeciesId) ||
+                !double.IsFinite(item.Fraction) || item.Fraction < 0) ||
+            declared.Fractions.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() !=
+                declared.Fractions.Length ||
+            actual.Fractions.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() !=
+                actual.Fractions.Length ||
+            Math.Abs(declared.Fractions.Sum(item => item.Fraction) - 1) > 1e-9 ||
+            Math.Abs(actual.Fractions.Sum(item => item.Fraction) - 1) > 1e-9)
+            return false;
+        return declared.Fractions.OrderBy(item => item.SpeciesId, StringComparer.Ordinal)
+            .Zip(actual.Fractions.OrderBy(item => item.SpeciesId, StringComparer.Ordinal))
+            .All(pair => pair.First.SpeciesId == pair.Second.SpeciesId &&
+                Math.Abs(pair.First.Fraction - pair.Second.Fraction) <= 1e-9);
+    }
+
+    private static bool HashLike(string? hash) => hash is { Length: 64 } && hash.All(Uri.IsHexDigit);
+
+
     public async Task<PreparationStartResult> StartAsync(
         PreparationAttempt attempt,
         StudyRevision revision,
@@ -36,148 +110,144 @@ public sealed class ExplicitPreparation
         AssessedMembraneModel membrane,
         AssessedProteinMembranePlacement placement,
         ApplicablePreparationPolicy policy,
-        string packmolExecutablePath,
-        string packmolVersion,
-        string packmolExecutableSha256,
         string workingDirectory,
         Action<PreparationAttempt>? onAccepted,
         IProgress<StageExecutionState>? progress,
         CancellationToken cancellationToken)
     {
+        var construction = policy.Construction;
         if (attempt.StudyRevisionId != revision.Id || attempt.ProteinId != protein.Id ||
             attempt.MembraneId != membrane.Id || attempt.PlacementId != placement.Id ||
-            attempt.PolicyId != policy.Id || revision.Id != protein.StudyRevisionId || revision.Id != membrane.StudyRevisionId ||
+            !PreparationPolicyFingerprint.Matches(attempt, policy) ||
+            revision.Id != protein.StudyRevisionId || revision.Id != membrane.StudyRevisionId ||
             revision.Id != placement.StudyRevisionId || revision.IntendedProtein?.Id != protein.Intended.Id ||
             revision.Membrane?.Id != membrane.Intended.Id ||
             revision.AdoptedPlacementProposalId != placement.Proposal.Id ||
             placement.Standing != AssessmentStanding.Supported ||
             placement.Proposal.PreparedProteinId != protein.Id ||
             placement.Proposal.MembraneModelId != membrane.Intended.Id ||
-            string.IsNullOrWhiteSpace(policy.Id) || string.IsNullOrWhiteSpace(policy.Version) ||
-            policy.EvidenceReferences.IsDefaultOrEmpty || policy.Construction.EvidenceReferences.IsDefaultOrEmpty ||
-            policy.Construction.CoveredTopologyKinds.IsDefaultOrEmpty ||
-            !policy.Construction.CoveredTopologyKinds.Contains(placement.Proposal.TopologyKind) ||
-            policy.ForceFieldFiles.IsDefaultOrEmpty ||
-            policy.SystemSettings is null ||
-            policy.SystemSettings.NonbondedMethod != "PME" ||
-            policy.SystemSettings.Constraints != "HBonds" ||
+            !PolicyScopeMatches(policy.Scope, revision, protein, membrane, placement.Proposal) ||
+            !ValidConstructionPolicy(construction) || !ValidLocalStatePolicy(policy) ||
+            !ValidStageProteinGeometryPolicy(policy) ||
+            policy.EvidenceReferences.IsDefaultOrEmpty || policy.ForceFieldFiles.IsDefaultOrEmpty ||
+            policy.MaximumMinimizationIterations <= 0 ||
+            policy.FinalUnrestrainedRmsForceTargetKjMolNm != 10.0 ||
+            policy.SystemSettings is not { NonbondedMethod: "PME", Constraints: "HBonds" } ||
             !double.IsFinite(policy.SystemSettings.NonbondedCutoffNanometers) ||
             policy.SystemSettings.NonbondedCutoffNanometers <= 0 ||
             !double.IsFinite(policy.SystemSettings.EwaldErrorTolerance) ||
-            policy.SystemSettings.EwaldErrorTolerance <= 0 ||
-            policy.SystemSettings.EwaldErrorTolerance >= 1 ||
-            (policy.SystemSettings.SwitchDistanceNanometers is double switchDistance &&
-                (!double.IsFinite(switchDistance) || switchDistance <= 0 ||
-                 switchDistance >= policy.SystemSettings.NonbondedCutoffNanometers)) ||
-            (policy.SystemSettings.HydrogenMassDaltons is double hydrogenMass &&
-                (!double.IsFinite(hydrogenMass) || hydrogenMass <= 0)))
-            return NoAttempt("Corresponding supported inputs and an identified, evidence-backed preparation policy are required.");
-        var needed = membrane.SpeciesRepresentations.Append(policy.Water).Append(policy.Sodium).Append(policy.Chloride).ToArray();
-        if (policy.Water.Category != "water" || policy.Sodium.Category != "ion" ||
-            policy.Chloride.Category != "ion" ||
+            policy.SystemSettings.EwaldErrorTolerance is <= 0 or >= 1 ||
+            construction.CoveredTopologyKinds.IsDefaultOrEmpty ||
+            !construction.CoveredTopologyKinds.Contains(placement.Proposal.TopologyKind) ||
+            membrane.SpeciesRepresentations.Length != 1 ||
+            membrane.SpeciesRepresentations[0].SpeciesId != construction.LipidTypeArgument ||
+            !PureSelectedLeaflet(membrane.Intended.Upper, construction.LipidTypeArgument) ||
+            !PureSelectedLeaflet(membrane.Intended.Lower, construction.LipidTypeArgument) ||
+            revision.Conditions.TargetNaClMolar != 0.15 ||
+            placement.Proposal.MidplaneAngstrom is not double midplane ||
+            !double.IsFinite(midplane))
+            return NoAttempt("Corresponding supported inputs and an identified native construction policy are required.");
+
+        var lipid = membrane.SpeciesRepresentations[0];
+        var needed = new[] { lipid, policy.Water, policy.Sodium, policy.Chloride };
+        if (policy.Water.SpeciesId != "HOH" || policy.Water.Category != "water" ||
+            policy.Sodium.SpeciesId != "NA" || policy.Sodium.Category != "ion" ||
+            policy.Chloride.SpeciesId != "CL" || policy.Chloride.Category != "ion" ||
+            Math.Abs(lipid.NetChargeElementary) > 1e-8 ||
             Math.Abs(policy.Water.NetChargeElementary) > 1e-8 ||
             Math.Abs(policy.Sodium.NetChargeElementary - 1.0) > 1e-8 ||
             Math.Abs(policy.Chloride.NetChargeElementary + 1.0) > 1e-8 ||
-            needed.Any(species => !policy.Construction.CoveredSpeciesIds.Contains(species.SpeciesId) ||
-                string.IsNullOrWhiteSpace(species.ForceFieldFamily) ||
-                string.IsNullOrWhiteSpace(species.ForceFieldVersion) || species.AtomCount <= 0 ||
-                string.IsNullOrWhiteSpace(species.TemplateSha256) ||
+            needed.Any(species => !construction.CoveredSpeciesIds.Contains(species.SpeciesId) ||
+                species.AtomCount <= 0 || string.IsNullOrWhiteSpace(species.ForceFieldFamily) ||
+                string.IsNullOrWhiteSpace(species.ForceFieldVersion) ||
+                !Available(workingDirectory, species.TemplatePath) ||
                 !Available(workingDirectory, species.CoordinateTemplatePath)) ||
             !File.Exists(protein.Molecule.CoordinatePath) ||
             !protein.Correspondence.Complete ||
             protein.Correspondence.ResultId != protein.Molecule.CoordinateSha256 ||
             protein.Correspondence.Atoms.Length != protein.Molecule.AtomCount ||
-            protein.Correspondence.Atoms.Select(atom => atom.ResultAtomIndex).Distinct().Count() !=
-                protein.Molecule.AtomCount ||
             !File.Exists(placement.Proposal.OrientedProtein.CoordinatePath) ||
-            string.IsNullOrWhiteSpace(placement.Proposal.OrientedProtein.TopologyPath) ||
-            string.IsNullOrWhiteSpace(placement.Proposal.OrientedProtein.TopologySha256) ||
-            !Available(workingDirectory, placement.Proposal.OrientedProtein.TopologyPath) ||
-            !File.Exists(packmolExecutablePath) ||
-            string.IsNullOrWhiteSpace(packmolExecutableSha256) || packmolExecutableSha256.Length != 64 ||
-            !packmolExecutableSha256.All(Uri.IsHexDigit) ||
+            string.IsNullOrWhiteSpace(placement.Proposal.OrientedProtein.CoordinateSha256) ||
+            !Available(workingDirectory, placement.Proposal.OrientedProtein.TopologyPath ?? "") ||
+            !Available(workingDirectory, construction.NativePatchPath) ||
+            !HashMatches(construction.NativePatchPath, construction.NativePatchSha256) ||
+            (construction.NativePatchMode == "popc-62-109-deletion" &&
+                !HashMatches(construction.NativeSourcePatchPath!, construction.NativeSourcePatchSha256!)) ||
             policy.ForceFieldFiles.Any(asset =>
                 string.IsNullOrWhiteSpace(asset.Id) || string.IsNullOrWhiteSpace(asset.Version) ||
-                string.IsNullOrWhiteSpace(asset.Family) || string.IsNullOrWhiteSpace(asset.Sha256) ||
-                !Available(workingDirectory, asset.Path)) ||
+                string.IsNullOrWhiteSpace(asset.Family) || !HashMatches(asset.Path, asset.Sha256)) ||
             policy.ForceFieldFiles.GroupBy(asset => asset.Path, StringComparer.Ordinal)
-                .Any(group => group.Select(asset => asset.Sha256).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1) ||
-            policy.ForceFieldFiles.GroupBy(asset => asset.Sha256, StringComparer.OrdinalIgnoreCase)
-                .Any(group => group.Select(asset => (asset.Family, asset.Version)).Distinct().Count() != 1))
-            return Refusal("A qualified molecular representation, installed external tool, or exact coordinate/parameter asset is unavailable before start.");
-        var forceFieldFiles = policy.ForceFieldFiles.DistinctBy(asset => asset.Sha256,
-            StringComparer.OrdinalIgnoreCase).ToImmutableArray();
-        var construction = policy.Construction;
-        if (!ValidConstructionPolicy(construction) || !ValidLocalStatePolicy(policy) ||
-            !ValidStageProteinGeometryPolicy(policy) ||
-            placement.Proposal.MidplaneAngstrom is not double midplane ||
-            placement.Proposal.ThicknessAngstrom is not double thickness ||
-            !double.IsFinite(midplane) || !double.IsFinite(thickness) || thickness <= 0)
-            return NoAttempt("The applicable construction geometry and parameter policy are incomplete.");
+                .Any(group => group.Select(asset => asset.Sha256)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1))
+            return Refusal("A qualified molecular representation, native package patch, or exact parameter asset is unavailable before start.");
 
         onAccepted?.Invoke(attempt);
-        var running = State(attempt.Id, StageExecutionStanding.Running, "The identified preparation attempt is deriving and constructing its explicit system.");
-        progress?.Report(running);
-        var half = thickness / 2.0;
-        var regions = ImmutableArray.Create(
-            new LeafletProjectionRegion(LeafletSide.Upper, midplane, midplane + half + construction.HeadRegionThicknessAngstrom),
-            new LeafletProjectionRegion(LeafletSide.Lower, midplane - half - construction.HeadRegionThicknessAngstrom, midplane));
+        progress?.Report(State(attempt.Id, StageExecutionStanding.Running,
+            "OpenMM is constructing one identified membrane, solvent and ion candidate."));
+        var forceFieldFiles = policy.ForceFieldFiles.DistinctBy(asset => asset.Sha256,
+            StringComparer.OrdinalIgnoreCase).ToImmutableArray();
+        var request = new ScientificWorkRequest<ConstructionPayload>(Guid.NewGuid().ToString("N"), workingDirectory,
+            new ConstructionPayload(revision.Id, attempt.Id,
+                placement.Proposal.OrientedProtein.CoordinatePath,
+                placement.Proposal.OrientedProtein.CoordinateSha256,
+                protein.Molecule.CoordinatePath, protein.Molecule.CoordinateSha256,
+                protein.Correspondence,
+                placement.Proposal.OrientedProtein.TopologyPath!,
+                placement.Proposal.OrientedProtein.TopologySha256!,
+                lipid, policy.Water, policy.Sodium, policy.Chloride,
+                construction.NativePatchPath, construction.NativePatchSha256,
+                construction.ProviderName, construction.ProviderVersion,
+                construction.LipidTypeArgument, construction.PositiveIonArgument,
+                construction.NegativeIonArgument, midplane / 10.0,
+                construction.MinimumPaddingNanometers, revision.Conditions.TargetNaClMolar,
+                forceFieldFiles, policy.SystemSettings, policy.LocalStateObservation,
+                construction.MaximumAtomCount, construction.MaximumCellDimensionAngstrom,
+                construction.NativePatchMode, construction.NativeSourcePatchPath,
+                construction.NativeSourcePatchSha256, construction.RemovedNativeLipidResidueIds));
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(construction.MaximumConstructionSeconds));
         try
         {
-            var measureRequest = new ScientificWorkRequest<ConstructionInputPayload>(Guid.NewGuid().ToString("N"), workingDirectory,
-                new ConstructionInputPayload(revision.Id, attempt.Id, protein.Id,
-                    placement.Proposal.OrientedProtein.CoordinatePath,
-                    placement.Proposal.OrientedProtein.TopologyPath!,
-                    placement.Proposal.OrientedProtein.TopologySha256!,
-                    forceFieldFiles, midplane, regions, construction.AtomRadiusByElementAngstrom,
-                    construction.LateralClearanceAngstrom, construction.WaterMarginAngstrom,
-                    construction.HeadRegionThicknessAngstrom, construction.ProjectionClearanceAngstrom,
-                    construction.GridResolutionAngstrom, construction.VolumeGridResolutionAngstrom));
-            var measured = await _worker.MeasureConstructionInputsAsync(measureRequest, cancellationToken);
-            if (measured.RequestId != measureRequest.RequestId || measured.StudyRevisionId != revision.Id ||
-                measured.AttemptId != attempt.Id ||
-                measured.Standing != WorkerResultStanding.Observed || measured.Observations is null)
-                return Failed(attempt, measured.Standing, measured.FailureMessage ?? "Construction inputs were not observed.");
-            if (!TryDerive(attempt, revision, membrane, policy, measured.Observations, midplane, thickness,
-                    protein.Molecule.AtomCount, out var derivation, out var reason))
-                return new PreparationStartResult(attempt, null, null, State(attempt.Id, StageExecutionStanding.Failed, reason));
-            if (derivation!.CellAngstrom.Any(length =>
-                    policy.SystemSettings.NonbondedCutoffNanometers * 20 >= length))
-                return new PreparationStartResult(attempt, derivation, null,
-                    State(attempt.Id, StageExecutionStanding.Failed,
-                        "The declared nonbonded cutoff is not smaller than half of every derived periodic cell dimension."));
-
-            progress?.Report(State(attempt.Id, StageExecutionStanding.Running, "The exact intended molecules are being packed and parameterized."));
-            var components = MakeComponents(derivation!, membrane, policy, midplane, thickness);
-            var constructRequest = new ScientificWorkRequest<ConstructionPayload>(Guid.NewGuid().ToString("N"), workingDirectory,
-                new ConstructionPayload(revision.Id, attempt.Id, placement.Proposal.OrientedProtein.CoordinatePath,
-                    protein.Molecule.CoordinatePath, protein.Molecule.CoordinateSha256, protein.Correspondence,
-                    placement.Proposal.OrientedProtein.TopologyPath!,
-                    placement.Proposal.OrientedProtein.TopologySha256!,
-                    derivation!.CellOriginAngstrom, derivation.CellAngstrom, components,
-                    packmolExecutablePath, packmolVersion, packmolExecutableSha256, forceFieldFiles,
-                    policy.SystemSettings,
-                    policy.PackingToleranceAngstrom, construction.MaximumPackingAttempts,
-                    policy.LocalStateObservation));
-            var built = await _worker.ConstructSystemAsync(constructRequest, cancellationToken);
-            if (built.RequestId != constructRequest.RequestId || built.StudyRevisionId != revision.Id ||
-                built.AttemptId != attempt.Id || built.Standing != WorkerResultStanding.Observed || built.Observations is null)
-                return Failed(attempt, built.Standing, built.FailureMessage ?? "The packed candidate was not observed.", derivation);
-            var candidate = await AssessConstructedAsync(attempt, revision, protein, membrane, placement, policy,
-                derivation, components, built, cancellationToken);
+            var built = await _worker.ConstructSystemAsync(request, bounded.Token);
+            if (cancellationToken.IsCancellationRequested)
+                return Failed(attempt, WorkerResultStanding.Stopped, "Construction was stopped before a candidate was established.");
+            if (bounded.IsCancellationRequested)
+                return Failed(attempt, WorkerResultStanding.Failed,
+                    "The native construction exceeded its declared execution bound.");
+            if (built.RequestId != request.RequestId || built.StudyRevisionId != revision.Id ||
+                built.AttemptId != attempt.Id || built.Standing != WorkerResultStanding.Observed ||
+                built.Observations is null)
+                return Failed(attempt, built.Standing,
+                    built.FailureMessage ?? "The native candidate was not observed.");
+            if (!TryDeriveNative(attempt, revision, protein, membrane, policy,
+                    built.Observations, out var derivation, out var reason))
+                return new PreparationStartResult(attempt, null, null,
+                    State(attempt.Id, StageExecutionStanding.Failed, reason));
+            var candidate = await AssessConstructedAsync(attempt, revision, protein, membrane,
+                placement, policy, derivation!, built, cancellationToken);
             if (candidate is null)
                 return new PreparationStartResult(attempt, derivation, null,
                     State(attempt.Id, StageExecutionStanding.Failed,
-                        "Actual membership, whole-system parameters, geometry, and correspondence were not established."));
+                        "Actual membership, periodic geometry, contacts, parameters or correspondence were not established."));
             return new PreparationStartResult(attempt, derivation, candidate,
-                State(attempt.Id, StageExecutionStanding.Completed, "An eligible explicit system was constructed; minimization is still required."));
+                State(attempt.Id, StageExecutionStanding.ReadyForMinimization,
+                    "The provider candidate is checked and ready for researcher review before minimization."));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new PreparationStartResult(attempt, null, null,
-                State(attempt.Id, StageExecutionStanding.Stopped, "The preparation attempt was stopped without a constructed system."));
+            return Failed(attempt, WorkerResultStanding.Stopped,
+                "Construction was stopped before a candidate was established.");
+        }
+        catch (OperationCanceledException) when (bounded.IsCancellationRequested)
+        {
+            return Failed(attempt, WorkerResultStanding.Failed,
+                "The native construction exceeded its declared execution bound.");
         }
     }
+
+    private static bool PureSelectedLeaflet(LeafletComposition leaflet, string species) =>
+        leaflet.Fractions.Length == 1 && leaflet.Fractions[0].SpeciesId == species &&
+        leaflet.Fractions[0].Fraction == 1.0;
 
     private static PreparationStartResult Refusal(string reason) =>
         new(null, null, null, State(string.Empty, StageExecutionStanding.ResourceRefused, reason));
@@ -201,270 +271,178 @@ public sealed class ExplicitPreparation
         !string.IsNullOrWhiteSpace(path) &&
         File.Exists(Path.IsPathRooted(path) ? path : Path.Combine(workingDirectory, path));
 
-    private static bool ValidConstructionPolicy(ConstructionPolicy p) =>
-        p.MaximumAtomCount > 0 && p.MaximumPackingAttempts > 0 &&
-        p.MaximumCellDimensionAngstrom > 0 && p.LateralClearanceAngstrom > 0 &&
-        p.WaterMarginAngstrom > 0 && p.HeadRegionThicknessAngstrom > 0 &&
-        p.WaterNumberDensityPerAngstromCubed > 0 && p.GridResolutionAngstrom > 0 &&
-        p.VolumeGridResolutionAngstrom > 0 && p.ProjectionClearanceAngstrom >= 0 &&
-        !p.AtomRadiusByElementAngstrom.IsEmpty &&
-        p.AtomRadiusByElementAngstrom.All(pair => pair.Value > 0 && double.IsFinite(pair.Value));
+    private static bool HashMatches(string path, string expected)
+    {
+        if (string.IsNullOrWhiteSpace(path) || expected is not { Length: 64 } ||
+            !expected.All(Uri.IsHexDigit) || !File.Exists(path)) return false;
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return Convert.ToHexString(SHA256.HashData(stream)).Equals(expected,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
 
-    private static bool TryDerive(PreparationAttempt attempt, StudyRevision revision,
-        AssessedMembraneModel membrane, ApplicablePreparationPolicy policy,
-        ConstructionInputObservations measured, double midplane, double membraneThickness,
-        int proteinAtomCount, out ConstructionDerivation? derivation, out string reason)
+    internal static bool ValidConstructionPolicy(ConstructionPolicy p) =>
+        p.ProviderName == "OpenMM Modeller.addMembrane" &&
+        !string.IsNullOrWhiteSpace(p.ProviderVersion) &&
+        p.NativePatchSha256 is { Length: 64 } && p.NativePatchSha256.All(Uri.IsHexDigit) &&
+        p.LipidTypeArgument is "DMPC" or "POPC" && p.PositiveIonArgument == "Na+" &&
+        p.NegativeIonArgument == "Cl-" &&
+        ((p.NativePatchMode is null or "installed") && p.NativeSourcePatchPath is null &&
+            p.NativeSourcePatchSha256 is null && p.RemovedNativeLipidResidueIds is null ||
+         p.NativePatchMode == "popc-62-109-deletion" && p.LipidTypeArgument == "POPC" &&
+            !string.IsNullOrWhiteSpace(p.NativeSourcePatchPath) &&
+            p.NativeSourcePatchSha256 is { Length: 64 } &&
+            p.NativeSourcePatchSha256.All(Uri.IsHexDigit) &&
+            p.RemovedNativeLipidResidueIds is { } removed && !removed.IsDefault &&
+            removed.SequenceEqual(["62", "109"])) &&
+        double.IsFinite(p.MinimumPaddingNanometers) && p.MinimumPaddingNanometers > 0 &&
+        p.WaterMolarityForIonRounding == 55.4 &&
+        p.MaximumAtomCount > 0 &&
+        double.IsFinite(p.MaximumCellDimensionAngstrom) && p.MaximumCellDimensionAngstrom > 0 &&
+        p.MaximumConstructionSeconds is > 0 and <= 86400 &&
+        !string.IsNullOrWhiteSpace(p.ApproximationStatement);
+
+    private static bool TryDeriveNative(PreparationAttempt attempt, StudyRevision revision,
+        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
+        ApplicablePreparationPolicy policy, ConstructionObservations observed,
+        out ConstructionDerivation? derivation, out string reason)
     {
         derivation = null;
-        reason = "The policy-governed finite construction could not be derived.";
-        var origin = measured.CandidateCellOriginAngstrom;
-        var cell = measured.CandidateCellAngstrom;
-        if (origin.Length != 3 || cell.Length != 3 ||
-            origin.Any(value => !double.IsFinite(value)) ||
+        reason = "The same-invocation native counts and cell were not coherently observed.";
+        var construction = policy.Construction;
+        var cell = observed.ActualCellAngstrom;
+        var gaps = observed.ProteinPeriodicImageGapsAngstrom;
+        if (cell.Length != 3 || gaps.Length != 3 ||
             cell.Any(value => !double.IsFinite(value) || value <= 0 ||
-                value > policy.Construction.MaximumCellDimensionAngstrom) ||
-            !double.IsFinite(measured.UpperOccludedAreaAngstromSquared) ||
-            !double.IsFinite(measured.LowerOccludedAreaAngstromSquared) ||
-            !double.IsFinite(measured.ProteinAqueousOccludedVolumeAngstromCubed) ||
-            !double.IsFinite(measured.NetChargeElementary))
-        {
-            reason = "Measured coordinate extents, accessible regions, charge, or policy cell bound are invalid.";
+                value > construction.MaximumCellDimensionAngstrom) ||
+            gaps.Any(value => !double.IsFinite(value) ||
+                value + policy.ExportCellLengthReadBackToleranceAngstrom <
+                    20.0 * construction.MinimumPaddingNanometers) ||
+            cell.Any(value => value <= 20.0 * policy.SystemSettings.NonbondedCutoffNanometers) ||
+            observed.AtomCount <= protein.Molecule.AtomCount ||
+            observed.AtomCount > construction.MaximumAtomCount ||
+            observed.WaterCount <= 0 || observed.PositiveIonCount < 0 ||
+            observed.NegativeIonCount < 0 ||
+            observed.SpeciesCounts.IsDefaultOrEmpty ||
+            !double.IsFinite(observed.ProteinNetChargeElementary) ||
+            !double.IsFinite(observed.NetChargeElementary) ||
+            Math.Abs(observed.NetChargeElementary) > 1e-5)
             return false;
-        }
-        var xyArea = cell[0] * cell[1];
-        if (measured.UpperOccludedAreaAngstromSquared < 0 || measured.LowerOccludedAreaAngstromSquared < 0 ||
-            measured.UpperOccludedAreaAngstromSquared >= xyArea || measured.LowerOccludedAreaAngstromSquared >= xyArea)
-        {
-            reason = "The projected protein occupancy leaves no feasible area for both leaflets.";
-            return false;
-        }
-        var representations = membrane.SpeciesRepresentations.ToDictionary(item => item.SpeciesId, StringComparer.Ordinal);
+        var lipidId = membrane.SpeciesRepresentations[0].SpeciesId;
         var counts = ImmutableArray.CreateBuilder<SpeciesCount>();
-        if (!TryApportion(membrane.Intended.Upper, xyArea - measured.UpperOccludedAreaAngstromSquared,
-                representations, counts, out reason) ||
-            !TryApportion(membrane.Intended.Lower, xyArea - measured.LowerOccludedAreaAngstromSquared,
-                representations, counts, out reason))
-            return false;
-
-        var membraneBottom = midplane - membraneThickness / 2.0 - policy.Construction.HeadRegionThicknessAngstrom;
-        var membraneTop = midplane + membraneThickness / 2.0 + policy.Construction.HeadRegionThicknessAngstrom;
-        var cellBottom = origin[2];
-        var cellTop = origin[2] + cell[2];
-        var aqueousHeight = Math.Max(0, membraneBottom - cellBottom) + Math.Max(0, cellTop - membraneTop);
-        if (membraneBottom - cellBottom < policy.Construction.WaterMarginAngstrom ||
-            cellTop - membraneTop < policy.Construction.WaterMarginAngstrom)
+        foreach (var side in new[] { LeafletSide.Upper, LeafletSide.Lower })
         {
-            reason = "The derived cell lacks the declared hydration margin on both sides of the bilayer.";
-            return false;
+            var matches = observed.SpeciesCounts.Where(item =>
+                item.Role == GeneratedComponentRoleKind.Lipid &&
+                item.PhysicalSide == side && item.SpeciesId == lipidId).ToArray();
+            if (matches.Length != 1 || matches[0].Count <= 0) return false;
+            counts.Add(new SpeciesCount(side, lipidId, matches[0].Count, 1.0));
         }
-        var availableAqueousVolume = xyArea * aqueousHeight - measured.ProteinAqueousOccludedVolumeAngstromCubed;
-        if (!double.IsFinite(availableAqueousVolume) || availableAqueousVolume <= 0)
-        {
-            reason = "The measured cell and membrane region leave no positive aqueous volume.";
-            return false;
-        }
-        var solventPopulation = availableAqueousVolume * policy.Construction.WaterNumberDensityPerAngstromCubed;
-        var intendedSaltPairs = revision.Conditions.TargetNaClMolar * MoleculesPerMolarAngstromCubed * availableAqueousVolume;
-        if (!double.IsFinite(solventPopulation) || !double.IsFinite(intendedSaltPairs) ||
-            solventPopulation > int.MaxValue || intendedSaltPairs > int.MaxValue || intendedSaltPairs < 0)
-        {
-            reason = "The finite solvent or salt population cannot be represented.";
-            return false;
-        }
-        var lipidCharge = counts.Sum(item => representations[item.SpeciesId].NetChargeElementary * item.Count);
-        var totalUnneutralizedCharge = measured.NetChargeElementary + lipidCharge;
-        var integralCharge = Math.Round(totalUnneutralizedCharge, MidpointRounding.AwayFromZero);
-        if (!double.IsFinite(totalUnneutralizedCharge) || Math.Abs(totalUnneutralizedCharge - integralCharge) > 1e-5 ||
-            Math.Abs(integralCharge) > int.MaxValue / 2)
-        {
-            reason = "The exact protein–lipid charge cannot be neutralized by the supported monovalent-ion rule.";
-            return false;
-        }
-        var saltPairs = checked((int)Math.Round(intendedSaltPairs, MidpointRounding.AwayFromZero));
-        var sodium = saltPairs + (integralCharge < 0 ? checked((int)-integralCharge) : 0);
-        var chloride = saltPairs + (integralCharge > 0 ? checked((int)integralCharge) : 0);
-        var water = (int)Math.Round(solventPopulation, MidpointRounding.AwayFromZero) - sodium - chloride;
-        if (water < 2)
-        {
-            reason = "The finite water region cannot accommodate the required neutralization and salt pairs.";
-            return false;
-        }
-        var estimatedAtoms = proteinAtomCount > 0 && measured.ProteinXMaxAngstrom > measured.ProteinXMinAngstrom ?
-            proteinAtomCount + counts.Sum(item => (long)item.Count * representations[item.SpeciesId].AtomCount) +
-            (long)water * policy.Water.AtomCount + (long)sodium * policy.Sodium.AtomCount +
-            (long)chloride * policy.Chloride.AtomCount : long.MaxValue;
-        if (estimatedAtoms > policy.Construction.MaximumAtomCount)
-        {
-            reason = "The policy's evidence-backed resource bound is exceeded before packing.";
-            return false;
-        }
-        var approximations = ImmutableArray.CreateBuilder<string>();
-        approximations.Add(policy.Construction.ApproximationStatement);
-        approximations.AddRange(measured.ApproximationWarnings);
-        approximations.Add("Finite lipid and ion populations approximate intended fractions and 0.15 M NaCl; they are not achieved-equilibration measurements.");
-        derivation = new ConstructionDerivation(attempt.Id, counts.ToImmutable(), origin, cell,
-            water, sodium, chloride, measured.NetChargeElementary, revision.Conditions.TargetNaClMolar,
-            saltPairs / (MoleculesPerMolarAngstromCubed * availableAqueousVolume),
-            availableAqueousVolume, approximations.ToImmutable(), policy.Limitations);
-        return true;
-    }
-
-    private static bool TryApportion(LeafletComposition leaflet, double availableArea,
-        IReadOnlyDictionary<string, MolecularRepresentation> representations,
-        ImmutableArray<SpeciesCount>.Builder output, out string reason)
-    {
-        reason = "The leaflet cannot be apportioned under the identified species footprints.";
-        var fractions = leaflet.Fractions.Where(item => item.Fraction > 0).ToArray();
-        if (fractions.Length == 0 || fractions.Any(item => !double.IsFinite(item.Fraction) ||
-                !representations.TryGetValue(item.SpeciesId, out var representation) ||
-                !double.IsFinite(representation.AreaPerMoleculeAngstromSquared) ||
-                representation.AreaPerMoleculeAngstromSquared <= 0) ||
-            Math.Abs(fractions.Sum(item => item.Fraction) - 1.0) > 1e-8)
-            return false;
-        var weightedFootprint = fractions.Sum(item => item.Fraction * representations[item.SpeciesId].AreaPerMoleculeAngstromSquared);
-        var rawTotal = availableArea / weightedFootprint;
-        if (!double.IsFinite(rawTotal) || rawTotal < fractions.Length || rawTotal > int.MaxValue)
-            return false;
-        var total = (int)Math.Round(rawTotal, MidpointRounding.AwayFromZero);
-        var targets = fractions.Select(item => item.Fraction * total).ToArray();
-        var allotted = targets.Select(target => Math.Max(1, (int)Math.Floor(target))).ToArray();
-        if (allotted.Sum() > total)
-            return false;
-        var remaining = total - allotted.Sum();
-        foreach (var index in Enumerable.Range(0, targets.Length)
-                     .OrderByDescending(index => targets[index] - Math.Floor(targets[index])))
-        {
-            if (remaining == 0) break;
-            var upper = Math.Max(1, (int)Math.Ceiling(targets[index]));
-            if (allotted[index] < upper)
-            {
-                allotted[index]++;
-                remaining--;
-            }
-        }
-        if (remaining != 0 || allotted.Where((count, index) =>
-                Math.Abs(count - targets[index]) >= 1.0).Any())
-            return false;
-        for (var index = 0; index < fractions.Length; index++)
-            output.Add(new SpeciesCount(leaflet.PhysicalSide, fractions[index].SpeciesId,
-                allotted[index], fractions[index].Fraction));
+        var generatedAtoms = (long)counts.Sum(item => item.Count) * membrane.SpeciesRepresentations[0].AtomCount +
+            (long)observed.WaterCount * policy.Water.AtomCount +
+            (long)observed.PositiveIonCount * policy.Sodium.AtomCount +
+            (long)observed.NegativeIonCount * policy.Chloride.AtomCount;
+        if (generatedAtoms + protein.Molecule.AtomCount != observed.AtomCount) return false;
+        var charge = Math.Round(observed.ProteinNetChargeElementary);
+        if (Math.Abs(observed.ProteinNetChargeElementary - charge) > 1e-5 ||
+            Math.Abs(charge) > int.MaxValue / 2) return false;
+        var neutralizers = (int)Math.Abs(charge);
+        var expectedSodium = charge < 0 ? neutralizers : 0;
+        var expectedChloride = charge > 0 ? neutralizers : 0;
+        var saltPairs = Math.Min(observed.PositiveIonCount, observed.NegativeIonCount);
+        if (observed.PositiveIonCount != saltPairs + expectedSodium ||
+            observed.NegativeIonCount != saltPairs + expectedChloride) return false;
+        var equivalent = (long)observed.WaterCount + observed.PositiveIonCount + observed.NegativeIonCount;
+        if (equivalent <= neutralizers) return false;
+        var nativeSaltPairs = Math.Floor(0.5 + (equivalent - neutralizers) *
+            revision.Conditions.TargetNaClMolar / construction.WaterMolarityForIonRounding);
+        if (!double.IsFinite(nativeSaltPairs) || nativeSaltPairs != saltPairs) return false;
+        var estimatedAqueousVolume = equivalent /
+            (construction.WaterMolarityForIonRounding * MoleculesPerMolarAngstromCubed);
+        var estimatedMolar = construction.WaterMolarityForIonRounding * saltPairs / equivalent;
+        if (!double.IsFinite(estimatedAqueousVolume) || estimatedAqueousVolume <= 0 ||
+            !double.IsFinite(estimatedMolar)) return false;
+        derivation = new ConstructionDerivation(attempt.Id, counts.ToImmutable(), cell,
+            observed.WaterCount, observed.PositiveIonCount, observed.NegativeIonCount,
+            observed.ProteinNetChargeElementary, revision.Conditions.TargetNaClMolar,
+            estimatedMolar, estimatedAqueousVolume,
+            ImmutableArray.Create(construction.ApproximationStatement,
+                "OpenMM selected the finite cell and populations in this same construction invocation; water-equivalent salt molarity is an estimate, not an equilibrated concentration."),
+            policy.Limitations);
         reason = string.Empty;
         return true;
-    }
-
-    private static ImmutableArray<ConstructionComponent> MakeComponents(
-        ConstructionDerivation derivation, AssessedMembraneModel membrane,
-        ApplicablePreparationPolicy policy, double midplane, double thickness)
-    {
-        var origin = derivation.CellOriginAngstrom;
-        var cell = derivation.CellAngstrom;
-        var x0 = origin[0]; var x1 = origin[0] + cell[0];
-        var y0 = origin[1]; var y1 = origin[1] + cell[1];
-        var z0 = origin[2]; var z1 = origin[2] + cell[2];
-        var membraneTop = midplane + thickness / 2.0 + policy.Construction.HeadRegionThicknessAngstrom;
-        var membraneBottom = midplane - thickness / 2.0 - policy.Construction.HeadRegionThicknessAngstrom;
-        var upper = new SpatialRegionAngstrom(x0, y0, midplane, x1, y1, membraneTop);
-        var lower = new SpatialRegionAngstrom(x0, y0, membraneBottom, x1, y1, midplane);
-        var upperHead = new SpatialRegionAngstrom(x0, y0, midplane + thickness / 2.0, x1, y1, membraneTop);
-        var lowerHead = new SpatialRegionAngstrom(x0, y0, membraneBottom, x1, y1, midplane - thickness / 2.0);
-        var waterUpper = new SpatialRegionAngstrom(x0, y0, membraneTop, x1, y1, z1);
-        var waterLower = new SpatialRegionAngstrom(x0, y0, z0, x1, y1, membraneBottom);
-        var species = membrane.SpeciesRepresentations.ToDictionary(item => item.SpeciesId, StringComparer.Ordinal);
-        var components = ImmutableArray.CreateBuilder<ConstructionComponent>();
-        foreach (var lipid in derivation.LipidCounts)
-        {
-            var representation = species[lipid.SpeciesId];
-            var isUpper = lipid.PhysicalSide == LeafletSide.Upper;
-            components.Add(new ConstructionComponent(GeneratedComponentRoleKind.Lipid, lipid.PhysicalSide,
-                lipid.SpeciesId, representation.CoordinateTemplatePath, representation.CoordinateTemplateSha256,
-                lipid.Count,
-                isUpper ? upper : lower, isUpper ? upperHead : lowerHead,
-                representation.HeadAtomIndices));
-        }
-        AddSplit(components, GeneratedComponentRoleKind.Water, policy.Water, derivation.WaterCount, waterUpper, waterLower);
-        AddSplit(components, GeneratedComponentRoleKind.PositiveIon, policy.Sodium, derivation.SodiumCount, waterUpper, waterLower);
-        AddSplit(components, GeneratedComponentRoleKind.NegativeIon, policy.Chloride, derivation.ChlorideCount, waterUpper, waterLower);
-        return components.ToImmutable();
-    }
-
-    private static void AddSplit(ImmutableArray<ConstructionComponent>.Builder output, GeneratedComponentRoleKind kind,
-        MolecularRepresentation species, int count, SpatialRegionAngstrom upper, SpatialRegionAngstrom lower)
-    {
-        var upperCount = count / 2 + count % 2;
-        var lowerCount = count / 2;
-        if (upperCount > 0)
-            output.Add(new ConstructionComponent(kind, LeafletSide.Upper, species.SpeciesId,
-                species.CoordinateTemplatePath, species.CoordinateTemplateSha256,
-                upperCount, upper, null, ImmutableArray<int>.Empty));
-        if (lowerCount > 0)
-            output.Add(new ConstructionComponent(kind, LeafletSide.Lower, species.SpeciesId,
-                species.CoordinateTemplatePath, species.CoordinateTemplateSha256,
-                lowerCount, lower, null, ImmutableArray<int>.Empty));
     }
 
     private static async Task<ConstructedExplicitSystem?> AssessConstructedAsync(
         PreparationAttempt attempt, StudyRevision revision, AssessedPreparedProtein protein, AssessedMembraneModel membrane,
         AssessedProteinMembranePlacement placement, ApplicablePreparationPolicy policy,
-        ConstructionDerivation derivation, ImmutableArray<ConstructionComponent> components,
-        WorkerResult<ConstructionObservations> result,
+        ConstructionDerivation derivation, WorkerResult<ConstructionObservations> result,
         CancellationToken cancellationToken)
     {
         var observed = result.Observations!;
-        if (observed.AtomCount <= protein.Molecule.AtomCount ||
+        if (result.Provider?.Name != policy.Construction.ProviderName ||
+            result.Provider.Version != policy.Construction.ProviderVersion ||
+            observed.NativePatchMode != (policy.Construction.NativePatchMode ?? "installed") ||
+            !string.Equals(observed.NativeSourcePatchSha256,
+                policy.Construction.NativeSourcePatchSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(observed.NativePatchSha256, policy.Construction.NativePatchSha256,
+                StringComparison.OrdinalIgnoreCase) ||
             observed.CorrespondedResultAtomCount != observed.AtomCount ||
             observed.WaterCount != derivation.WaterCount ||
             observed.PositiveIonCount != derivation.SodiumCount ||
             observed.NegativeIonCount != derivation.ChlorideCount ||
             observed.ActualCellAngstrom.Length != 3 ||
             observed.ActualCellAngstrom.Where((value, index) =>
-                !double.IsFinite(value) || Math.Abs(value - derivation.CellAngstrom[index]) > 0.01).Any() ||
-            !double.IsFinite(observed.NetChargeElementary) || Math.Abs(observed.NetChargeElementary) > 1e-5 ||
+                !double.IsFinite(value) || Math.Abs(value - derivation.CellAngstrom[index]) > 1e-6).Any() ||
+            !observed.ProteinIdentityAndBondsPreserved ||
+            !double.IsFinite(observed.MaximumProteinCoordinateDeviationAngstrom) ||
+            observed.MaximumProteinCoordinateDeviationAngstrom < 0 ||
+            observed.MaximumProteinCoordinateDeviationAngstrom > 1e-6 ||
             !double.IsFinite(observed.InitialPotentialEnergyKjMol) ||
             !observed.ContactWarnings.IsDefaultOrEmpty || !observed.GeometryWarnings.IsDefaultOrEmpty ||
-            !observed.ParameterWarnings.IsDefaultOrEmpty)
+            !observed.ParameterWarnings.IsDefaultOrEmpty ||
+            result.Artifacts.IsDefault)
             return null;
         if (!LocalStateSupportsConstruction(observed.LocalState, policy))
             return null;
-        if (components.IsDefaultOrEmpty || observed.SpeciesCounts.IsDefault ||
-            components.Any(item => item.Count <= 0 || item.PhysicalSide is not (LeafletSide.Upper or LeafletSide.Lower) ||
-                item.Role is not (GeneratedComponentRoleKind.Lipid or GeneratedComponentRoleKind.Water or GeneratedComponentRoleKind.PositiveIon or GeneratedComponentRoleKind.NegativeIon)) ||
-            observed.SpeciesCounts.Any(item => item.Count <= 0 || item.PhysicalSide is not (LeafletSide.Upper or LeafletSide.Lower) ||
-                item.Role is not (GeneratedComponentRoleKind.Lipid or GeneratedComponentRoleKind.Water or GeneratedComponentRoleKind.PositiveIon or GeneratedComponentRoleKind.NegativeIon)))
-            return null;
-        var expectedMolecules = components.GroupBy(item => (item.Role, item.PhysicalSide, item.SpeciesId))
-            .ToDictionary(group => group.Key, group => group.Sum(item => item.Count));
-        if (observed.SpeciesCounts.Length != expectedMolecules.Count ||
+        if (observed.SpeciesCounts.IsDefaultOrEmpty ||
+            observed.SpeciesCounts.Any(item => item.Count <= 0 ||
+                item.PhysicalSide is not (LeafletSide.Upper or LeafletSide.Lower) ||
+                item.Role is not (GeneratedComponentRoleKind.Lipid or GeneratedComponentRoleKind.Water or
+                    GeneratedComponentRoleKind.PositiveIon or GeneratedComponentRoleKind.NegativeIon)) ||
             observed.SpeciesCounts.Select(item => (item.Role, item.PhysicalSide, item.SpeciesId))
-                .Distinct().Count() != observed.SpeciesCounts.Length ||
-            observed.SpeciesCounts.Any(item =>
-                !expectedMolecules.TryGetValue((item.Role, item.PhysicalSide, item.SpeciesId), out var count) ||
-                item.Count != count))
+                .Distinct().Count() != observed.SpeciesCounts.Length)
             return null;
-        var representations = membrane.SpeciesRepresentations.Append(policy.Water).Append(policy.Sodium)
-            .Append(policy.Chloride).ToArray();
-        if (representations.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() !=
-            representations.Length)
-            return null;
-        long expectedAtomCount = protein.Molecule.AtomCount;
-        var expectedGeneratedAtoms = new Dictionary<(GeneratedComponentRoleKind Role, LeafletSide Side, string SpeciesId), long>();
-        foreach (var component in components)
+        var expectedNames = new Dictionary<GeneratedComponentRoleKind, MolecularRepresentation>
         {
-            var representation = representations.FirstOrDefault(item => item.SpeciesId == component.SpeciesId);
-            if (representation is null || representation.AtomCount <= 0 ||
-                component.TemplateCoordinateSha256 != representation.CoordinateTemplateSha256)
-                return null;
-            var atoms = (long)component.Count * representation.AtomCount;
-            expectedAtomCount += atoms;
-            var key = (component.Role, component.PhysicalSide, component.SpeciesId);
-            expectedGeneratedAtoms[key] = expectedGeneratedAtoms.GetValueOrDefault(key) + atoms;
-        }
-        if (expectedAtomCount != observed.AtomCount ||
-            components.Where(item => item.Role == GeneratedComponentRoleKind.Water).Sum(item => item.Count) != observed.WaterCount ||
-            components.Where(item => item.Role == GeneratedComponentRoleKind.PositiveIon).Sum(item => item.Count) != observed.PositiveIonCount ||
-            components.Where(item => item.Role == GeneratedComponentRoleKind.NegativeIon).Sum(item => item.Count) != observed.NegativeIonCount ||
-            !derivation.LipidCounts.All(item =>
-                expectedMolecules.TryGetValue((GeneratedComponentRoleKind.Lipid, item.PhysicalSide, item.SpeciesId), out var count) &&
-                count == item.Count))
+            [GeneratedComponentRoleKind.Lipid] = membrane.SpeciesRepresentations[0],
+            [GeneratedComponentRoleKind.Water] = policy.Water,
+            [GeneratedComponentRoleKind.PositiveIon] = policy.Sodium,
+            [GeneratedComponentRoleKind.NegativeIon] = policy.Chloride
+        };
+        if (observed.SpeciesCounts.Any(item =>
+                item.SpeciesId != expectedNames[item.Role].SpeciesId) ||
+            observed.SpeciesCounts.Where(item => item.Role == GeneratedComponentRoleKind.Water)
+                .Sum(item => item.Count) != observed.WaterCount ||
+            observed.SpeciesCounts.Where(item => item.Role == GeneratedComponentRoleKind.PositiveIon)
+                .Sum(item => item.Count) != observed.PositiveIonCount ||
+            observed.SpeciesCounts.Where(item => item.Role == GeneratedComponentRoleKind.NegativeIon)
+                .Sum(item => item.Count) != observed.NegativeIonCount ||
+            derivation.LipidCounts.Any(item =>
+                observed.SpeciesCounts.Count(observedItem =>
+                    observedItem.Role == GeneratedComponentRoleKind.Lipid &&
+                    observedItem.PhysicalSide == item.PhysicalSide &&
+                    observedItem.SpeciesId == item.SpeciesId &&
+                    observedItem.Count == item.Count) != 1))
+            return null;
+        var expectedGeneratedAtoms = observed.SpeciesCounts.ToDictionary(
+            item => (item.Role, item.PhysicalSide, item.SpeciesId),
+            item => (long)item.Count * expectedNames[item.Role].AtomCount);
+        if (protein.Molecule.AtomCount + expectedGeneratedAtoms.Values.Sum() != observed.AtomCount)
             return null;
 
         var topologyCif = result.Artifacts.FirstOrDefault(item => item.Role == "topologyCif");
@@ -472,10 +450,10 @@ public sealed class ExplicitPreparation
         var system = result.Artifacts.FirstOrDefault(item => item.Role == "systemXml");
         var state = result.Artifacts.FirstOrDefault(item => item.Role == "stateXml");
         var mapping = result.Artifacts.FirstOrDefault(item => item.Role == "correspondenceJson");
-        if (topologyCif is null || topologyJson is null || system is null || state is null || mapping is null ||
-            !File.Exists(topologyCif.Path) || !File.Exists(topologyJson.Path) ||
-            !File.Exists(system.Path) || !File.Exists(state.Path) || !File.Exists(mapping.Path))
+        if (topologyCif is null || topologyJson is null || system is null || state is null || mapping is null)
             return null;
+        foreach (var artifact in new[] { topologyCif, topologyJson, system, state, mapping })
+            if (!await ArtifactMatchesAsync(artifact, cancellationToken)) return null;
         SourceToResultCorrespondence? correspondence;
         try
         {
@@ -549,14 +527,34 @@ public sealed class ExplicitPreparation
         var evidence = ImmutableArray.Create(new ScientificEvidence(Guid.NewGuid().ToString("N"), molecule.Id,
             result.Provider?.Name ?? "local scientific worker", "Whole-system construction and parameter assessment",
             $"{observed.AtomCount} mapped atoms; {observed.WaterCount} water; {observed.PositiveIonCount} sodium and {observed.NegativeIonCount} chloride ions",
-            $"Attempt {attempt.Id}; policy {policy.Id}; placement {placement.Id}",
-            "Eligible for required minimization only; not yet a qualified completed preparation.", EvidenceBearing.Supports));
+            $"Attempt {attempt.Id}; policy {policy.Id}; placement {placement.Id}; " +
+            $"OpenMM build {policy.Construction.ProviderVersion}; native patch SHA-256 {observed.NativePatchSha256}",
+            "Same-invocation provider cell, populations, protein preservation, combined parameters and initial contacts were checked. " +
+            "This is a candidate for researcher review before required minimization, not a completed preparation.",
+            EvidenceBearing.Supports));
         var conditions = $"Fixed nominal pH {revision.Conditions.NominalPh:G6}; intended NaCl {derivation.IntendedNaClMolar:G6} M; " +
                          $"finite-cell estimated NaCl {derivation.EstimatedNaClMolar:G6} M; " +
                          "thermal equilibration has not been established.";
         return new ConstructedExplicitSystem(molecule.Id, attempt, molecule, derivation,
             correspondence, derivation.LipidCounts, evidence, ImmutableArray<ScientificFinding>.Empty, conditions,
-            observed.LocalState);
+            observed.LocalState, observed.ActualCellAngstrom);
+    }
+
+    private static async Task<bool> ArtifactMatchesAsync(WorkerArtifact artifact,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artifact.Path) || artifact.Sha256 is not { Length: 64 } ||
+            !artifact.Sha256.All(Uri.IsHexDigit) || !File.Exists(artifact.Path))
+            return false;
+        try
+        {
+            await using var stream = File.OpenRead(artifact.Path);
+            var hash = await SHA256.HashDataAsync(stream, cancellationToken);
+            return Convert.ToHexString(hash).Equals(artifact.Sha256,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     private static bool ValidLocalStatePolicy(ApplicablePreparationPolicy policy)
@@ -569,7 +567,8 @@ public sealed class ExplicitPreparation
             spec.ContactRolePairs.Distinct().Count() != spec.ContactRolePairs.Length ||
             spec.RequiredMetricNames.Distinct(StringComparer.Ordinal).Count() != spec.RequiredMetricNames.Length ||
             spec.RequiredMetricNames.Any(name => name is not (
-                "minimumIntermolecularDistanceAngstrom" or "upperLipidHeadMeanZAngstrom" or
+                "minimumIntermolecularDistanceAngstrom" or
+                "minimumIntermolecularHeavyAtomDistanceAngstrom" or "upperLipidHeadMeanZAngstrom" or
                 "lowerLipidHeadMeanZAngstrom" or "leafletHeadSeparationAngstrom" or
                 "proteinBilayerMidplaneOffsetAngstrom")) ||
             !spec.RequiredMetricNames.Contains("leafletHeadSeparationAngstrom") ||
@@ -586,7 +585,7 @@ public sealed class ExplicitPreparation
             policy.ConstructionCriteria.Any(item => item.MeasurementName is
                 "upperLipidHeadMeanZAngstrom" or "lowerLipidHeadMeanZAngstrom") ||
             !policy.ConstructionCriteria.Any(item =>
-                item.MeasurementName == "minimumIntermolecularDistanceAngstrom" &&
+                item.MeasurementName == "minimumIntermolecularHeavyAtomDistanceAngstrom" &&
                 item.Minimum is double minimum && double.IsFinite(minimum) && minimum > 0) ||
             !HasOrganizationCriterion(policy.ConstructionCriteria, "leafletHeadSeparationAngstrom",
                 "bilayer", positiveMinimum: true) ||

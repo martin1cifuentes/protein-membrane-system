@@ -8,9 +8,9 @@ are lower-camel serialization of the corresponding C# *Payload record in
 ProteinInMembraneSystem.Contracts.cs. Source coordinates, force-field XML, coordinate templates,
 System/State XML and generated molecular files are attempt-scoped under
 workingDirectory; the host stages and hashes them before requesting work.
-Only explicit PPM/Packmol executable paths may refer to installed files beyond
-that directory. Operations are inspect_source, inspect_preparation_changes,
-assess_membrane, measure_construction_inputs, prepare_protein, place_ppm,
+Only the explicit PPM executable and the verified OpenMM-installed membrane
+patch may be read outside that directory. Operations are inspect_source,
+inspect_preparation_changes, assess_membrane, prepare_protein, place_ppm,
 adjust_placement, measure_placement, summarize_prediction_evidence,
 construct_system, minimize, equilibrate, observe_stage and verify_export. Each
 process reads exactly one request and writes progress events
@@ -116,7 +116,6 @@ def _dispatch(operation: str) -> Callable[[Path, dict[str, Any], Callable[[str, 
         "adjust_placement": "PlacementAssessment.worker.placement_assessment",
         "measure_placement": "PlacementAssessment.worker.placement_assessment",
         "summarize_prediction_evidence": "PlacementAssessment.worker.prediction_placement",
-        "measure_construction_inputs": "ExplicitPreparation.worker.construction",
         "construct_system": "ExplicitPreparation.worker.construction",
         "observe_stage": "ExplicitPreparation.worker.construction",
         "minimize": "ExplicitPreparation.Minimization.worker.minimization",

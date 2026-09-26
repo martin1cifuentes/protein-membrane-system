@@ -31,7 +31,7 @@ public static class EquilibrationProtocolFingerprint
     {
         ArgumentNullException.ThrowIfNull(protocol);
         using var bytes = new MemoryStream();
-        PutString(bytes, "equilibration-protocol-v1");
+        PutString(bytes, "equilibration-protocol-v3");
         PutString(bytes, protocol.Id);
         PutDouble(bytes, protocol.TargetTemperatureKelvin);
         PutInt(bytes, protocol.RandomSeed);
@@ -43,6 +43,7 @@ public static class EquilibrationProtocolFingerprint
         PutArray(bytes, protocol.Observables, PutObservable);
         PutArray(bytes, protocol.SufficiencyRules, PutRule);
         PutString(bytes, protocol.ComparisonBasis);
+        PutLong(bytes, protocol.MaximumFrameBytes);
         return Convert.ToHexString(SHA256.HashData(bytes.ToArray())).ToLowerInvariant();
     }
 
@@ -61,6 +62,8 @@ public static class EquilibrationProtocolFingerprint
         PutDouble(target, stage.ProteinRestraintKjMolNm2);
         PutDouble(target, stage.LipidRestraintKjMolNm2);
         PutInt(target, stage.ReportIntervalSteps);
+        PutNullableDouble(target, stage.InitialTemperatureKelvin);
+        PutString(target, stage.ProteinRestraintSelector);
     }
 
     private static void PutObservable(Stream target, EquilibrationObservable item)
@@ -116,6 +119,13 @@ public static class EquilibrationProtocolFingerprint
     {
         Span<byte> buffer = stackalloc byte[sizeof(int)];
         BinaryPrimitives.WriteInt32LittleEndian(buffer, value);
+        target.Write(buffer);
+    }
+
+    private static void PutLong(Stream target, long value)
+    {
+        Span<byte> buffer = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64LittleEndian(buffer, value);
         target.Write(buffer);
     }
 

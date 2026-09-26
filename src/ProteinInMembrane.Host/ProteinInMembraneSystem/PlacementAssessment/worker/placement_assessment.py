@@ -7,11 +7,14 @@ whether the proposed topology, orientation, and explicit membrane are credible.
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
+
+import numpy as np
 
 from ProteinInMembraneSystem.worker.exchange import (WorkError, artifact, require_mapping, require_number,
                        require_text, verify_sha256, work_path)
@@ -27,51 +30,164 @@ def _atoms(path: Path) -> list[tuple[str, str, str, str, str, str]]:
             if line.startswith(("ATOM  ", "HETATM")) and line[17:20].strip() != "DUM"]
 
 
-def _parse_output(path: Path, oriented: Path) -> tuple[list[str], list[float]]:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    first_model: list[str] = []
+def _position(line: str, failure_code: str, label: str) -> np.ndarray:
+    try:
+        position = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+    except ValueError as exc:
+        raise WorkError(failure_code, f"{label} has an unreadable coordinate") from exc
+    if not bool(np.all(np.isfinite(position))):
+        raise WorkError(failure_code, f"{label} has a nonfinite coordinate")
+    return position
+
+
+def _element(line: str, failure_code: str, label: str) -> str:
+    element = line[76:78].strip().upper()
+    if not element:
+        raise WorkError(failure_code, f"{label} has no explicit element identity")
+    return element
+
+
+def _source_atoms(lines: list[str]) -> list[str]:
+    if sum(line.startswith("MODEL ") for line in lines) > 1:
+        raise WorkError("invalidStructure", "Prepared PDB must describe one coordinate model")
+    atoms = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
+    if not atoms or any(line[17:20].strip() == "DUM" for line in atoms):
+        raise WorkError("invalidStructure", "Prepared PDB needs protein atoms without PPM plane markers")
+    signatures = [_atom_signature(line) for line in atoms]
+    if len(set(signatures)) != len(signatures):
+        raise WorkError("invalidStructure", "Prepared PDB has ambiguous repeated atom identities")
+    for line in atoms:
+        _position(line, "invalidStructure", "Prepared PDB atom")
+        _element(line, "invalidStructure", "Prepared PDB atom")
+    return atoms
+
+
+def _parse_output(path: Path) -> tuple[list[str], list[str], float, float]:
+    """Read only PPM's first oriented model; DUM planes are observations, not atoms."""
+    protein: list[str] = []
+    markers: dict[str, list[float]] = {"N": [], "O": []}
     marker_ids: list[str] = []
-    marker_z: list[float] = []
-    for line in lines:
-        if line.startswith("ENDMDL") or line.startswith("END   "):
+    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.startswith(("ENDMDL", "END   ", "END\n")):
             break
-        if line.startswith(("ATOM  ", "HETATM")) and line[17:20].strip() == "DUM":
-            marker_ids.append(f"{line[12:16].strip()}:{line[22:27].strip()}")
-            try:
-                marker_z.append(float(line[46:54]))
-            except ValueError as exc:
-                raise WorkError("invalidProviderOutput", "PPM plane marker has no finite z-coordinate") from exc
+        if not line.startswith(("ATOM  ", "HETATM")):
             continue
-        if line.startswith(("ATOM  ", "HETATM", "TER   ", "CRYST1")):
-            first_model.append(line)
-    if not first_model or not any(line.startswith("ATOM  ") for line in first_model):
+        _position(line, "invalidProviderOutput", "PPM output atom")
+        if line[17:20].strip() == "DUM":
+            kind = line[12:16].strip()
+            if kind not in markers:
+                raise WorkError("invalidProviderOutput", "PPM has an unidentified plane marker")
+            marker_ids.append(f"{kind}:{line[22:27].strip()}")
+            markers[kind].append(float(line[46:54]))
+        else:
+            _element(line, "invalidProviderOutput", "PPM output atom")
+            protein.append(line)
+    if not protein:
         raise WorkError("invalidProviderOutput", "PPM output has no oriented protein coordinates")
-    with oriented.open("w", encoding="utf-8") as stream:
-        stream.writelines(first_model)
-        stream.write("END\n")
-    return marker_ids, marker_z
+    if not markers["N"] or len(markers["N"]) != len(markers["O"]):
+        raise WorkError("invalidProviderOutput", "PPM did not expose paired membrane plane markers")
+    lower, upper = markers["N"][0], markers["O"][0]
+    if lower >= upper or any(abs(z - lower) > 0.001 for z in markers["N"]) or any(
+            abs(z - upper) > 0.001 for z in markers["O"]):
+        raise WorkError("invalidProviderOutput", "PPM membrane plane markers disagree")
+    return protein, marker_ids, lower, upper
 
 
 def _finite_legend_value(output: str, label: str) -> float | None:
     # PPM output formats have varied; only a plainly labelled scalar is read.
-    match = re.search(rf"(?im)^\s*{label}\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\b", output)
+    match = re.search(rf"(?im)(?:^\s*|\b){label}\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", output)
     if match is None:
         return None
     value = float(match.group(1))
     return value if math.isfinite(value) else None
 
 
+def _fit_provider_transform(source: list[str], provider: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Fit one proper rigid transform, allowing only PDB's 0.001 Å rounding error."""
+    source_heavy = [line for line in source if _element(line, "invalidStructure", "Prepared atom") not in {"H", "D"}]
+    provider_heavy = [line for line in provider if _element(line, "invalidProviderOutput", "PPM atom") not in {"H", "D"}]
+    if [_atom_signature(line) for line in source_heavy] != [_atom_signature(line) for line in provider_heavy]:
+        raise WorkError("providerMismatch", "PPM did not preserve ordered prepared heavy-atom identities",
+                        {"inputHeavyAtoms": len(source_heavy), "outputHeavyAtoms": len(provider_heavy)})
+    if len(provider) not in {len(provider_heavy), len(source)}:
+        raise WorkError("providerMismatch", "PPM returned only part of the prepared hydrogen/deuterium set")
+    if len(provider) == len(source) and [_atom_signature(line) for line in provider] != [
+            _atom_signature(line) for line in source]:
+        raise WorkError("providerMismatch", "PPM returned hydrogen/deuterium identities out of correspondence")
+    if len(source_heavy) < 4:
+        raise WorkError("providerMismatch", "Too few corresponding heavy atoms establish a rigid transform")
+    before = np.stack([_position(line, "invalidStructure", "Prepared atom") for line in source_heavy])
+    after = np.stack([_position(line, "invalidProviderOutput", "PPM atom") for line in provider_heavy])
+    left_center, right_center = before.mean(axis=0), after.mean(axis=0)
+    left, right = before - left_center, after - right_center
+    u, singular, vt = np.linalg.svd(left.T @ right)
+    if singular[-1] <= 1e-6:
+        raise WorkError("providerMismatch", "Corresponding heavy atoms do not establish a three-dimensional transform")
+    correction = np.diag([1.0, 1.0, np.linalg.det(u @ vt)])
+    rotation = u @ correction @ vt
+    translation = right_center - left_center @ rotation
+    residual = np.linalg.norm(before @ rotation + translation - after, axis=1)
+    # Two independently rounded PDB coordinate sets give observed residuals
+    # below 0.001 Å for both distributed 1RSY and prepared 6QWR probes.
+    if not bool(np.all(np.isfinite(residual))) or float(residual.max()) > 0.005:
+        raise WorkError("providerMismatch", "PPM coordinates are not one proper rigid transform of the prepared atoms",
+                        {"maxHeavyAtomResidualAngstrom": float(residual.max())})
+    if len(provider) == len(source):
+        full = np.stack([_position(line, "invalidProviderOutput", "PPM atom") for line in provider])
+        original = np.stack([_position(line, "invalidStructure", "Prepared atom") for line in source])
+        if float(np.linalg.norm(original @ rotation + translation - full, axis=1).max()) > 0.005:
+            raise WorkError("providerMismatch", "PPM hydrogen coordinates disagree with its heavy-atom transform")
+    return rotation, translation
+
+
+def _write_oriented(source_lines: list[str], target: Path,
+                    rotation: np.ndarray, translation: np.ndarray) -> int:
+    count = 0
+    rendered = []
+    for line in source_lines:
+        if line.startswith("CRYST1"):
+            # This isolated, newly oriented protein has no established periodic cell.
+            continue
+        if line.startswith(("ATOM  ", "HETATM")):
+            position = _position(line, "invalidStructure", "Prepared atom") @ rotation + translation
+            fields = [f"{value:8.3f}" for value in position]
+            if any(len(field) != 8 for field in fields):
+                raise WorkError("unsupportedRepresentation", "Oriented atom exceeds the PDB coordinate field")
+            rendered.append(f"{line[:30]}{''.join(fields)}{line[54:]}")
+            count += 1
+        else:
+            rendered.append(line)
+    with target.open("x", encoding="utf-8") as stream:
+        stream.writelines(rendered)
+    return count
+
+
+_PPM_TIMEOUT_SECONDS = 180
+
+
 def place_ppm(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     source = work_path(directory, payload.get("preparedPdbPath"), "preparedPdbPath")
-    verify_sha256(source, payload.get("preparedSha256"), "preparedSha256")
+    source_hash = require_text(payload.get("preparedSha256"), "preparedSha256")
+    if re.fullmatch(r"[0-9a-fA-F]{64}", source_hash) is None:
+        raise WorkError("invalidRequest", "Prepared coordinate identity must be an exact SHA-256 digest")
+    verify_sha256(source, source_hash, "preparedSha256")
     executable = Path(require_text(payload.get("ppmExecutablePath"), "ppmExecutablePath")).resolve()
     if not executable.is_file():
         raise WorkError("dependencyUnavailable", "The selected local PPM executable is not installed")
+    if not os.access(executable, os.X_OK):
+        raise WorkError("dependencyUnavailable", "The selected local PPM executable cannot be run")
     version = require_text(payload.get("ppmVersion"), "ppmVersion")
     executable_hash = require_text(payload.get("ppmExecutableSha256"), "ppmExecutableSha256")
     if re.fullmatch(r"[0-9a-fA-F]{64}", executable_hash) is None:
         raise WorkError("invalidRequest", "PPM executable identity must be an exact SHA-256 digest")
     verify_sha256(executable, executable_hash, "ppmExecutableSha256")
+    library = Path(require_text(payload.get("ppmResidueLibraryPath"), "ppmResidueLibraryPath")).resolve()
+    if not library.is_file():
+        raise WorkError("dependencyUnavailable", "The selected PPM residue library is not installed")
+    library_hash = require_text(payload.get("ppmResidueLibrarySha256"), "ppmResidueLibrarySha256")
+    if re.fullmatch(r"[0-9a-fA-F]{64}", library_hash) is None:
+        raise WorkError("invalidRequest", "PPM residue-library identity must be an exact SHA-256 digest")
+    verify_sha256(library, library_hash, "ppmResidueLibrarySha256")
     topology = require_text(payload.get("topologyKind"), "topologyKind").strip().lower()
     if topology not in {"membrane-spanning", "one-surface-associated"}:
         raise WorkError("unsupportedTopology", "Requested placement class is not an established PPM candidate route")
@@ -79,17 +195,31 @@ def place_ppm(directory: Path, payload: dict[str, Any], progress: Callable) -> d
     if nterminal_side not in {"in", "out"}:
         raise WorkError("invalidSelection", "PPM requires an explicit in/out first-subunit N-terminal side")
     ppm_dir = directory / "ppm"
-    ppm_dir.mkdir(exist_ok=True)
+    ppm_dir.mkdir(exist_ok=False)
     staged = ppm_dir / "protein.pdb"
     shutil.copyfile(source, staged)
+    verify_sha256(staged, source_hash, "preparedSha256")
+    staged_library = ppm_dir / "res.lib"
+    shutil.copyfile(library, staged_library)
+    verify_sha256(staged_library, library_hash, "ppmResidueLibrarySha256")
+    staged_executable = ppm_dir / "immers"
+    shutil.copy2(executable, staged_executable)
+    verify_sha256(staged_executable, executable_hash, "ppmExecutableSha256")
+    source_lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+    before = _source_atoms(source_lines)
     # opm.f reads (i2,1x,a3,1x,a80) from stdin; the three-character
     # topology entry is right-padded rather than inferred from a protein type.
     heterogens = any(line.startswith("HETATM") and line[17:20].strip() not in {"HOH", "WAT"}
                      for line in staged.read_text(encoding="utf-8").splitlines())
     record = f"{1 if heterogens else 0:2d} {nterminal_side:<3} {staged.name:<80}\n"
     progress("orientationProviderStarted", {"topologyKind": topology, "ppmNterminalSide": nterminal_side})
-    completed = subprocess.run([str(executable)], cwd=ppm_dir, input=record,
-                               text=True, capture_output=True, check=False)
+    try:
+        completed = subprocess.run([str(staged_executable)], cwd=ppm_dir, input=record,
+                                   text=True, capture_output=True, check=False,
+                                   timeout=_PPM_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise WorkError("providerTimeout", "PPM exceeded the local orientation time limit",
+                        {"timeoutSeconds": _PPM_TIMEOUT_SECONDS}) from exc
     stdout = ppm_dir / "ppm-stdout.txt"
     stderr = ppm_dir / "ppm-stderr.txt"
     stdout.write_text(completed.stdout, encoding="utf-8")
@@ -100,32 +230,32 @@ def place_ppm(directory: Path, payload: dict[str, Any], progress: Callable) -> d
     raw = ppm_dir / "proteinout.pdb"
     if not raw.is_file():
         raise WorkError("unobservedOutput", "PPM returned without producing its expected oriented PDB")
+    provider_atoms, marker_ids, lower, upper = _parse_output(raw)
+    rotation, translation = _fit_provider_transform(before, provider_atoms)
     oriented = directory / "oriented-protein.pdb"
-    marker_ids, marker_z = _parse_output(raw, oriented)
-    before = _atoms(source)
-    after = _atoms(oriented)
-    if len(before) != len(after) or before != after:
-        raise WorkError("providerMismatch", "PPM oriented structure does not preserve the selected atom identities",
-                        {"inputAtoms": len(before), "outputAtoms": len(after)})
-    distinct_z = sorted(set(marker_z))
-    midplane = (distinct_z[0] + distinct_z[-1]) / 2 if len(distinct_z) >= 2 else None
-    thickness = distinct_z[-1] - distinct_z[0] if len(distinct_z) >= 2 else None
-    warnings = ["PPM's implicit membrane is an orientation approximation, not the selected explicit lipid mixture.",
+    atom_count = _write_oriented(source_lines, oriented, rotation, translation)
+    if atom_count != len(before) or _atoms(oriented) != _atoms(source):
+        raise WorkError("providerMismatch", "The reconstructed orientation lost prepared atom identities")
+    midplane = (lower + upper) / 2
+    thickness = upper - lower
+    warnings = ["PPM's implicit symmetric DOPC membrane is an orientation approximation, not the selected explicit lipid mixture.",
                 "The executable version was supplied by the host and was not established by this PPM invocation."]
-    if not marker_ids:
-        warnings.append("PPM did not expose parseable plane markers in the oriented model.")
-    tilt = _finite_legend_value(completed.stdout, "tilt")
-    progress("orientationCandidateObserved", {"alignedAtomCount": len(after)})
+    tilt = _finite_legend_value(completed.stdout, "Tilt angle")
+    if tilt is None:
+        tilt = _finite_legend_value(completed.stdout, "tilt")
+    progress("orientationCandidateObserved", {"alignedAtomCount": atom_count})
     return {
         "artifacts": [artifact(directory, oriented, "orientedPdb"),
                       artifact(directory, raw, "ppmRawOutput"), artifact(directory, stdout, "ppmStdout"),
                       artifact(directory, stderr, "ppmStderr")],
         "observations": {"midplaneAngstrom": midplane, "thicknessAngstrom": thickness,
-                         "tiltDegrees": tilt, "alignedSourceAtomCount": len(after),
-                         "numericalOutput": [], "planeMarkerIds": marker_ids,
+                         "tiltDegrees": tilt, "alignedSourceAtomCount": atom_count,
+                         "numericalOutput": ([{"name": "PPM reported tilt", "value": tilt,
+                                               "unit": "degree", "scope": "local implicit DOPC calculation"}]
+                                             if tilt is not None else []), "planeMarkerIds": marker_ids,
                          "interpretationWarnings": warnings,
-                         "assumedMembrane": "PPM 2.0 implicit symmetric membrane model"},
-        "provider": {"name": "PPM 2.0", "version": f"host-declared {version}; binary-sha256={executable_hash.lower()}"},
+                         "assumedMembrane": "PPM 2.0 implicit symmetric DOPC membrane"},
+        "provider": {"name": "PPM 2.0", "version": f"host-declared {version}; binary-sha256={executable_hash.lower()}; res.lib-sha256={library_hash.lower()}"},
     }
 
 
@@ -138,6 +268,7 @@ def _rotated(x: float, y: float, z: float, a: float, b: float, c: float) -> tupl
 
 def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     source = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
+    verify_sha256(source, require_text(payload.get("orientedPdbSha256"), "orientedPdbSha256"), "orientedPdbSha256")
     require_text(payload.get("sourceProposalId"), "sourceProposalId")
     depth = require_number(payload.get("depthShiftAngstrom"), "depthShiftAngstrom")
     x_degrees = require_number(payload.get("tiltAboutXDegrees"), "tiltAboutXDegrees")
@@ -145,17 +276,8 @@ def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callabl
     normal_degrees = require_number(payload.get("rotationAboutNormalDegrees"), "rotationAboutNormalDegrees")
     require_text(payload.get("rationale"), "rationale")
     lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
-    atom_lines = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
-    if not atom_lines:
-        raise WorkError("invalidStructure", "Placement adjustment requires a nonempty molecule-only PDB")
-    if any(line[17:20].strip() == "DUM" for line in atom_lines):
-        raise WorkError("invalidStructure", "PPM plane markers cannot be transformed as protein atoms")
-    positions = []
-    for line in atom_lines:
-        try:
-            positions.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
-        except ValueError as exc:
-            raise WorkError("invalidStructure", "Placement PDB contains an unreadable coordinate") from exc
+    atom_lines = _source_atoms(lines)
+    positions = [tuple(_position(line, "invalidStructure", "Placement atom")) for line in atom_lines]
     centroid = tuple(sum(point[axis] for point in positions) / len(positions) for axis in range(3))
     angles = tuple(math.radians(value) for value in (x_degrees, y_degrees, normal_degrees))
     adjusted = []
@@ -163,7 +285,7 @@ def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callabl
         relative = tuple(position[axis] - centroid[axis] for axis in range(3))
         rx, ry, rz = _rotated(*relative, *angles)
         result = (rx + centroid[0], ry + centroid[1], rz + centroid[2] + depth)
-        if not all(math.isfinite(value) and abs(value) < 9999.999 for value in result):
+        if not all(math.isfinite(value) and len(f"{value:8.3f}") == 8 for value in result):
             raise WorkError("unsupportedRepresentation", "Adjusted coordinate exceeds the PDB coordinate field")
         adjusted.append(result)
     output = directory / "adjusted-placement.pdb"
@@ -191,6 +313,7 @@ def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callabl
 
 def measure_placement(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     source = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
+    verify_sha256(source, require_text(payload.get("orientedPdbSha256"), "orientedPdbSha256"), "orientedPdbSha256")
     require_text(payload.get("proposalId"), "proposalId")
     midplane = require_number(payload.get("membraneMidplaneAngstrom"), "membraneMidplaneAngstrom")
     lower = require_number(payload.get("coreLowerZAngstrom"), "coreLowerZAngstrom")
@@ -200,20 +323,27 @@ def measure_placement(directory: Path, payload: dict[str, Any], progress: Callab
     source_addresses = payload.get("residueAddressesInOrder")
     if not isinstance(source_addresses, list) or not source_addresses:
         raise WorkError("missingCorrespondence", "Placement measurement requires ordered source-residue identities")
+    expected_chains = payload.get("outputChainIdsInOrder")
+    if not isinstance(expected_chains, list) or len(expected_chains) != len(source_addresses):
+        raise WorkError("missingCorrespondence", "Placement measurement requires each prepared output-chain identity")
+    expected_atoms = payload.get("expectedResultAtomIdsInOrder")
+    if not isinstance(expected_atoms, list) or not expected_atoms:
+        raise WorkError("missingCorrespondence", "Placement measurement requires every prepared result-atom identity")
     groups: list[tuple[tuple[str, str, str, str], list[tuple[str, float]]]] = []
     total = above = within = below = 0
+    observed_atom_ids = []
     for line in source.read_text(encoding="utf-8").splitlines():
         if not line.startswith(("ATOM  ", "HETATM")):
             continue
         if line[17:20].strip() == "DUM":
             raise WorkError("invalidStructure", "PPM plane markers cannot be measured as protein atoms")
-        try:
-            z = float(line[46:54])
-        except ValueError as exc:
-            raise WorkError("invalidStructure", "Oriented PDB has an unreadable z-coordinate") from exc
-        if not math.isfinite(z):
-            raise WorkError("invalidStructure", "Oriented PDB has a nonfinite z-coordinate")
+        z = float(_position(line, "invalidStructure", "Oriented PDB atom")[2])
         key = (line[21:22].strip(), line[22:26].strip(), line[26:27].strip(), line[17:20].strip())
+        try:
+            numeric_residue = int(key[1])
+        except ValueError as exc:
+            raise WorkError("invalidStructure", "Oriented PDB has a nonnumeric residue identifier") from exc
+        observed_atom_ids.append(f"{total}:{key[0]}:{numeric_residue}:{key[2]}:{line[12:16].strip()}")
         if not groups or groups[-1][0] != key:
             groups.append((key, []))
         groups[-1][1].append((line[12:16].strip(), z))
@@ -222,9 +352,17 @@ def measure_placement(directory: Path, payload: dict[str, Any], progress: Callab
         raise WorkError("correspondenceFailed", "Oriented coordinate residues differ from ordered source identities")
     if total == 0:
         raise WorkError("invalidStructure", "Oriented placement contains no protein atoms")
+    if observed_atom_ids != expected_atoms:
+        raise WorkError("correspondenceFailed", "Oriented placement atoms differ from the prepared result identities",
+                        {"expectedAtoms": len(expected_atoms), "observedAtoms": total})
+    if len({key for key, _ in groups}) != len(groups):
+        raise WorkError("correspondenceFailed", "Oriented placement repeats a residue out of source order")
     observations = []
-    for (chain, residue_id, insertion, name), atoms, raw_address in (
-            (key, atoms, address) for (key, atoms), address in zip(groups, source_addresses)):
+    source_to_output: dict[tuple[str, str], str] = {}
+    output_to_source: dict[str, tuple[str, str]] = {}
+    for (chain, residue_id, insertion, name), atoms, raw_address, expected_chain in (
+            (key, atoms, address, output_chain) for (key, atoms), address, output_chain
+            in zip(groups, source_addresses, expected_chains)):
         address = require_mapping(raw_address, "source residue address")
         try:
             numeric_residue = int(residue_id)
@@ -235,6 +373,16 @@ def measure_placement(directory: Path, payload: dict[str, Any], progress: Callab
         for field in ("model", "chain", "copyId"):
             if field not in address:
                 raise WorkError("missingCorrespondence", f"Source residue address lacks {field}")
+        source_chain = require_text(address["chain"], "source residue chain")
+        copy_id = require_text(address["copyId"], "source residue copyId")
+        if require_text(expected_chain, "prepared output chain") != chain:
+            raise WorkError("correspondenceFailed", "Prepared output-chain mapping disagrees with oriented coordinates")
+        source_key = (source_chain, copy_id)
+        if (source_key in source_to_output and source_to_output[source_key] != chain) or (
+                chain in output_to_source and output_to_source[chain] != source_key):
+            raise WorkError("correspondenceFailed", "Source chain/copy and prepared-chain mapping conflicts")
+        source_to_output[source_key] = chain
+        output_to_source[chain] = source_key
         zs = [z for _, z in atoms]
         in_core = sum(lower <= z <= upper for z in zs)
         above_core = sum(z > upper for z in zs)

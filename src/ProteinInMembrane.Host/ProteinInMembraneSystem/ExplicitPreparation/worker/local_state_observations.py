@@ -14,7 +14,8 @@ from typing import Any
 
 from ProteinInMembraneSystem.worker.exchange import WorkError, require_integer, require_mapping, require_number, require_text
 
-_METRICS = frozenset({"minimumIntermolecularDistanceAngstrom", "upperLipidHeadMeanZAngstrom",
+_METRICS = frozenset({"minimumIntermolecularDistanceAngstrom",
+                      "minimumIntermolecularHeavyAtomDistanceAngstrom", "upperLipidHeadMeanZAngstrom",
                       "lowerLipidHeadMeanZAngstrom", "leafletHeadSeparationAngstrom",
                       "proteinBilayerMidplaneOffsetAngstrom"})
 _ROLES = frozenset({"protein", "retainedPartner", "lipid", "water", "ion"})
@@ -69,6 +70,7 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
     points = [tuple(float(value) for value in point) for point in xyz]
     observed_radii = []
     roles = []
+    heavy = []
     for atom, identity in zip(atoms, raw_mapping):
         role = identity.get("moleculeRole")
         symbol = atom.element.symbol if atom.element else ""
@@ -78,6 +80,7 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
             return _unavailable(f"Local-state policy has no declared radius for element {symbol!r}.")
         observed_radii.append(require_number(radii[symbol], f"radius {symbol}", 0.000001))
         roles.append(role)
+        heavy.append(symbol != "H")
 
     lengths = None
     if use_periodic:
@@ -136,6 +139,7 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
             heapq.heapreplace(observed_contacts, entry)
 
     minimum_all: float | None = None
+    minimum_heavy: float | None = None
     for i, point in enumerate(points):
         cell = cell_of(point)
         neighbor_cells = set()
@@ -159,6 +163,8 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
                     continue
                 if minimum_all is None or distance < minimum_all:
                     minimum_all = distance
+                if heavy[i] and heavy[j] and (minimum_heavy is None or distance < minimum_heavy):
+                    minimum_heavy = distance
                 direct = (roles[i], roles[j])
                 reverse = (roles[j], roles[i])
                 if direct in pair_set:
@@ -168,6 +174,9 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
 
     if "minimumIntermolecularDistanceAngstrom" in requested and minimum_all is None:
         return _unavailable("No intermolecular atom pair was found inside the declared search radius.",
+                            [f"{a}|{b}" for a, b in role_pairs])
+    if "minimumIntermolecularHeavyAtomDistanceAngstrom" in requested and minimum_heavy is None:
+        return _unavailable("No intermolecular heavy-atom pair was found inside the declared search radius.",
                             [f"{a}|{b}" for a, b in role_pairs])
     upper = [points[i][2] for i, item in enumerate(raw_mapping)
              if item.get("moleculeRole") == "lipid" and item.get("physicalSide") == "upper"
@@ -204,6 +213,8 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
     for name in requested:
         if name == "minimumIntermolecularDistanceAngstrom":
             value, scope = minimum_all, "wholeSystem"
+        elif name == "minimumIntermolecularHeavyAtomDistanceAngstrom":
+            value, scope = minimum_heavy, "wholeSystem"
         elif name == "upperLipidHeadMeanZAngstrom":
             value, scope = sum(upper) / len(upper), "upperLeaflet"
         elif name == "lowerLipidHeadMeanZAngstrom":

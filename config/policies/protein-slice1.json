@@ -97,7 +97,5 @@
   "equilibrationQualifications": [],
   "ppmVersion": "",
   "ppmExecutableSha256": "",
-  "packmolVersion": "",
-  "packmolExecutableSha256": "",
   "maximumSourceAtoms": 100000
 }

@@ -34,12 +34,28 @@ public sealed class PreparationAssessment
         var currentlyApplicable = true;
         var proteinGeometry = AssessStageProteinGeometry(stage, policy);
 
-        if (stage.Attempt.Id != constructed.Attempt.Id || stage.PolicyId != policy.Id ||
+        if (stage.Attempt.Id != constructed.Attempt.Id ||
+            stage.Attempt.StudyRevisionId != constructed.Attempt.StudyRevisionId ||
+            stage.Attempt.StudyRevisionId != protein.StudyRevisionId ||
+            stage.Attempt.StudyRevisionId != membrane.StudyRevisionId ||
+            stage.Attempt.StudyRevisionId != placement.StudyRevisionId ||
+            stage.PolicyId != policy.Id ||
+            !PreparationPolicyFingerprint.Matches(stage.Attempt, policy) ||
             stage.Attempt.ProteinId != protein.Id || stage.Attempt.MembraneId != membrane.Id ||
             stage.Attempt.PlacementId != placement.Id ||
             placement.Standing != AssessmentStanding.Supported ||
-            !stage.Correspondence.Complete || stage.Correspondence.ResultId != stage.Molecule.Id ||
-            stage.Observation.StageId != stage.Id || stage.Observation.AttemptId != stage.Attempt.Id)
+            !stage.Correspondence.Complete || !constructed.Correspondence.Complete ||
+            stage.Correspondence.ResultId != stage.Molecule.Id ||
+            stage.Correspondence.SourceId != constructed.Correspondence.SourceId ||
+            stage.Correspondence.Atoms.IsDefault || constructed.Correspondence.Atoms.IsDefault ||
+            !stage.Correspondence.Atoms.SequenceEqual(constructed.Correspondence.Atoms) ||
+            stage.Molecule.AtomCount != constructed.Molecule.AtomCount ||
+            stage.Molecule.Id != stage.Id ||
+            stage.Observation.StageId != stage.Id || stage.Observation.AttemptId != stage.Attempt.Id ||
+            stage.Observation.Kind != stage.Kind ||
+            stage.Kind == StageKind.Minimization && stage.Observation.Termination != StageTermination.Converged ||
+            stage.Kind == StageKind.Equilibration && stage.Observation.Termination != StageTermination.Completed ||
+            stage.Kind is not (StageKind.Minimization or StageKind.Equilibration))
         {
             qualification = PreparationQualification.Indeterminate;
             reason = "The completed stage no longer has an applicable, corresponding scientific basis.";
@@ -120,21 +136,24 @@ public sealed class PreparationAssessment
                         policy.Limitations.IsDefault ? ImmutableArray<string>.Empty : policy.Limitations,
                         DateTimeOffset.UtcNow, currentlyApplicable);
                 }
+                var stageValues = stage.Observation.Measurements.IsDefault
+                    ? ImmutableArray<MeasuredValue>.Empty : stage.Observation.Measurements;
                 var requiredValues = criteria.Select(criterion => new
                 {
                     Criterion = criterion,
-                    Value = stage.Observation.Measurements.FirstOrDefault(value =>
-                        value.Name == criterion.MeasurementName && value.Unit == criterion.Unit &&
-                        value.Scope == criterion.Scope)
+                    Values = stageValues.Where(value => value.Name == criterion.MeasurementName).ToArray()
                 }).ToImmutableArray();
-                if (requiredValues.Any(entry => entry.Value is null || !double.IsFinite(entry.Value.Value)))
+                if (requiredValues.Any(entry => entry.Values.Length != 1 ||
+                    entry.Values[0].Unit != entry.Criterion.Unit ||
+                    entry.Values[0].Scope != entry.Criterion.Scope ||
+                    !double.IsFinite(entry.Values[0].Value)))
                 {
                     qualification = PreparationQualification.Indeterminate;
                     reason = "A required stage observation is missing, mismatched in unit/scope, or non-finite.";
                 }
                 else if (requiredValues.Any(entry =>
-                             entry.Criterion.Minimum.HasValue && entry.Value!.Value < entry.Criterion.Minimum.Value ||
-                             entry.Criterion.Maximum.HasValue && entry.Value!.Value > entry.Criterion.Maximum.Value))
+                             entry.Criterion.Minimum.HasValue && entry.Values[0].Value < entry.Criterion.Minimum.Value ||
+                             entry.Criterion.Maximum.HasValue && entry.Values[0].Value > entry.Criterion.Maximum.Value))
                 {
                     qualification = PreparationQualification.NotQualified;
                     reason = "An observed stage value falls outside the declared qualification condition.";

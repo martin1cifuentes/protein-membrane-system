@@ -36,7 +36,7 @@ public sealed partial class ProteinPreparationRouteTests
                 new SourceInspectionObservations("mmcif", ImmutableArray.Create(Model()), null))
         };
         var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
-            string.Empty, string.Empty, string.Empty);
+            string.Empty, string.Empty, () => null);
 
         var invalid = await Command(product, ActorActionKind.SelectSource,
             new { sourceKind = "rcsb", exactIdentifier = "1ABC/other" });
@@ -62,7 +62,7 @@ public sealed partial class ProteinPreparationRouteTests
             new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
         var product = new ProductRoot(new PreparationWorkerStub(),
             new ExternalSourceExchange(http), directory.Path,
-            string.Empty, string.Empty, string.Empty);
+            string.Empty, string.Empty, () => null);
 
         var outcome = await Command(product, ActorActionKind.SelectSource,
             new { sourceKind = "rcsb", exactIdentifier = "1ABC" });
@@ -128,7 +128,7 @@ public sealed partial class ProteinPreparationRouteTests
         };
         using var http = new HttpClient(new NoNetworkHandler());
         var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
-            catalogue, string.Empty, string.Empty);
+            catalogue, string.Empty, () => null);
 
         var uploadToken = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
             "source.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
@@ -207,7 +207,7 @@ public sealed partial class ProteinPreparationRouteTests
         };
         using var http = new HttpClient(new NoNetworkHandler());
         var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
-            catalogue, string.Empty, string.Empty);
+            catalogue, string.Empty, () => null);
         var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
             "source.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
         var selected = await Command(product, ActorActionKind.SelectSource, new { uploadToken = token });
@@ -239,7 +239,7 @@ public sealed partial class ProteinPreparationRouteTests
         };
         using var http = new HttpClient(new NoNetworkHandler());
         var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
-            string.Empty, string.Empty, string.Empty);
+            string.Empty, string.Empty, () => null);
         Assert.Contains(product.Snapshot().Notices, notice =>
             notice.Message.Contains("No qualified local policy catalogue", StringComparison.Ordinal));
         var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
@@ -381,7 +381,7 @@ public sealed partial class ProteinPreparationRouteTests
             membranePolicies = Array.Empty<object>(), placementPolicies = Array.Empty<object>(),
             placementWitnesses = Array.Empty<object>(), preparationPolicies = Array.Empty<object>(),
             equilibrationQualifications = Array.Empty<object>(), ppmVersion = "", ppmExecutableSha256 = "",
-            packmolVersion = "", packmolExecutableSha256 = "", maximumSourceAtoms = 1000
+            maximumSourceAtoms = 1000
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         return catalogue;
     }
@@ -443,14 +443,13 @@ public sealed partial class ProteinPreparationRouteTests
             ScientificWorkRequest<PlacementAdjustmentPayload> request, CancellationToken cancellationToken) => NotUsed<PlacementAdjustmentObservations>();
         public Task<WorkerResult<PlacementMeasurementObservations>> MeasurePlacementAsync(
             ScientificWorkRequest<PlacementMeasurementPayload> request, CancellationToken cancellationToken) => NotUsed<PlacementMeasurementObservations>();
-        public Task<WorkerResult<ConstructionInputObservations>> MeasureConstructionInputsAsync(
-            ScientificWorkRequest<ConstructionInputPayload> request, CancellationToken cancellationToken) => NotUsed<ConstructionInputObservations>();
         public Task<WorkerResult<ConstructionObservations>> ConstructSystemAsync(
             ScientificWorkRequest<ConstructionPayload> request, CancellationToken cancellationToken) => NotUsed<ConstructionObservations>();
         public Task<WorkerResult<MinimizationObservations>> MinimizeAsync(
             ScientificWorkRequest<MinimizationPayload> request, CancellationToken cancellationToken) => NotUsed<MinimizationObservations>();
         public Task<WorkerResult<EquilibrationObservations>> EquilibrateAsync(
-            ScientificWorkRequest<EquilibrationPayload> request, CancellationToken cancellationToken) => NotUsed<EquilibrationObservations>();
+            ScientificWorkRequest<EquilibrationPayload> request,
+            IProgress<EquilibrationWorkProgress>? progress, CancellationToken cancellationToken) => NotUsed<EquilibrationObservations>();
         public Task<WorkerResult<StageObservationObservations>> ObserveStageAsync(
             ScientificWorkRequest<StageObservationPayload> request, CancellationToken cancellationToken) => NotUsed<StageObservationObservations>();
         public Task<WorkerResult<ExportVerificationObservations>> VerifyExportAsync(

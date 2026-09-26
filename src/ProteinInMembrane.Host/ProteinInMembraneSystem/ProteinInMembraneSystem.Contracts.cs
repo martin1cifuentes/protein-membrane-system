@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -339,7 +341,14 @@ public sealed record MolecularRepresentation(
     ImmutableArray<int> HeadAtomIndices,
     string ForceFieldFamily,
     string ForceFieldVersion,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    ImmutableArray<MolecularStereoCheck> StereoChecks = default);
+
+/// <summary>Expected geometry for the exact identified molecular configuration.</summary>
+public sealed record MolecularStereoCheck(
+    string Kind,
+    ImmutableArray<string> AtomNames,
+    string Expected);
 
 public sealed record ScientificEvidence(
     string Id,
@@ -442,7 +451,6 @@ public sealed record ApplicablePreparationPolicy(
     double ExportCoordinateReadBackToleranceAngstrom,
     double ExportCellLengthReadBackToleranceAngstrom,
     double ExportCellAngleReadBackToleranceDegrees,
-    double PackingToleranceAngstrom,
     MolecularDynamicsSystemSettings SystemSettings,
     ConstructionPolicy Construction,
     MolecularRepresentation Water,
@@ -455,7 +463,28 @@ public sealed record ApplicablePreparationPolicy(
     ProteinGeometryMeasurementSpec StageProteinGeometryMeasurement,
     ImmutableArray<StageProteinGeometryCriterion> StageProteinGeometryCriteria,
     EquilibrationProtocol? OptionalEquilibration,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    PreparationPolicyScope? Scope = null);
+
+/// <summary>The independently qualified molecular and condition scope of a preparation basis.</summary>
+public sealed record PreparationPolicyScope(
+    string SourceCoordinateSha256,
+    int SourceModelIndex,
+    string? BiologicalAssemblyId,
+    ImmutableArray<ChainSelection> ChainCopies,
+    ImmutableArray<string> RetainedPartnerSourceIds,
+    string PreparedBondGraphSha256,
+    string ChemicalStatePolicyId,
+    string ChemicalStatePolicyVersion,
+    string ResidueVariantsSha256,
+    LeafletComposition Upper,
+    LeafletComposition Lower,
+    FixedStudyConditions Conditions,
+    ProteinTopologyKind TopologyKind,
+    string ProteinStructuralPolicyId = "",
+    string ProteinStructuralPolicyVersion = "",
+    string MembraneSupportPolicyId = "",
+    string MembraneSupportPolicyVersion = "");
 public sealed record ForceFieldAsset(
     string Id,
     string Version,
@@ -475,28 +504,29 @@ public sealed record MolecularDynamicsSystemSettings(
     bool RemoveCMMotion,
     double? HydrogenMassDaltons);
 
-public enum SaltPairRoundingRule { NearestInteger }
-public enum NeutralizationRule { OneMonovalentCounterionPerUnitCharge }
 public sealed record ConstructionPolicy(
     string Id,
     string Version,
     ImmutableArray<string> EvidenceReferences,
     ImmutableArray<ProteinTopologyKind> CoveredTopologyKinds,
     ImmutableArray<string> CoveredSpeciesIds,
-    double LateralClearanceAngstrom,
-    double WaterMarginAngstrom,
-    double HeadRegionThicknessAngstrom,
-    double WaterNumberDensityPerAngstromCubed,
-    double ProjectionClearanceAngstrom,
-    double GridResolutionAngstrom,
-    double VolumeGridResolutionAngstrom,
-    ImmutableDictionary<string, double> AtomRadiusByElementAngstrom,
-    SaltPairRoundingRule SaltRounding,
-    NeutralizationRule Neutralization,
+    string ProviderName,
+    string ProviderVersion,
+    string NativePatchPath,
+    string NativePatchSha256,
+    string LipidTypeArgument,
+    string PositiveIonArgument,
+    string NegativeIonArgument,
+    double MinimumPaddingNanometers,
+    double WaterMolarityForIonRounding,
     int MaximumAtomCount,
     double MaximumCellDimensionAngstrom,
-    int MaximumPackingAttempts,
-    string ApproximationStatement);
+    int MaximumConstructionSeconds,
+    string ApproximationStatement,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativePatchMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativeSourcePatchPath = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativeSourcePatchSha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<string>? RemovedNativeLipidResidueIds = null);
 
 public sealed record PreparationAssessmentCriterion(
     StageKind StageKind,
@@ -567,7 +597,16 @@ public sealed record EquilibrationProtocol(
     ImmutableArray<string> RequiredObservations,
     ImmutableArray<EquilibrationObservable> Observables,
     ImmutableArray<EquilibrationSufficiencyRule> SufficiencyRules,
-    string ComparisonBasis);
+    string ComparisonBasis,
+    long MaximumFrameBytes = 0);
+
+public sealed record EquilibrationFrameSeries(
+    string ManifestPath,
+    string ManifestSha256,
+    string PositionsPath,
+    string PositionsSha256,
+    long PositionsByteLength,
+    int FrameCount);
 
 public sealed record EquilibrationObservable(
     string Name,
@@ -619,11 +658,13 @@ public sealed record EquilibrationStageControl(
     double FrictionPerPicosecond,
     double ProteinRestraintKjMolNm2,
     double LipidRestraintKjMolNm2,
-    int ReportIntervalSteps);
+    int ReportIntervalSteps,
+    double? InitialTemperatureKelvin = null,
+    string ProteinRestraintSelector = "backbone");
 
 public enum AssessmentStanding { Supported, Unsupported, NotEstablished }
 public enum StageKind { Minimization, Equilibration }
-public enum StageExecutionStanding { Pending, Running, Completed, Stopped, Failed, ResourceRefused, Unobserved }
+public enum StageExecutionStanding { Pending, Running, ReadyForMinimization, Completed, Stopped, Failed, ResourceRefused, Unobserved }
 public enum PreparationQualification { QualifiedPrepared, NotQualified, Indeterminate }
 
 public sealed record AssessedPreparedProtein(
@@ -689,7 +730,9 @@ public sealed record AssessedMembraneModel(
     MembraneModel Intended,
     ImmutableArray<MolecularRepresentation> SpeciesRepresentations,
     ImmutableArray<ScientificEvidence> Evidence,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    string PolicyId = "",
+    string PolicyVersion = "");
 
 public sealed record MembraneSupportPolicy(
     string Id,
@@ -727,13 +770,17 @@ public sealed record OpmReferenceRecord(
     ImmutableArray<string> SourceAtomIds,
     string MembraneContext,
     double? HydrophobicThicknessAngstrom,
-    double? TiltDegrees);
+    double? TiltDegrees,
+    string? AssumedMembraneSpeciesId = null,
+    bool ImplicitSymmetric = false,
+    double? MidplaneAngstrom = null);
 public sealed record OpmReferenceReview(
     string PreparedProteinId,
     string MembraneModelId,
     bool CorrespondsToSelectedConstruct,
     ImmutableArray<ScientificEvidence> Evidence,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    bool MembraneContextApplicable = false);
 
 public sealed record PlacementSupportPolicy(
     string Id,
@@ -748,7 +795,22 @@ public sealed record PlacementSupportPolicy(
     double InterfaceBandAngstrom,
     PlacementPredictionCriterion? PredictionCriterion,
     ImmutableArray<string> EvidenceReferences,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    PlacementPureLipidCoreFrame? PureLipidCoreFrame = null);
+/// <summary>An identified pure-lipid hydrocarbon reference for an intended, still unproved membrane frame.</summary>
+public sealed record PlacementPureLipidCoreFrame(
+    string Id,
+    string Version,
+    string SpeciesId,
+    double HydrocarbonThicknessAngstrom,
+    double ThicknessUncertaintyAngstrom,
+    double ReferenceTemperatureKelvin,
+    string ReferenceCondition,
+    string ReferenceCitation,
+    FixedStudyConditions IntendedConditions,
+    double MidplaneOffsetFromPpmAngstrom,
+    string SourceToTargetReviewReference,
+    string SourceToTargetReviewRationale);
 /// <summary>An uncertainty gate for identified predicted models, never independent placement proof.</summary>
 public sealed record PlacementPredictionCriterion(
     double MinimumLocalConfidence,
@@ -826,13 +888,17 @@ public sealed record PreparationAttempt(
     string MembraneId,
     string PlacementId,
     string PolicyId,
-    DateTimeOffset StartedAt);
+    DateTimeOffset StartedAt,
+    string PolicyVersion,
+    string PolicyFingerprintSha256,
+    ImmutableArray<ForceFieldAsset> ForceFieldFiles,
+    string ConstructionProviderVersion,
+    string NativePatchSha256);
 
 public sealed record SpeciesCount(LeafletSide PhysicalSide, string SpeciesId, int Count, double IntendedFraction);
 public sealed record ConstructionDerivation(
     string AttemptId,
     ImmutableArray<SpeciesCount> LipidCounts,
-    ImmutableArray<double> CellOriginAngstrom,
     ImmutableArray<double> CellAngstrom,
     int WaterCount,
     int SodiumCount,
@@ -854,7 +920,8 @@ public sealed record ConstructedExplicitSystem(
     ImmutableArray<ScientificEvidence> Evidence,
     ImmutableArray<ScientificFinding> Findings,
     string ConditionsTreatment,
-    LocalStateObservations? LocalState = null);
+    LocalStateObservations? LocalState = null,
+    ImmutableArray<double> ActualCellAngstrom = default);
 
 public sealed record PreparationStartResult(
     PreparationAttempt? Attempt,
@@ -874,7 +941,8 @@ public enum StageTermination
 {
     [JsonStringEnumMemberName("converged")] Converged = 1,
     [JsonStringEnumMemberName("max_iterations")] MaxIterations,
-    [JsonStringEnumMemberName("completed")] Completed
+    [JsonStringEnumMemberName("completed")] Completed,
+    [JsonStringEnumMemberName("unknown")] Unknown
 }
 
 public sealed record StageObservation(
@@ -890,7 +958,9 @@ public sealed record StageObservation(
     ImmutableArray<EquilibrationObservationAssessment> EquilibrationAssessments = default,
     ImmutableArray<EquilibrationSample> EquilibrationSamples = default,
     LocalStateObservations? LocalState = null,
-    ProteinGeometryObservations? ProteinGeometry = null);
+    ProteinGeometryObservations? ProteinGeometry = null,
+    ImmutableArray<EquilibrationWindowObservation> EquilibrationWindows = default,
+    EquilibrationFrameSeries? FrameSeries = null);
 
 public sealed record MeasuredValue(string Name, double Value, string Unit, string Scope);
 
@@ -951,7 +1021,20 @@ public sealed record InspectionAccount(
     string? FocusId,
     StructureFocus? Focus,
     ImmutableArray<InspectionAnnotation> Annotations,
-    ImmutableArray<InspectionMetric> Metrics);
+    ImmutableArray<InspectionMetric> Metrics,
+    string StudyRevisionId,
+    long StudyRevisionNumber,
+    ImmutableArray<ScientificEvidence> Evidence,
+    ImmutableArray<ScientificFinding> Findings,
+    PreparationAssessmentResult? Assessment);
+
+/// <summary>A verified coordinate-row identity for the currently selected inspection subject.</summary>
+public sealed record InspectionAtomAccount(
+    string SubjectId,
+    string StudyRevisionId,
+    string StructureToken,
+    int AtomSiteIndex,
+    AtomCorrespondence Atom);
 
 public sealed record InspectionSubject(
     string Id,
@@ -969,9 +1052,28 @@ public sealed record CompletedStageBundle(
     string StageId,
     string StudyRevisionId,
     string AttemptId,
+    string AssessmentId,
     string BundlePath,
     string Sha256,
+    long ByteLength,
     DateTimeOffset DeliveredAt);
+
+/// <summary>Delivery standing for one stage and one currently applicable assessment.</summary>
+public sealed record StageExportAccount(
+    string StageId,
+    string AssessmentId,
+    string Status,
+    string? Reason,
+    string? Sha256,
+    long? ByteLength);
+
+public enum ExportDeliveryStanding { Available, Absent, Corrupt, IdentityChanged }
+public sealed record ExportDeliveryObservation(
+    ExportDeliveryStanding Standing,
+    string? Reason,
+    byte[]? Bytes,
+    string? Sha256,
+    long? ByteLength);
 
 // Actor-facing account. JSON uses lower-camel property names through the host's
 // serializer options; the browser does not infer scientific standing from shape.
@@ -1004,7 +1106,8 @@ public sealed record StudyAccount(
     FixedStudyConditions Conditions,
     SourceRouteKind? SelectedSourceKind = null,
     UploadOriginKind? UploadProvenance = null,
-    string? UploadProvenanceNote = null);
+    string? UploadProvenanceNote = null,
+    string? AdoptedPlacementProposalId = null);
 
 public sealed record SourceCandidateAccount(
     string Id,
@@ -1046,6 +1149,21 @@ public sealed record MembraneAccount(
     string ScientificPurpose,
     ImmutableArray<LipidFraction> Upper,
     ImmutableArray<LipidFraction> Lower,
+    ImmutableArray<string> Limitations,
+    string? Reason = null,
+    string? PolicyId = null,
+    string? PolicyVersion = null,
+    ImmutableArray<ScientificEvidence> Evidence = default,
+    ImmutableArray<MembraneSpeciesSupportAccount> SpeciesSupport = default);
+
+public sealed record MembraneSpeciesSupportAccount(
+    string SpeciesId,
+    string ChemistryId,
+    string Category,
+    string ForceFieldFamily,
+    string ForceFieldVersion,
+    string CoordinateSha256,
+    string ParameterSha256,
     ImmutableArray<string> Limitations);
 
 public sealed record PlacementAccount(
@@ -1057,14 +1175,42 @@ public sealed record PlacementAccount(
     string? Sidedness,
     string Reason,
     ImmutableArray<ScientificEvidence> Evidence,
-    PredictionRegionSummaryObservations? Prediction = null);
+    PredictionRegionSummaryObservations? Prediction = null,
+    string PreparedProteinId = "",
+    string MembraneModelId = "",
+    PlacementPhysicalSide PhysicalSide = default,
+    double? MidplaneAngstrom = null,
+    double? ThicknessAngstrom = null,
+    ImmutableArray<string> ContactingRegions = default,
+    ImmutableArray<string> Limitations = default,
+    string? PolicyId = null,
+    string? PolicyVersion = null,
+    string? WitnessId = null);
 
 public sealed record AttemptAccount(
     string AttemptId,
     string Status,
     StageKind? StageKind,
     double? Progress,
-    string Message);
+    string Message,
+    string? StudyRevisionId = null,
+    string? PolicyId = null,
+    string? PolicyVersion = null,
+    string? CurrentStageId = null,
+    ConstructionDerivation? Derivation = null,
+    ConstructedSystemAccount? Constructed = null);
+
+public sealed record ConstructedSystemAccount(
+    string SubjectId,
+    string AttemptId,
+    int AtomCount,
+    ImmutableArray<SpeciesCount> AchievedComposition,
+    ImmutableArray<double> CellAngstrom,
+    int WaterCount,
+    int SodiumCount,
+    int ChlorideCount,
+    string ConditionsTreatment,
+    LocalStateObservations? LocalState);
 
 public sealed record StageAccount(
     string StageId,
@@ -1073,7 +1219,11 @@ public sealed record StageAccount(
     StageKind Kind,
     string Status,
     PreparationAssessmentResult? Assessment,
-    string Summary);
+    string Summary,
+    StageObservation? Observation = null,
+    ConstructedSystemAccount? Constructed = null,
+    StageExportAccount? Export = null,
+    string? SourceStageId = null);
 
 [JsonConverter(typeof(JsonStringEnumConverter<ActorActionKind>))]
 public enum ActorActionKind
@@ -1090,6 +1240,7 @@ public enum ActorActionKind
     [JsonStringEnumMemberName("revisePlacement")] RevisePlacement,
     [JsonStringEnumMemberName("adoptPlacement")] AdoptPlacement,
     [JsonStringEnumMemberName("startPreparation")] StartPreparation,
+    [JsonStringEnumMemberName("continueMinimization")] ContinueMinimization,
     [JsonStringEnumMemberName("stopAttempt")] StopAttempt,
     [JsonStringEnumMemberName("requestEquilibration")] RequestEquilibration,
     [JsonStringEnumMemberName("selectInspectionSubject")] SelectInspectionSubject,
@@ -1149,8 +1300,6 @@ public interface IPlacementAssessmentWork
 
 public interface IExplicitConstructionWork
 {
-    Task<WorkerResult<ConstructionInputObservations>> MeasureConstructionInputsAsync(
-        ScientificWorkRequest<ConstructionInputPayload> request, CancellationToken cancellationToken);
     Task<WorkerResult<ConstructionObservations>> ConstructSystemAsync(
         ScientificWorkRequest<ConstructionPayload> request, CancellationToken cancellationToken);
 }
@@ -1166,7 +1315,9 @@ public interface IMinimizationWork
 public interface IOptionalEquilibrationWork
 {
     Task<WorkerResult<EquilibrationObservations>> EquilibrateAsync(
-        ScientificWorkRequest<EquilibrationPayload> request, CancellationToken cancellationToken);
+        ScientificWorkRequest<EquilibrationPayload> request,
+        IProgress<EquilibrationWorkProgress>? progress,
+        CancellationToken cancellationToken);
     Task<WorkerResult<StageObservationObservations>> ObserveStageAsync(
         ScientificWorkRequest<StageObservationPayload> request, CancellationToken cancellationToken);
 }
@@ -1337,39 +1488,6 @@ public sealed record MembraneAssessmentObservations(
     ImmutableArray<string> CombinationWarnings,
     bool? CombinedParameterizationObserved);
 
-public sealed record LeafletProjectionRegion(LeafletSide PhysicalSide, double ZMinAngstrom, double ZMaxAngstrom);
-public sealed record ConstructionInputPayload(
-    string StudyRevisionId,
-    string AttemptId,
-    string PreparedProteinId,
-    string OrientedPdbPath,
-    string PreparedBondGraphPath,
-    string PreparedBondGraphSha256,
-    ImmutableArray<ForceFieldAsset> ForceFieldFiles,
-    double MembraneMidplaneAngstrom,
-    ImmutableArray<LeafletProjectionRegion> LeafletRegions,
-    ImmutableDictionary<string, double> AtomRadiusByElementAngstrom,
-    double LateralClearanceAngstrom,
-    double WaterMarginAngstrom,
-    double HeadRegionThicknessAngstrom,
-    double ProjectionClearanceAngstrom,
-    double GridResolutionAngstrom,
-    double VolumeGridResolutionAngstrom);
-public sealed record ConstructionInputObservations(
-    double ProteinXMinAngstrom,
-    double ProteinXMaxAngstrom,
-    double ProteinYMinAngstrom,
-    double ProteinYMaxAngstrom,
-    double ProteinZMinAngstrom,
-    double ProteinZMaxAngstrom,
-    ImmutableArray<double> CandidateCellOriginAngstrom,
-    ImmutableArray<double> CandidateCellAngstrom,
-    double UpperOccludedAreaAngstromSquared,
-    double LowerOccludedAreaAngstromSquared,
-    double ProteinAqueousOccludedVolumeAngstromCubed,
-    double NetChargeElementary,
-    ImmutableArray<string> ApproximationWarnings);
-
 public sealed record ProteinPreparationPayload(
     string StudyRevisionId,
     double NominalPh,
@@ -1413,7 +1531,9 @@ public sealed record PlacementPayload(
     string PpmVersion,
     string PpmExecutableSha256,
     ProteinTopologyKind TopologyKind,
-    PpmNterminalSide PpmNterminalSide);
+    PpmNterminalSide PpmNterminalSide,
+    string PpmResidueLibraryPath = "",
+    string PpmResidueLibrarySha256 = "");
 
 public sealed record PlacementObservations(
     double? MidplaneAngstrom,
@@ -1433,7 +1553,8 @@ public sealed record PlacementAdjustmentPayload(
     double TiltAboutXDegrees,
     double TiltAboutYDegrees,
     double RotationAboutNormalDegrees,
-    string Rationale);
+    string Rationale,
+    string OrientedPdbSha256 = "");
 public sealed record PlacementAdjustmentObservations(
     int SourceAtomCount,
     int AdjustedAtomCount,
@@ -1449,7 +1570,10 @@ public sealed record PlacementMeasurementPayload(
     double MembraneMidplaneAngstrom,
     double CoreLowerZAngstrom,
     double CoreUpperZAngstrom,
-    ImmutableArray<ResidueAddress> ResidueAddressesInOrder);
+    ImmutableArray<ResidueAddress> ResidueAddressesInOrder,
+    ImmutableArray<string> OutputChainIdsInOrder = default,
+    ImmutableArray<string> ExpectedResultAtomIdsInOrder = default,
+    string OrientedPdbSha256 = "");
 public sealed record PlacementResidueObservation(
     ResidueAddress Address,
     string OutputChainId,
@@ -1474,54 +1598,62 @@ public sealed record PlacementMeasurementObservations(
     double ProteinZMaxAngstrom,
     ImmutableArray<string> Limitations);
 
-public sealed record SpatialRegionAngstrom(double X0, double Y0, double Z0, double X1, double Y1, double Z1);
-public sealed record ConstructionComponent(
-    GeneratedComponentRoleKind Role,
-    LeafletSide PhysicalSide,
-    string SpeciesId,
-    string TemplateCoordinatePath,
-    string TemplateCoordinateSha256,
-    int Count,
-    SpatialRegionAngstrom RegionAngstrom,
-    SpatialRegionAngstrom? HeadRegionAngstrom,
-    ImmutableArray<int> HeadAtomIndices);
-
 public sealed record ConstructionPayload(
     string StudyRevisionId,
     string AttemptId,
     string OrientedPdbPath,
+    string OrientedPdbSha256,
     string PreparedPdbPath,
     string PreparedPdbSha256,
     SourceToResultCorrespondence PreparedCorrespondence,
     string PreparedBondGraphPath,
     string PreparedBondGraphSha256,
-    ImmutableArray<double> CellOriginAngstrom,
-    ImmutableArray<double> CellAngstrom,
-    ImmutableArray<ConstructionComponent> Components,
-    string PackmolExecutablePath,
-    string PackmolVersion,
-    string PackmolExecutableSha256,
+    MolecularRepresentation Lipid,
+    MolecularRepresentation Water,
+    MolecularRepresentation Sodium,
+    MolecularRepresentation Chloride,
+    string NativePatchPath,
+    string NativePatchSha256,
+    string ProviderName,
+    string ProviderVersion,
+    string LipidTypeArgument,
+    string PositiveIonArgument,
+    string NegativeIonArgument,
+    double MembraneCenterZNanometers,
+    double MinimumPaddingNanometers,
+    double IonicStrengthMolar,
     ImmutableArray<ForceFieldAsset> ForceFieldFiles,
     MolecularDynamicsSystemSettings SystemSettings,
-    double ToleranceAngstrom,
-    int MaximumPackingAttempts,
-    LocalStateObservationSpec LocalObservationSpec);
+    LocalStateObservationSpec LocalObservationSpec,
+    int MaximumAtomCount,
+    double MaximumCellDimensionAngstrom,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativePatchMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativeSourcePatchPath = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? NativeSourcePatchSha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<string>? RemovedNativeLipidResidueIds = null);
 
 public sealed record ObservedSpeciesCount(GeneratedComponentRoleKind Role, LeafletSide PhysicalSide, string SpeciesId, int Count);
 public sealed record ConstructionObservations(
     int AtomCount,
     ImmutableArray<ObservedSpeciesCount> SpeciesCounts,
     ImmutableArray<double> ActualCellAngstrom,
+    ImmutableArray<double> ProteinPeriodicImageGapsAngstrom,
     int WaterCount,
     int PositiveIonCount,
     int NegativeIonCount,
     double NetChargeElementary,
+    double ProteinNetChargeElementary,
     double InitialPotentialEnergyKjMol,
     int CorrespondedResultAtomCount,
+    double MaximumProteinCoordinateDeviationAngstrom,
+    bool ProteinIdentityAndBondsPreserved,
+    string NativePatchSha256,
     ImmutableArray<string> ContactWarnings,
     ImmutableArray<string> GeometryWarnings,
     ImmutableArray<string> ParameterWarnings,
-    LocalStateObservations LocalState);
+    LocalStateObservations LocalState,
+    string NativePatchMode = "installed",
+    string? NativeSourcePatchSha256 = null);
 
 public sealed record MinimizationPayload(
     string StudyRevisionId,
@@ -1546,7 +1678,11 @@ public sealed record MinimizationObservations(
     StageTermination Termination,
     bool FinalTreatmentUnrestrained,
     int FinalAtomCount,
-    ImmutableArray<string> NumericalWarnings);
+    ImmutableArray<string> NumericalWarnings,
+    double? FinalRawRmsForceKjMolNm = null,
+    double? MaximumRelativeConstraintError = null,
+    double? AppliedConstraintTolerance = null,
+    string? FinalRmsForceMethod = null);
 
 public sealed record EquilibrationPayload(
     string StudyRevisionId,
@@ -1563,9 +1699,19 @@ public sealed record EquilibrationPayload(
     string MinimizedStateXmlSha256,
     string ValidatedPolicyId,
     ImmutableArray<int> ProteinBackboneAtomIndices,
+    ImmutableArray<int> ProteinHeavyAtomIndices,
     ImmutableArray<int> LipidHeavyAtomIndices,
     ImmutableArray<ResolvedEquilibrationObservable> ResolvedObservables,
-    EquilibrationProtocol Protocol);
+    EquilibrationProtocol Protocol,
+    string ProtocolSha256 = "");
+
+public sealed record EquilibrationWorkProgress(
+    string StudyRevisionId,
+    string AttemptId,
+    string StageId,
+    string Window,
+    int CompletedSteps,
+    int RequestedSteps);
 
 public sealed record EquilibrationWindowObservation(
     string Name,
@@ -1641,3 +1787,91 @@ public sealed record ExportVerificationObservations(
     bool ReadBackMatched,
     double CoordinateMaxDeviationAngstrom,
     ImmutableArray<string> Warnings);
+
+/// <summary>Stable identity of the complete attempt-bound preparation basis.</summary>
+public static class PreparationPolicyFingerprint
+{
+    public static string Compute(ApplicablePreparationPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        // Optional stereo descriptors may be absent in older water/ion records. Treat that
+        // representation and an explicit empty array identically in the policy identity.
+        var normalized = policy with
+        {
+            Water = Normalize(policy.Water),
+            Sodium = Normalize(policy.Sodium),
+            Chloride = Normalize(policy.Chloride)
+        };
+        var encoded = JsonSerializer.SerializeToElement(normalized, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return ComputeCanonical(encoded);
+    }
+
+    private static MolecularRepresentation Normalize(MolecularRepresentation representation) =>
+        representation is null ? null! :
+        representation with { StereoChecks = representation.StereoChecks.IsDefault
+            ? ImmutableArray<MolecularStereoCheck>.Empty : representation.StereoChecks };
+
+    public static string ComputeResidueVariants(ImmutableArray<ResidueVariantChoice> variants)
+    {
+        if (variants.IsDefault || variants.Any(item => item.Residue is null ||
+                string.IsNullOrWhiteSpace(item.Variant)) ||
+            variants.Select(item => item.Residue).Distinct().Count() != variants.Length)
+            return string.Empty;
+        var ordered = variants.OrderBy(item => item.Residue.Model)
+            .ThenBy(item => item.Residue.Chain, StringComparer.Ordinal)
+            .ThenBy(item => item.Residue.Residue)
+            .ThenBy(item => item.Residue.InsertionCode, StringComparer.Ordinal)
+            .ThenBy(item => item.Residue.CopyId, StringComparer.Ordinal)
+            .Select(item => new
+            {
+                item.Residue.Model, item.Residue.Chain, item.Residue.Residue,
+                item.Residue.InsertionCode, item.Residue.CopyId, item.Variant
+            });
+        return ComputeCanonical(JsonSerializer.SerializeToElement(ordered,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
+    private static string ComputeCanonical(JsonElement encoded)
+    {
+        var bytes = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(bytes))
+            WriteCanonical(writer, encoded);
+        return Convert.ToHexString(SHA256.HashData(bytes.WrittenSpan)).ToLowerInvariant();
+    }
+
+    public static bool Matches(PreparationAttempt attempt, ApplicablePreparationPolicy policy) =>
+        attempt.PolicyId == policy.Id &&
+        !string.IsNullOrWhiteSpace(attempt.PolicyVersion) &&
+        attempt.PolicyVersion == policy.Version &&
+        attempt.PolicyFingerprintSha256.Length == 64 &&
+        attempt.PolicyFingerprintSha256.All(Uri.IsHexDigit) &&
+        attempt.PolicyFingerprintSha256.Equals(Compute(policy), StringComparison.OrdinalIgnoreCase) &&
+        attempt.ConstructionProviderVersion == policy.Construction.ProviderVersion &&
+        attempt.NativePatchSha256.Equals(policy.Construction.NativePatchSha256,
+            StringComparison.OrdinalIgnoreCase) &&
+        !attempt.ForceFieldFiles.IsDefault && !policy.ForceFieldFiles.IsDefault &&
+        attempt.ForceFieldFiles.SequenceEqual(policy.ForceFieldFiles);
+
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            foreach (var property in element.EnumerateObject().OrderBy(item => item.Name, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(property.Name);
+                WriteCanonical(writer, property.Value);
+            }
+            writer.WriteEndObject();
+            return;
+        }
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var child in element.EnumerateArray()) WriteCanonical(writer, child);
+            writer.WriteEndArray();
+            return;
+        }
+        element.WriteTo(writer);
+    }
+}

@@ -235,6 +235,12 @@ def _load_stage(directory: Path, payload: dict[str, Any], state_key: str):
     topology_json = work_path(directory, payload.get("topologyJsonPath"), "topologyJsonPath")
     system_path = work_path(directory, payload.get("systemXmlPath"), "systemXmlPath")
     state_path = work_path(directory, payload.get(state_key), state_key)
+    state_hash_key = state_key.removesuffix("Path") + "Sha256"
+    for path, hash_key in ((topology_path, "topologyCifSha256"),
+                           (topology_json, "topologyJsonSha256"),
+                           (system_path, "systemXmlSha256"),
+                           (state_path, state_hash_key)):
+        verify_sha256(path, require_text(payload.get(hash_key), hash_key), hash_key)
     cif = PDBxFile(str(topology_path))
     topology = _read_topology_data(topology_json)
     system = XmlSerializer.deserialize(system_path.read_text(encoding="utf-8"))
@@ -248,7 +254,8 @@ def _load_stage(directory: Path, payload: dict[str, Any], state_key: str):
         raise WorkError("inputMismatch", "mmCIF and bond-topology sidecar disagree on ordered atom identities")
     if len(cif.positions) != count:
         raise WorkError("inputMismatch", "mmCIF coordinate count differs from full bonded topology")
-    return SimpleNamespace(topology=topology, positions=cif.positions), system, state
+    return SimpleNamespace(topology=topology, positions=cif.positions,
+                           coordinate_box_vectors=cif.topology.getPeriodicBoxVectors()), system, state
 
 
 def _rms_force(state: Any, particle_count: int) -> float:

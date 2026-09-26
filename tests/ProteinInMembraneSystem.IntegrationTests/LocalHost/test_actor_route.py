@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -95,9 +96,8 @@ def main() -> None:
         environment = dict(os.environ,
                            PIM_PORT=str(port),
                            PIM_WORKSPACE_ROOT=str(directory / "workspace"),
-                           PIM_POLICY_CATALOGUE=str(catalogue))
-        environment.pop("PIM_PPM_EXECUTABLE", None)
-        environment.pop("PIM_PACKMOL_EXECUTABLE", None)
+                           PIM_POLICY_CATALOGUE=str(catalogue),
+                           PIM_PPM_EXECUTABLE=str(directory / "absent-ppm"))
         log_path = directory / "host.log"
         with log_path.open("wb") as log:
             process = subprocess.Popen([str(ROOT / "scripts" / "start-local.sh")], cwd=ROOT,
@@ -117,9 +117,8 @@ def main() -> None:
                 initial = json.loads(body)
                 launch_log = log_path.read_text()
                 require("Opening local protein-in-membrane workspace" in launch_log and
-                        "PPM 2.0 is unavailable" in launch_log and
-                        "Packmol is unavailable" in launch_log,
-                        "The supported launcher must start slice 1 without later-slice tools")
+                        "PPM 2.0 is unavailable" in launch_log,
+                        "The supported launcher must start slice 1 without the placement tool")
                 require(initial["revision"] == 0, "An isolated host must start with revision 0")
                 require(initial["protein"] is None and initial["placement"] is None,
                         "No scientific result may exist before selecting a source")
@@ -187,6 +186,38 @@ def main() -> None:
                 structure_status, structure_bytes, _ = send(base, inspected["structureUrl"])
                 require(structure_status == 200 and b"ALA" in structure_bytes,
                         "The official host must serve the prepared molecular artifact")
+                structure_token = urlsplit(inspected["structureUrl"]).path.rsplit("/", 1)[1]
+                atom_path = (f"/api/inspection/atoms/{protein['subjectId']}/"
+                             f"{structure_token}/0")
+                atom_status, atom_body, _ = send(base, atom_path)
+                require(atom_status == 200, "The first visible prepared atom needs verified identity")
+                selected_atom = json.loads(atom_body)
+                require(selected_atom["subjectId"] == protein["subjectId"] and
+                        selected_atom["studyRevisionId"] == inspected["studyRevisionId"] and
+                        selected_atom["structureToken"] == structure_token and
+                        selected_atom["atomSiteIndex"] == 0 and
+                        selected_atom["atom"]["resultAtomIndex"] == 0 and
+                        selected_atom["atom"]["moleculeRole"] == "protein",
+                        "The atom pick must resolve the exact selected protein correspondence")
+                wrong_atom_path = (f"/api/inspection/atoms/wrong-subject/"
+                                   f"{structure_token}/0")
+                require(send(base, wrong_atom_path)[0] == 404 and
+                        send(base, atom_path + "999999")[0] == 404,
+                        "An unrelated subject or impossible row must have no atom identity")
+                prepared_paths = list((directory / "workspace" / "protein-preparation").glob(
+                    "*/prepared-protein.pdb"))
+                require(len(prepared_paths) == 1 and prepared_paths[0].read_bytes() == structure_bytes,
+                        "The selected structure URL must serve the exact prepared artifact")
+                prepared_paths[0].write_bytes(structure_bytes + b"REMARK changed after selection\n")
+                changed_status, _, _ = send(base, inspected["structureUrl"])
+                require(changed_status == 404,
+                        "A selected structure URL must not serve changed bytes under its old identity")
+                require(send(base, atom_path)[0] == 404,
+                        "A changed coordinate artifact must invalidate its atom-pick identity")
+                prepared_paths[0].write_bytes(structure_bytes)
+                restored_status, restored_bytes, _ = send(base, inspected["structureUrl"])
+                require(restored_status == 200 and restored_bytes == structure_bytes,
+                        "The original selected structure bytes must remain addressable after restoration")
                 print("PASS: loopback upload, exact selection, real preparation, inspection, stale revision and Origin refusal")
 
                 # A second source makes model, partner and alternate-location

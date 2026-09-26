@@ -35,7 +35,10 @@ var assignments = new Dictionary<string, (string Role, string Namespace)>(String
     ["ScientificWorkerExchange.cs"] = ("workerExchange", "ProteinInMembrane.Host"),
     ["ProteinInMembraneSystem/ProteinInMembraneSystem.cs"] = ("root", productNamespace),
     ["ProteinInMembraneSystem/ProteinInMembraneSystem.Contracts.cs"] = ("shared", productNamespace),
-    ["ProteinInMembraneSystem/EquilibrationProtocolFingerprint.cs"] = ("root", productNamespace),
+    // Exact immutable protocol identity is shared information, like
+    // PreparationPolicyFingerprint in the contracts companion. It grants no
+    // stage execution or qualification authority to its callers.
+    ["ProteinInMembraneSystem/EquilibrationProtocolFingerprint.cs"] = ("shared", productNamespace),
     ["ProteinInMembraneSystem/ProteinPreparation/ProteinPreparation.cs"] =
         ("proteinPreparation", productNamespace + ".ProteinPreparation"),
     ["ProteinInMembraneSystem/MembraneModelAssessment/MembraneModelAssessment.cs"] =

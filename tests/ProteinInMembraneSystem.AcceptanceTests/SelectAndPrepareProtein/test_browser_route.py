@@ -48,7 +48,6 @@ def running_host(workspace: Path):
                        PIM_WORKSPACE_ROOT=str(workspace),
                        PIM_POLICY_CATALOGUE=str(POLICY))
     environment.pop("PIM_PPM_EXECUTABLE", None)
-    environment.pop("PIM_PACKMOL_EXECUTABLE", None)
     log_path = workspace.parent / "host.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(["dotnet", str(HOST)], cwd=ROOT,

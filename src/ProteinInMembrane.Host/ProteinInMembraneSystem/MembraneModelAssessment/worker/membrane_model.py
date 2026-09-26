@@ -5,6 +5,7 @@ The C# owning boundary decides qualification; this module returns observations.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -48,6 +49,87 @@ def _exact_template_match(force_field: Any, topology: Any) -> tuple[bool, int, l
     return matched, parameter_atoms, warnings
 
 
+def _stereo_geometry(pdb: Any, checks: Any) -> list[str]:
+    """Observe declared local configuration, without deciding membrane support."""
+    from openmm import unit
+
+    if not isinstance(checks, list) or not checks:
+        return ["No identified stereochemical geometry checks accompany this molecular representation."]
+    atoms = list(pdb.topology.atoms())
+    by_name = {atom.name: atom for atom in atoms}
+    if len(by_name) != len(atoms):
+        return ["Coordinate atom names are not unique for stereochemical correspondence."]
+    neighbors: dict[str, set[str]] = {atom.name: set() for atom in atoms}
+    for first, second in pdb.topology.bonds():
+        neighbors[first.name].add(second.name)
+        neighbors[second.name].add(first.name)
+
+    def position(name: str) -> tuple[float, float, float]:
+        values = pdb.positions[by_name[name].index].value_in_unit(unit.angstrom)
+        return tuple(float(value) for value in values)
+
+    def subtract(first: tuple[float, ...], second: tuple[float, ...]) -> tuple[float, ...]:
+        return tuple(first[index] - second[index] for index in range(3))
+
+    def dot(first: tuple[float, ...], second: tuple[float, ...]) -> float:
+        return sum(first[index] * second[index] for index in range(3))
+
+    def cross(first: tuple[float, ...], second: tuple[float, ...]) -> tuple[float, ...]:
+        return (first[1] * second[2] - first[2] * second[1],
+                first[2] * second[0] - first[0] * second[2],
+                first[0] * second[1] - first[1] * second[0])
+
+    warnings: list[str] = []
+    for index, raw in enumerate(checks, 1):
+        if not isinstance(raw, dict):
+            warnings.append(f"Stereochemical check {index} has no identified descriptor.")
+            continue
+        names = raw.get("atomNames")
+        kind = raw.get("kind")
+        expected = raw.get("expected")
+        if (not isinstance(names, list) or len(names) != 4 or
+                any(not isinstance(name, str) or name not in by_name for name in names) or
+                len(set(names)) != 4):
+            warnings.append(f"Stereochemical check {index} does not identify four distinct coordinate atoms.")
+            continue
+        first, second, third, fourth = (position(name) for name in names)
+        label = ", ".join(names)
+        if kind == "tetrahedral" and expected in ("positive", "negative"):
+            common_centers = set.intersection(*(neighbors[name] for name in names))
+            if len(common_centers) != 1:
+                warnings.append(f"Tetrahedral check {label} does not identify one bonded center.")
+                continue
+            signed_volume = dot(subtract(first, fourth),
+                                cross(subtract(second, fourth), subtract(third, fourth)))
+            if (not math.isfinite(signed_volume) or
+                    (signed_volume <= 1.0 if expected == "positive" else signed_volume >= -1.0)):
+                warnings.append(f"Tetrahedral check {label} does not match the declared {expected} handedness.")
+        elif kind == "alkene" and expected in ("cis", "trans"):
+            if names[1] not in neighbors[names[0]] or names[2] not in neighbors[names[1]] or \
+                    names[3] not in neighbors[names[2]]:
+                warnings.append(f"Alkene check {label} does not follow one bonded four-atom path.")
+                continue
+            axis = subtract(third, second)
+            axis_length_squared = dot(axis, axis)
+            if not math.isfinite(axis_length_squared) or axis_length_squared <= 1e-8:
+                warnings.append(f"Alkene check {label} has an unresolved central bond geometry.")
+                continue
+            left = subtract(first, second)
+            right = subtract(fourth, third)
+            left_projected = tuple(left[i] - dot(left, axis) / axis_length_squared * axis[i]
+                                   for i in range(3))
+            right_projected = tuple(right[i] - dot(right, axis) / axis_length_squared * axis[i]
+                                    for i in range(3))
+            denominator = math.sqrt(dot(left_projected, left_projected) *
+                                    dot(right_projected, right_projected))
+            cosine = dot(left_projected, right_projected) / denominator if denominator > 1e-8 else math.nan
+            if not math.isfinite(cosine) or (cosine <= 0.5 if expected == "cis" else cosine >= -0.5):
+                warnings.append(f"Alkene check {label} does not match the declared {expected} configuration.")
+        else:
+            warnings.append(f"Stereochemical check {index} has an unsupported kind or expected configuration.")
+    return warnings
+
+
 def assess_membrane(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     from openmm.app import ForceField, Topology
 
@@ -84,15 +166,15 @@ def assess_membrane(directory: Path, payload: dict[str, Any], progress: Callable
         pdb = _coordinate_file(coordinate)
         atom_count = len(list(pdb.topology.atoms()))
         match, parameter_count, warnings = _exact_template_match(force_field, pdb.topology)
+        stereo_warnings = _stereo_geometry(pdb, item.get("stereoChecks"))
+        if stereo_warnings:
+            match = False
+            warnings.extend(stereo_warnings)
         heads = item.get("headAtomIndices")
         if not isinstance(heads, list) or (item.get("category") == "lipid" and not heads) or any(
                 not isinstance(index, int) or index < 1 or index > atom_count for index in heads):
             match = False
             warnings.append("Head-atom indices do not identify atoms in the coordinate template.")
-        for label, field in (("area per molecule", "areaPerMoleculeAngstromSquared"),
-                             ("molecular volume", "volumeAngstromCubed")):
-            if item.get("category") == "lipid":
-                require_number(item.get(field), label, 0.000001)
         if atom_count != require_integer(item.get("atomCount"), "declared atomCount", 1):
             match = False
             warnings.append("Declared atom count differs from coordinate template atom count.")

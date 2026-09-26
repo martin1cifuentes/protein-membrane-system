@@ -26,23 +26,31 @@ public sealed class ConnectedStructuralInspection
         ArgumentNullException.ThrowIfNull(subject);
         if (revision.Id != subject.StudyRevisionId)
             return BoundaryOutcome<InspectionAccount>.Unavailable("This inspection subject belongs to a different study revision.");
-        if (subject.Evidence.Any(evidence => evidence.SubjectId != subject.Id) ||
-            subject.Findings.Any(finding => finding.SubjectId != subject.Id) ||
+        var evidence = subject.Evidence.IsDefault ? ImmutableArray<ScientificEvidence>.Empty : subject.Evidence;
+        var findings = subject.Findings.IsDefault ? ImmutableArray<ScientificFinding>.Empty : subject.Findings;
+        var annotations = subject.Annotations.IsDefault
+            ? ImmutableArray<InspectionAnnotation>.Empty : subject.Annotations;
+        var metrics = subject.Metrics.IsDefault ? ImmutableArray<InspectionMetric>.Empty : subject.Metrics;
+        if (evidence.Any(item => item.SubjectId != subject.Id || string.IsNullOrWhiteSpace(item.Id)) ||
+            evidence.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() != evidence.Length ||
+            findings.Any(item => item.SubjectId != subject.Id || string.IsNullOrWhiteSpace(item.Id)) ||
             subject.Assessment is not null && subject.Assessment.StageId != subject.Id)
             return BoundaryOutcome<InspectionAccount>.Unavailable("The supplied evidence, finding, or assessment does not identify this exact subject.");
 
-        var evidenceIds = subject.Evidence.Select(evidence => evidence.Id).ToHashSet(StringComparer.Ordinal);
-        if (subject.Annotations.Any(annotation => annotation.EvidenceId is not null && !evidenceIds.Contains(annotation.EvidenceId)) ||
-            subject.Metrics.Any(metric => metric.EvidenceId is not null && !evidenceIds.Contains(metric.EvidenceId)))
+        var evidenceIds = evidence.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        if (findings.Any(item => !evidenceIds.Contains(item.EvidenceId)) ||
+            annotations.Any(item => item.EvidenceId is not null && !evidenceIds.Contains(item.EvidenceId)) ||
+            metrics.Any(item => item.EvidenceId is not null && !evidenceIds.Contains(item.EvidenceId)) ||
+            subject.Assessment is { } assessment && !assessment.Evidence.IsDefault &&
+                assessment.Evidence.Any(item => item.SubjectId != subject.Id))
             return BoundaryOutcome<InspectionAccount>.Unavailable("A spatial mark or numerical value lacks corresponding evidence for this subject.");
 
         _subject = subject;
         _account = new InspectionAccount(
             subject.Id, subject.StructureUrl, subject.RepresentationKind,
             subject.OmittedMolecules.IsDefault ? ImmutableArray<string>.Empty : subject.OmittedMolecules,
-            null, null,
-            subject.Annotations.IsDefault ? ImmutableArray<InspectionAnnotation>.Empty : subject.Annotations,
-            subject.Metrics.IsDefault ? ImmutableArray<InspectionMetric>.Empty : subject.Metrics);
+            null, null, annotations, metrics, revision.Id, revision.Number,
+            evidence, findings, subject.Assessment);
         return BoundaryOutcome<InspectionAccount>.Success(_account);
     }
 
@@ -50,9 +58,11 @@ public sealed class ConnectedStructuralInspection
     {
         if (_subject?.Id != subjectId || _account is null)
             return BoundaryOutcome<InspectionAccount>.Unavailable("The requested inspection subject is no longer selected.");
-        var annotation = _subject.Annotations.FirstOrDefault(item => item.Id == annotationId);
+        var annotation = _account.Annotations.FirstOrDefault(item => item.Id == annotationId);
         if (annotation is null)
             return BoundaryOutcome<InspectionAccount>.Unavailable("The requested part does not belong to this subject's account.");
+        if (annotation.GeometryFocus is null || string.IsNullOrWhiteSpace(_account.StructureUrl))
+            return BoundaryOutcome<InspectionAccount>.Unavailable("This part has no verified spatial focus in the selected structure.");
         _account = _account with { FocusId = annotation.SubjectPartId, Focus = annotation.GeometryFocus };
         return BoundaryOutcome<InspectionAccount>.Success(_account);
     }
@@ -67,10 +77,12 @@ public sealed class ConnectedStructuralInspection
 
     public bool HasRequiredEvidenceForApproval(
         string subjectId,
+        string expectedStudyRevisionId,
         ImmutableArray<string> requiredEvidenceIds,
         out string reason)
     {
-        if (_subject?.Id != subjectId || _account is null)
+        if (_subject?.Id != subjectId || _account is null ||
+            _account.StudyRevisionId != expectedStudyRevisionId)
         {
             reason = "The exact current proposal has not been selected for inspection.";
             return false;
@@ -82,9 +94,12 @@ public sealed class ConnectedStructuralInspection
         }
         foreach (var id in requiredEvidenceIds)
         {
-            if (!_subject.Evidence.Any(evidence => evidence.Id == id) ||
-                !_account.Annotations.Any(annotation => annotation.EvidenceId == id) ||
-                !_account.Metrics.Any(metric => metric.EvidenceId == id))
+            if (!_account.Evidence.Any(item => item.Id == id) ||
+                !_account.Annotations.Any(annotation => annotation.EvidenceId == id &&
+                    annotation.GeometryFocus is not null &&
+                    _account.Metrics.Any(metric => metric.EvidenceId == id &&
+                        metric.SubjectPartId == annotation.SubjectPartId &&
+                        !string.IsNullOrWhiteSpace(metric.Value))))
             {
                 reason = $"Evidence {id} is not connected in both the spatial and numerical account.";
                 return false;

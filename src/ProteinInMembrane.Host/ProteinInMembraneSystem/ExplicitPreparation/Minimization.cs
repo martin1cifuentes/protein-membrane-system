@@ -1,10 +1,12 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 
 namespace ProteinInMembrane.Host.ProteinInMembraneSystem.ExplicitPreparation;
 
 /// <summary>Establishes one factual completed minimized stage, not qualification.</summary>
 public sealed class Minimization
 {
+    private const string ConstraintTangentMethod = "constraint-tangent-per-particle-v1";
     private readonly IMinimizationWork _worker;
 
     public Minimization(IMinimizationWork worker) => _worker = worker;
@@ -18,7 +20,7 @@ public sealed class Minimization
     {
         var stageId = Guid.NewGuid().ToString("N");
         var running = State(source.Attempt.Id, stageId, StageExecutionStanding.Running, "Required minimization is running.");
-        if (source.Attempt.PolicyId != policy.Id ||
+        if (!PreparationPolicyFingerprint.Matches(source.Attempt, policy) ||
             source.Molecule.TopologyPath is null || source.Molecule.SystemXmlPath is null ||
             source.Molecule.StateXmlPath is null || source.Molecule.TopologySha256 is null ||
             source.Molecule.SystemXmlSha256 is null || source.Molecule.StateXmlSha256 is null ||
@@ -59,14 +61,27 @@ public sealed class Minimization
                 result.FailureMessage ?? "Minimization did not establish an observed result."), ImmutableArray<ScientificFinding>.Empty);
 
         var observed = result.Observations;
-        var minimizedState = result.Artifacts.FirstOrDefault(artifact => artifact.Role == "minimizedStateXml");
-        var minimizedCoordinates = result.Artifacts.FirstOrDefault(artifact => artifact.Role == "minimizedCif");
+        var minimizedState = result.Artifacts.IsDefault ? null :
+            result.Artifacts.FirstOrDefault(artifact => artifact.Role == "minimizedStateXml");
+        var minimizedCoordinates = result.Artifacts.IsDefault ? null :
+            result.Artifacts.FirstOrDefault(artifact => artifact.Role == "minimizedCif");
         if (minimizedState is null || minimizedCoordinates is null ||
+            !ArtifactMatches(minimizedState) || !ArtifactMatches(minimizedCoordinates) ||
             !observed.FinalTreatmentUnrestrained ||
             observed.FinalAtomCount != source.Molecule.AtomCount ||
             !double.IsFinite(observed.InitialPotentialEnergyKjMol) ||
             !double.IsFinite(observed.FinalRmsForceKjMolNm) ||
+            observed.FinalRmsForceKjMolNm < 0 ||
             observed.FinalRmsForceKjMolNm > policy.FinalUnrestrainedRmsForceTargetKjMolNm ||
+            observed.FinalRmsForceMethod != ConstraintTangentMethod ||
+            observed.FinalRawRmsForceKjMolNm is not { } rawForce ||
+            !double.IsFinite(rawForce) || rawForce < 0 ||
+            observed.MaximumRelativeConstraintError is not { } constraintError ||
+            !double.IsFinite(constraintError) || constraintError < 0 ||
+            observed.AppliedConstraintTolerance is not { } constraintTolerance ||
+            !double.IsFinite(constraintTolerance) || constraintTolerance <= 0 ||
+            constraintTolerance > 0.00001 + 0.000000000001 ||
+            constraintError > constraintTolerance ||
             !double.IsFinite(observed.FinalPotentialEnergyKjMol) ||
             !observed.NumericalWarnings.IsDefaultOrEmpty ||
             observed.Termination != StageTermination.Converged)
@@ -85,7 +100,26 @@ public sealed class Minimization
                 StageKind.Minimization, source.Molecule.CorrespondencePath,
                 source.Molecule.CorrespondenceSha256, policy.LocalStateObservation,
                 policy.StageProteinGeometryMeasurement));
-        var stageResult = await _worker.ObserveStageAsync(observationRequest, cancellationToken);
+        WorkerResult<StageObservationObservations> stageResult;
+        try
+        {
+            stageResult = await _worker.ObserveStageAsync(observationRequest, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new StageOperationResult(null,
+                State(source.Attempt.Id, stageId, StageExecutionStanding.Stopped,
+                    "Stage remeasurement was stopped without a completed stage."),
+                ImmutableArray<ScientificFinding>.Empty);
+        }
+        if (stageResult.RequestId == observationRequest.RequestId &&
+            stageResult.StudyRevisionId == source.Attempt.StudyRevisionId &&
+            stageResult.AttemptId == source.Attempt.Id && stageResult.StageId == stageId &&
+            stageResult.Standing == WorkerResultStanding.Stopped)
+            return new StageOperationResult(null,
+                State(source.Attempt.Id, stageId, StageExecutionStanding.Stopped,
+                    "Stage remeasurement was stopped without a completed stage."),
+                ImmutableArray<ScientificFinding>.Empty);
         if (stageResult.RequestId != observationRequest.RequestId ||
             stageResult.StudyRevisionId != source.Attempt.StudyRevisionId ||
             stageResult.AttemptId != source.Attempt.Id || stageResult.StageId != stageId ||
@@ -109,7 +143,12 @@ public sealed class Minimization
         var measurements = stageResult.Observations.Measurements.AddRange(ImmutableArray.Create(
             new MeasuredValue("initialPotentialEnergy", observed.InitialPotentialEnergyKjMol, "kJ/mol", "minimization"),
             new MeasuredValue("finalPotentialEnergy", observed.FinalPotentialEnergyKjMol, "kJ/mol", "minimization"),
-            new MeasuredValue("finalRmsForce", observed.FinalRmsForceKjMolNm, "kJ mol^-1 nm^-1", "final unrestrained")
+            new MeasuredValue("finalRmsForce", observed.FinalRmsForceKjMolNm,
+                "kJ mol^-1 nm^-1", "final unrestrained constraint tangent; per particle"),
+            new MeasuredValue("finalRawRmsForce", rawForce,
+                "kJ mol^-1 nm^-1", "diagnostic raw components including constraint-normal force"),
+            new MeasuredValue("maximumRelativeConstraintError", constraintError,
+                "relative", "final HBonds constraints")
         ));
         var local = stageResult.Observations.LocalState;
         if (local is not null && !local.Measurements.IsDefault)
@@ -117,14 +156,20 @@ public sealed class Minimization
         var evidence = ImmutableArray.Create(new ScientificEvidence(
             Guid.NewGuid().ToString("N"), stageId, result.Provider?.Name ?? "OpenMM",
             "Observed final unrestrained minimization",
-            $"RMS force {observed.FinalRmsForceKjMolNm:G6} kJ mol^-1 nm^-1; termination {observed.Termination}",
+            $"Observed final constraint-tangent RMS force {observed.FinalRmsForceKjMolNm:G6} kJ mol^-1 nm^-1 " +
+            $"({ConstraintTangentMethod}); raw State-force RMS {rawForce:G6} is diagnostic; " +
+            $"maximum relative constraint error {constraintError:G6} at tolerance {constraintTolerance:G6}; " +
+            $"requested iteration cap {policy.MaximumMinimizationIterations}; exact provider stop reason and iteration count are not exposed.",
             $"Attempt {source.Attempt.Id}; policy {policy.Id}",
             "Completion does not establish suitable membrane phase, thermal equilibration or scientific qualification.",
             EvidenceBearing.Context));
         var observation = new StageObservation(stageId, source.Attempt.Id, StageKind.Minimization,
             measurements, evidence, observed.Termination, result.Provider?.Version ?? "unknown", DateTimeOffset.UtcNow,
+            EquilibrationAssessments: ImmutableArray<EquilibrationObservationAssessment>.Empty,
+            EquilibrationSamples: ImmutableArray<EquilibrationSample>.Empty,
             LocalState: stageResult.Observations.LocalState,
-            ProteinGeometry: stageResult.Observations.ProteinGeometry);
+            ProteinGeometry: stageResult.Observations.ProteinGeometry,
+            EquilibrationWindows: ImmutableArray<EquilibrationWindowObservation>.Empty);
         var findings = stageResult.Observations.ContactWarnings.Concat(stageResult.Observations.StructuralWarnings)
             .Select(warning => new ScientificFinding(
                 Guid.NewGuid().ToString("N"), stageId, evidence[0].Id, warning,
@@ -151,4 +196,20 @@ public sealed class Minimization
             WorkerResultStanding.Unobserved => StageExecutionStanding.Unobserved,
             _ => StageExecutionStanding.Failed
         }, message);
+
+    private static bool ArtifactMatches(WorkerArtifact artifact)
+    {
+        if (string.IsNullOrWhiteSpace(artifact.Path) || artifact.Sha256.Length != 64 ||
+            !artifact.Sha256.All(Uri.IsHexDigit))
+            return false;
+        try
+        {
+            using var stream = File.OpenRead(artifact.Path);
+            return Convert.ToHexString(SHA256.HashData(stream))
+                .Equals(artifact.Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (ArgumentException) { return false; }
+    }
 }

@@ -101,27 +101,47 @@ public static class BrowserExchange
             }
         });
 
-        app.MapGet("/api/structures/{artifactId}", (string artifactId) =>
+        app.MapGet("/api/structures/{artifactId}", (string artifactId, HttpContext context) =>
         {
             if (!IsOpaqueSegment(artifactId)) return Results.NotFound();
-            var path = system.StructurePath(artifactId);
-            return path is not null && File.Exists(path)
-                ? Results.File(path, Path.GetExtension(path).ToLowerInvariant() switch
+            var selected = system.VerifiedStructureContent(artifactId);
+            if (selected is null) return Results.NotFound();
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.File(selected.Value.Bytes, selected.Value.Extension switch
                 {
                     ".cif" or ".mmcif" => "chemical/x-mmcif",
                     ".pdb" or ".ent" => "chemical/x-pdb",
                     _ => "application/octet-stream"
-                }, enableRangeProcessing: true)
-                : Results.NotFound();
+                });
         });
 
-        app.MapGet("/api/export/{stageId}", (string stageId) =>
+        app.MapGet("/api/inspection/atoms/{subjectId}/{structureToken}/{atomSiteIndex:int}",
+            (string subjectId, string structureToken, int atomSiteIndex, HttpContext context) =>
+            {
+                if (!IsOpaqueSegment(subjectId) || !IsOpaqueSegment(structureToken) || atomSiteIndex < 0)
+                    return Results.NotFound();
+                var selected = system.ResolveInspectionAtom(subjectId, structureToken, atomSiteIndex);
+                if (selected is null) return Results.NotFound();
+                context.Response.Headers.CacheControl = "no-store";
+                return Results.Json(selected, WireJson);
+            });
+
+        app.MapGet("/api/export/{stageId}", (string stageId, HttpContext context) =>
         {
             if (!IsOpaqueSegment(stageId)) return Results.NotFound();
-            var path = system.ExportPath(stageId);
-            return path is not null && File.Exists(path)
-                ? Results.File(path, "application/zip", $"protein-membrane-{stageId}.zip", enableRangeProcessing: true)
-                : Results.NotFound();
+            if (!HasSameOriginDownload(context.Request, origin))
+                return Refused("The export must be downloaded from this local workspace.", 403);
+            var selected = system.VerifiedExportContent(stageId, context.Request.Headers.IfMatch.ToString());
+            if (selected.Standing == ExportDeliveryStanding.Absent)
+                return Refused(selected.Reason ?? "No verified bundle is available.", 404);
+            if (selected.Standing == ExportDeliveryStanding.IdentityChanged)
+                return Refused(selected.Reason ?? "The export identity changed.", 412);
+            if (selected.Standing == ExportDeliveryStanding.Corrupt)
+                return Refused(selected.Reason ?? "The published bundle bytes changed.", 409);
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.ETag = $"\"{selected.Sha256}\"";
+            context.Response.Headers["X-Content-SHA256"] = selected.Sha256!;
+            return Results.File(selected.Bytes!, "application/zip", $"protein-membrane-{stageId}.zip");
         });
 
         app.MapGet("/api/events", async (HttpContext context) =>
@@ -169,6 +189,20 @@ public static class BrowserExchange
                submitted.Port == origin.Port &&
                request.Host.Host.Equals(origin.Host, StringComparison.OrdinalIgnoreCase) &&
                request.Host.Port == origin.Port;
+    }
+
+    private static bool HasSameOriginDownload(HttpRequest request, Uri origin)
+    {
+        if (!request.Host.Host.Equals(origin.Host, StringComparison.OrdinalIgnoreCase) ||
+            request.Host.Port != origin.Port) return false;
+        var fetchSite = request.Headers["Sec-Fetch-Site"].ToString();
+        if (fetchSite.Length != 0 && fetchSite != "same-origin" && fetchSite != "none") return false;
+        var suppliedOrigin = request.Headers.Origin.ToString();
+        if (suppliedOrigin.Length == 0) return true;
+        return Uri.TryCreate(suppliedOrigin, UriKind.Absolute, out var submitted) &&
+               submitted.Scheme == origin.Scheme &&
+               submitted.Host.Equals(origin.Host, StringComparison.OrdinalIgnoreCase) &&
+               submitted.Port == origin.Port;
     }
 
     private static bool IsOpaqueSegment(string value) =>

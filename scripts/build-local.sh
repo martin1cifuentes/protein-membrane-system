@@ -30,8 +30,36 @@ dotnet run --project "$architecture_project" --configuration Release -- "$app_ro
 dotnet publish "$host_project" --configuration Release --output "$output_root/host"
 
 python3.11 -m venv "$output_root/python"
-"$output_root/python/bin/python" -m pip install --requirement "$owner_source_root/ProteinInMembraneSystem/worker/requirements.txt"
-"$output_root/python/bin/python" -m pip freeze --all > "$output_root/python-resolved-requirements.txt"
+worker_python="$output_root/python/bin/python"
+worker_requirements="$owner_source_root/ProteinInMembraneSystem/worker/requirements.txt"
+if ! "$worker_python" - "$worker_requirements" <<'PY'
+import importlib.metadata as metadata
+import json
+from pathlib import Path
+import sys
+
+for raw in Path(sys.argv[1]).read_text().splitlines():
+    requirement = raw.strip()
+    if not requirement or requirement.startswith("#"):
+        continue
+    try:
+        if " @ git+" in requirement:
+            name, source = requirement.split(" @ git+", 1)
+            url, commit = source.rsplit("@", 1)
+            installed = json.loads(metadata.distribution(name).read_text("direct_url.json") or "{}")
+            if installed.get("url") != url or installed.get("vcs_info", {}).get("commit_id") != commit:
+                sys.exit(1)
+        else:
+            name, version = requirement.split("==", 1)
+            if metadata.version(name) != version:
+                sys.exit(1)
+    except (metadata.PackageNotFoundError, ValueError, json.JSONDecodeError):
+        sys.exit(1)
+PY
+then
+    "$worker_python" -m pip install --requirement "$worker_requirements"
+fi
+"$worker_python" -m pip freeze --all > "$output_root/python-resolved-requirements.txt"
 
 if [[ ! -f "$output_root/host/wwwroot/index.html" ]]; then
     echo "The browser bundle was not included in the published host." >&2

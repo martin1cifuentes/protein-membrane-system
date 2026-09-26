@@ -1,6 +1,7 @@
-"""Owner-local construction, packing, and constructed-stage observations.
+"""Owner-local native OpenMM explicit construction and completed-stage observations.
 
-The C# owning boundary decides qualification; this module returns observations.
+The worker returns exact provider mechanics and observations. The C# owner decides
+whether a candidate or completed stage meets an identified product policy.
 """
 
 from __future__ import annotations
@@ -8,18 +9,20 @@ from __future__ import annotations
 import json
 import math
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from ProteinInMembraneSystem.worker.exchange import (WorkError, artifact, require_integer, require_mapping,
-                                        require_number, require_text, sha256, verify_sha256,
-                                        work_path)
+from ProteinInMembraneSystem.worker.exchange import (
+    WorkError, artifact, require_integer, require_mapping, require_number,
+    require_text, sha256, verify_sha256, work_path,
+)
 from ProteinInMembraneSystem.worker.parameterized_structure import (
-    _force_field_files, _provider, _copy_molecule, _coordinate_file, _topology_data,
+    _force_field_files, _provider, _coordinate_file, _topology_data,
     _read_topology_data, _nonbonded_charge, _full_atom_sequence,
     _bond_indices, _system_bonds_match, _load_stage, _stage_measurements,
-    _state_context, _final_state)
+    _state_context, _final_state,
+)
+
 
 def _coordinate_extent(points: list[tuple[float, float, float]]) -> tuple[float, float, float, float, float, float]:
     if not points:
@@ -27,44 +30,6 @@ def _coordinate_extent(points: list[tuple[float, float, float]]) -> tuple[float,
     return (min(p[0] for p in points), max(p[0] for p in points),
             min(p[1] for p in points), max(p[1] for p in points),
             min(p[2] for p in points), max(p[2] for p in points))
-
-
-def _write_xyz(path: Path, topology: Any, positions: Any) -> None:
-    from openmm import unit
-
-    atoms = list(topology.atoms())
-    coordinates = positions.value_in_unit(unit.angstrom)
-    if len(atoms) != len(coordinates):
-        raise WorkError("inputMismatch", "Coordinate template and topology have different atom counts")
-    lines = [str(len(atoms)), "Verified molecular template"]
-    for atom, coordinate in zip(atoms, coordinates):
-        if atom.element is None or any(not math.isfinite(float(value)) for value in coordinate):
-            raise WorkError("invalidTemplate", "An XYZ template requires identified elements and finite coordinates")
-        lines.append(f"{atom.element.symbol} {coordinate[0]:.8f} {coordinate[1]:.8f} {coordinate[2]:.8f}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _read_xyz(path: Path, expected_elements: list[str]) -> list[tuple[float, float, float]]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    try:
-        declared = int(lines[0].strip())
-    except (IndexError, ValueError) as exc:
-        raise WorkError("providerMismatch", "Packmol XYZ has no valid atom-count header") from exc
-    if declared != len(expected_elements) or len(lines) != declared + 2:
-        raise WorkError("providerMismatch", "Packmol XYZ atom count differs from exact template expansion")
-    coordinates = []
-    for index, (line, element) in enumerate(zip(lines[2:], expected_elements)):
-        fields = line.split()
-        if len(fields) != 4 or fields[0].upper() != element.upper():
-            raise WorkError("providerMismatch", f"Packmol XYZ atom {index} does not preserve template element/order")
-        try:
-            point = tuple(float(value) for value in fields[1:])
-        except ValueError as exc:
-            raise WorkError("providerMismatch", "Packmol XYZ has an invalid coordinate") from exc
-        if not all(math.isfinite(value) for value in point):
-            raise WorkError("providerMismatch", "Packmol XYZ has a nonfinite coordinate")
-        coordinates.append(point)
-    return coordinates
 
 
 def _signed_volume_at(points: list[tuple[float, float, float]], indices: tuple[int, int, int, int]) -> float:
@@ -77,537 +42,42 @@ def _signed_volume_at(points: list[tuple[float, float, float]], indices: tuple[i
             u[2] * (v[0] * w[1] - v[1] * w[0]))
 
 
-def _signed_tetrahedral_volume(points: list[tuple[float, float, float]]) -> tuple[tuple[int, int, int, int], float] | None:
-    if len(points) < 4:
-        return None
-    for last in range(3, len(points)):
-        indices = (0, 1, 2, last)
-        signed = _signed_volume_at(points, indices)
-        if abs(signed) > _XYZ_CHIRAL_WITNESS_MIN_ANGSTROM_CUBED:
-            return indices, signed
-    return None
+def _verify_stage_readback(pdb: Any, system: Any, state: Any) -> None:
+    """Bind the rounded mmCIF and bonded sidecar to this exact serialized State.
 
-
-def _disc_union_area(atoms: list[tuple[float, float, float, float]], z0: float, z1: float,
-                     clearance: float, resolution: float) -> float:
-    selected = [(x, y, radius + clearance) for x, y, z, radius in atoms if z0 <= z <= z1]
-    if not selected:
-        return 0.0
-    x_min = min(x - radius for x, y, radius in selected)
-    x_max = max(x + radius for x, y, radius in selected)
-    y_min = min(y - radius for x, y, radius in selected)
-    y_max = max(y + radius for x, y, radius in selected)
-    nx = math.ceil((x_max - x_min) / resolution)
-    ny = math.ceil((y_max - y_min) / resolution)
-    if nx * ny > 2_000_000:
-        raise WorkError("resourceRefused", "Requested projected-area grid exceeds the bounded two-million-cell calculation")
-    covered: set[tuple[int, int]] = set()
-    for x, y, radius in selected:
-        left = max(0, math.floor((x - radius - x_min) / resolution))
-        right = min(nx - 1, math.ceil((x + radius - x_min) / resolution))
-        bottom = max(0, math.floor((y - radius - y_min) / resolution))
-        top = min(ny - 1, math.ceil((y + radius - y_min) / resolution))
-        for ix in range(left, right + 1):
-            xx = x_min + (ix + 0.5) * resolution
-            for iy in range(bottom, top + 1):
-                yy = y_min + (iy + 0.5) * resolution
-                if (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2:
-                    covered.add((ix, iy))
-    return len(covered) * resolution * resolution
-
-
-def _aqueous_sphere_union_volume(atoms: list[tuple[float, float, float, float]],
-                                 origin: tuple[float, float, float], extent: tuple[float, float, float],
-                                 excluded_z: list[tuple[float, float]], clearance: float,
-                                 resolution: float) -> float:
-    grid = [math.ceil(length / resolution) for length in extent]
-    if grid[0] * grid[1] * grid[2] > 2_000_000:
-        raise WorkError("resourceRefused", "Requested aqueous-volume grid exceeds the bounded two-million-voxel calculation")
-    covered: set[tuple[int, int, int]] = set()
-    for x, y, z, radius in atoms:
-        radius += clearance
-        limits = [(max(0, math.floor((center - radius - origin[axis]) / resolution)),
-                   min(grid[axis] - 1, math.ceil((center + radius - origin[axis]) / resolution)))
-                  for axis, center in enumerate((x, y, z))]
-        for ix in range(limits[0][0], limits[0][1] + 1):
-            xx = origin[0] + (ix + 0.5) * resolution
-            for iy in range(limits[1][0], limits[1][1] + 1):
-                yy = origin[1] + (iy + 0.5) * resolution
-                lateral = (xx - x) ** 2 + (yy - y) ** 2
-                if lateral > radius ** 2:
-                    continue
-                for iz in range(limits[2][0], limits[2][1] + 1):
-                    zz = origin[2] + (iz + 0.5) * resolution
-                    if any(lower <= zz <= upper for lower, upper in excluded_z):
-                        continue
-                    if lateral + (zz - z) ** 2 <= radius ** 2:
-                        covered.add((ix, iy, iz))
-    return len(covered) * resolution ** 3
-
-
-def measure_construction_inputs(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
-    from openmm.app import ForceField, PDBFile
+    OpenMM writes atom coordinates and cell lengths to four decimal places in
+    mmCIF. The small fixed tolerances cover that
+    serialization only; a newly rehashed but different artifact remains a
+    mismatch. Compare vectors, rather than just lengths, so cell orientation
+    cannot change unnoticed.
+    """
+    import numpy as np
     from openmm import unit
 
-    protein_path = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
-    protein_graph_path = work_path(directory, payload.get("preparedBondGraphPath"), "preparedBondGraphPath")
-    verify_sha256(protein_graph_path, require_text(payload.get("preparedBondGraphSha256"),
-                                                   "preparedBondGraphSha256"), "preparedBondGraphSha256")
-    pdb = PDBFile(str(protein_path))
-    protein_bonds = _read_topology_data(protein_graph_path)
-    if _full_atom_sequence(pdb.topology) != _full_atom_sequence(protein_bonds):
-        raise WorkError("inputMismatch", "Oriented protein differs from approved bonded preparation")
-    ff = ForceField(*_force_field_files(directory, payload.get("forceFieldFiles")))
-    system = ff.createSystem(protein_bonds)
-    charge = _nonbonded_charge(system)
-    radii = require_mapping(payload.get("atomRadiusByElementAngstrom"), "atomRadiusByElementAngstrom")
-    clearance = require_number(payload.get("projectionClearanceAngstrom"), "projectionClearanceAngstrom", 0)
-    resolution = require_number(payload.get("gridResolutionAngstrom"), "gridResolutionAngstrom", 0.000001)
-    regions = payload.get("leafletRegions")
-    if not isinstance(regions, list) or len(regions) != 2:
-        raise WorkError("invalidRequest", "Exactly upper and lower leaflet projection regions are required")
-    region_by_side = {require_text(item.get("physicalSide"), "physicalSide").lower(): item for item in regions}
-    if set(region_by_side) != {"upper", "lower"}:
-        raise WorkError("invalidRequest", "Leaflet projection regions must identify upper and lower sides")
-    points = []
-    radius_atoms = []
-    for atom, position in zip(pdb.topology.atoms(), pdb.positions):
-        x, y, z = position.value_in_unit(unit.angstrom)
-        element = atom.element.symbol if atom.element else ""
-        radius = require_number(radii.get(element), f"radius for {element}", 0)
-        points.append((x, y, z))
-        radius_atoms.append((x, y, z, radius))
-    x0, x1, y0, y1, z0, z1 = _coordinate_extent(points)
-    areas = {}
-    midplane = require_number(payload.get("membraneMidplaneAngstrom"), "membraneMidplaneAngstrom")
-    region_bounds = {}
-    for side, item in region_by_side.items():
-        minimum = require_number(item.get("zMinAngstrom"), "leaflet zMinAngstrom")
-        maximum = require_number(item.get("zMaxAngstrom"), "leaflet zMaxAngstrom")
-        if minimum >= maximum or (side == "upper" and minimum < midplane) or (side == "lower" and maximum > midplane):
-            raise WorkError("invalidRequest", "Leaflet projection region does not correspond to the declared membrane side")
-        areas[side] = _disc_union_area(radius_atoms, minimum, maximum, clearance, resolution)
-        region_bounds[side] = (minimum, maximum)
-    lateral = require_number(payload.get("lateralClearanceAngstrom"), "lateralClearanceAngstrom", 0)
-    water = require_number(payload.get("waterMarginAngstrom"), "waterMarginAngstrom", 0)
-    head = require_number(payload.get("headRegionThicknessAngstrom"), "headRegionThicknessAngstrom", 0)
-    volume_resolution = require_number(payload.get("volumeGridResolutionAngstrom"), "volumeGridResolutionAngstrom", 0.000001)
-    candidate_origin = (x0 - lateral, y0 - lateral,
-                        min(z0, region_bounds["lower"][0] - head) - water)
-    candidate_max = (x1 + lateral, y1 + lateral,
-                     max(z1, region_bounds["upper"][1] + head) + water)
-    candidate_extent = tuple(candidate_max[index] - candidate_origin[index] for index in range(3))
-    excluded = [(region_bounds["lower"][0] - head, region_bounds["lower"][1]),
-                (region_bounds["upper"][0], region_bounds["upper"][1] + head)]
-    aqueous_volume = _aqueous_sphere_union_volume(radius_atoms, candidate_origin, candidate_extent,
-                                                    excluded, clearance, volume_resolution)
-    progress("constructionInputsObserved")
-    return {"artifacts": [],
-            "observations": {"proteinXMinAngstrom": x0, "proteinXMaxAngstrom": x1,
-                             "proteinYMinAngstrom": y0, "proteinYMaxAngstrom": y1,
-                             "proteinZMinAngstrom": z0, "proteinZMaxAngstrom": z1,
-                             "upperOccludedAreaAngstromSquared": areas["upper"],
-                             "lowerOccludedAreaAngstromSquared": areas["lower"],
-                             "proteinAqueousOccludedVolumeAngstromCubed": aqueous_volume,
-                             "candidateCellOriginAngstrom": list(candidate_origin),
-                             "candidateCellAngstrom": list(candidate_extent),
-                             "netChargeElementary": charge,
-                             "approximationWarnings": ["Projected occlusion is a declared-grid disc union and aqueous exclusion is a declared-grid sphere union, not exact lipid or water accessible volume."]},
-            "provider": _provider("OpenMM parameterization and declared-grid geometry")}
+    coordinates = np.asarray(pdb.positions.value_in_unit(unit.angstrom), dtype=float)
+    state_coordinates = np.asarray(state.getPositions(asNumpy=True).value_in_unit(unit.angstrom),
+                                   dtype=float)
+    if (coordinates.shape != state_coordinates.shape or not len(coordinates) or
+            not np.isfinite(coordinates).all() or
+            not np.isfinite(state_coordinates).all() or
+            np.max(np.linalg.norm(coordinates - state_coordinates, axis=1)) > 0.0002):
+        raise WorkError("inputMismatch", "Stage mmCIF coordinates disagree with the identified State")
 
+    state_cell = np.asarray(state.getPeriodicBoxVectors(asNumpy=True).value_in_unit(unit.angstrom),
+                            dtype=float)
+    def cell_values(vectors: Any) -> Any:
+        if vectors is None:
+            return None
+        return np.asarray([vector.value_in_unit(unit.angstrom) for vector in vectors], dtype=float)
 
-def _region(value: Any, cell: list[float], origin: list[float]) -> tuple[float, float, float, float, float, float]:
-    item = require_mapping(value, "component regionAngstrom")
-    bounds = tuple(require_number(item.get(key), key) for key in ("x0", "y0", "z0", "x1", "y1", "z1"))
-    if not (origin[0] <= bounds[0] < bounds[3] <= origin[0] + cell[0] and
-            origin[1] <= bounds[1] < bounds[4] <= origin[1] + cell[1] and
-            origin[2] <= bounds[2] < bounds[5] <= origin[2] + cell[2]):
-        raise WorkError("invalidRequest", "Component region must be positive and inside the declared cell")
-    return bounds
-
-
-def _packmol_component_script(name: str, count: int, bounds: tuple[float, ...],
-                              heads: list[int], head_bounds: tuple[float, ...] | None) -> list[str]:
-    lines = [f"structure {name}", f"  number {count}",
-             "  inside box " + " ".join(f"{number:.5f}" for number in bounds)]
-    if heads:
-        if head_bounds is None:
-            raise WorkError("invalidRequest", "Lipids require an explicit policy-derived head region")
-        lines += ["  atoms " + " ".join(str(value) for value in heads),
-                  "    inside box " + " ".join(f"{number:.5f}" for number in head_bounds),
-                  "  end atoms"]
-    lines.append("end structure")
-    return lines
-
-
-def _bounded_executable(value: Any, name: str) -> Path:
-    executable = Path(require_text(value, name)).resolve()
-    if not executable.is_file():
-        raise WorkError("dependencyUnavailable", f"{name} does not identify an installed local executable")
-    return executable
-
-
-def _atom_sequence(topology: Any) -> list[tuple[str, str]]:
-    return [(atom.name, atom.element.symbol if atom.element else "") for atom in topology.atoms()]
-
-
-def construct_system(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
-    from openmm import CMMotionRemover, Context, NonbondedForce, Vec3, VerletIntegrator, XmlSerializer, unit
-    from openmm.app import ForceField, HBonds, PME, PDBFile, PDBxFile, Topology
-
-    protein_path = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
-    prepared_path = work_path(directory, payload.get("preparedPdbPath"), "preparedPdbPath")
-    prepared_sha = require_text(payload.get("preparedPdbSha256"), "preparedPdbSha256")
-    verify_sha256(prepared_path, prepared_sha, "preparedPdbSha256")
-    prepared_mapping = require_mapping(payload.get("preparedCorrespondence"), "preparedCorrespondence")
-    protein_graph_path = work_path(directory, payload.get("preparedBondGraphPath"), "preparedBondGraphPath")
-    verify_sha256(protein_graph_path, require_text(payload.get("preparedBondGraphSha256"),
-                                                   "preparedBondGraphSha256"), "preparedBondGraphSha256")
-    executable = _bounded_executable(payload.get("packmolExecutablePath"), "packmolExecutablePath")
-    version = require_text(payload.get("packmolVersion"), "packmolVersion")
-    executable_hash = require_text(payload.get("packmolExecutableSha256"), "packmolExecutableSha256")
-    if re.fullmatch(r"[0-9a-fA-F]{64}", executable_hash) is None:
-        raise WorkError("invalidRequest", "Packmol executable identity must be an exact SHA-256 digest")
-    verify_sha256(executable, executable_hash, "packmolExecutableSha256")
-    cell_input = payload.get("cellAngstrom")
-    if not isinstance(cell_input, list) or len(cell_input) != 3:
-        raise WorkError("invalidRequest", "cellAngstrom must contain three orthorhombic dimensions")
-    cell = [require_number(value, "cell dimension", 20) for value in cell_input]
-    origin_input = payload.get("cellOriginAngstrom")
-    if not isinstance(origin_input, list) or len(origin_input) != 3:
-        raise WorkError("invalidRequest", "cellOriginAngstrom must contain three coordinates")
-    origin = [require_number(value, "cell origin") for value in origin_input]
-    tolerance = require_number(payload.get("toleranceAngstrom"), "toleranceAngstrom", 0.1)
-    components = payload.get("components")
-    if not isinstance(components, list) or not components:
-        raise WorkError("invalidRequest", "At least one explicit molecular component is required")
-    protein = PDBFile(str(protein_path))
-    prepared_protein = PDBFile(str(prepared_path))
-    protein_bonds = _read_topology_data(protein_graph_path)
-    if _full_atom_sequence(protein.topology) != _full_atom_sequence(protein_bonds):
-        raise WorkError("inputMismatch", "Oriented protein atom identities differ from approved prepared bond graph")
-    if _full_atom_sequence(protein.topology) != _full_atom_sequence(prepared_protein.topology):
-        raise WorkError("inputMismatch", "Oriented protein atom identities differ from the prepared source")
-    mapped_atoms = prepared_mapping.get("atoms")
-    if (prepared_mapping.get("complete") is not True or
-            prepared_mapping.get("resultId") != prepared_sha or
-            not isinstance(mapped_atoms, list) or
-            len(mapped_atoms) != len(list(protein.topology.atoms()))):
-        raise WorkError("inputMismatch", "Prepared correspondence is incomplete or addresses another protein")
-    if sorted(require_integer(require_mapping(item, "prepared atom mapping").get("resultAtomIndex"),
-                              "resultAtomIndex") for item in mapped_atoms) != list(range(len(mapped_atoms))):
-        raise WorkError("inputMismatch", "Prepared correspondence does not address each ordered atom exactly once")
-    mapped_atoms.sort(key=lambda item: item["resultAtomIndex"])
-    for index, (mapped, atom) in enumerate(zip(mapped_atoms, prepared_protein.topology.atoms())):
-        if (mapped.get("moleculeRole") not in {"protein", "retainedPartner"} or
-                mapped.get("element") != (atom.element.symbol if atom.element else "") or
-                mapped.get("role") not in {"source", "generated"} or
-                (mapped.get("role") == "source" and not mapped.get("sourceAtomId")) or
-                (mapped.get("role") == "generated" and mapped.get("sourceAtomId") is not None)):
-            raise WorkError("inputMismatch", f"Prepared correspondence atom {index} conflicts with its source")
-    protein_positions = [tuple(position.value_in_unit(unit.angstrom)) for position in protein.positions]
-    x0, x1, y0, y1, z0, z1 = _coordinate_extent(protein_positions)
-    if not (origin[0] < x0 and x1 < origin[0] + cell[0] and
-            origin[1] < y0 and y1 < origin[1] + cell[1] and
-            origin[2] < z0 and z1 < origin[2] + cell[2]):
-        raise WorkError("invalidGeometry", "Oriented protein does not fit inside the derived periodic cell")
-    pack_dir = directory / "packing"
-    pack_dir.mkdir(exist_ok=True)
-    _write_xyz(pack_dir / "protein.xyz", protein.topology, protein.positions)
-    expected = Topology()
-    _copy_molecule(expected, protein_bonds)
-    expected_sequence = _atom_sequence(protein.topology)
-    role_by_index = [(item["moleculeRole"], require_text(item.get("atomRole"), "prepared atomRole"))
-                     for item in mapped_atoms]
-    side_by_index: list[str | None] = [None] * len(role_by_index)
-    provenance_by_index = [{"sourceAtomId": item.get("sourceAtomId"),
-                            "sourceResidue": item.get("sourceResidue"),
-                            "approvedChangeId": item.get("approvedChangeId"),
-                            "role": item["role"], "generatedSpeciesId": None,
-                            "generatedComponentRole": None}
-                           for item in mapped_atoms]
-    result_atom_ids = ["protein:" + json.dumps([index, atom.name, atom.residue.name], separators=(",", ":"))
-                       for index, atom in enumerate(protein.topology.atoms())]
-    script = [f"tolerance {tolerance:.5f}", "filetype xyz", "output packed.xyz",
-              "pbc " + " ".join(f"{value:.5f}" for value in (*origin, *(origin[i] + cell[i] for i in range(3)))),
-              "structure protein.xyz", "  number 1",
-              "  fixed 0.0 0.0 0.0 0.0 0.0 0.0",
-              "end structure"]
-    species_counts = []
-    blocks: list[tuple[int, int, str, tuple[float, ...], tuple[float, ...] | None,
-                       list[int], list[tuple[float, float, float]]]] = []
-    protein_atom_count = len(expected_sequence)
-    water_count = positive_count = negative_count = 0
-    for index, raw in enumerate(components):
-        item = require_mapping(raw, "construction component")
-        count = require_integer(item.get("count"), "component count")
-        if count == 0:
-            continue
-        role = require_text(item.get("role"), "component role")
-        side = require_text(item.get("physicalSide"), "component physicalSide")
-        if role not in {"lipid", "water", "positiveIon", "negativeIon"} or side not in {"upper", "lower"}:
-            raise WorkError("invalidRequest", "Each component needs a declared chemical role and physical side")
-        species_id = require_text(item.get("speciesId"), "component speciesId")
-        template_path = work_path(directory, item.get("templateCoordinatePath"), "component templateCoordinatePath")
-        verify_sha256(template_path,
-                      require_text(item.get("templateCoordinateSha256"), "component templateCoordinateSha256"),
-                      "component templateCoordinateSha256")
-        template = _coordinate_file(template_path)
-        atoms = list(template.topology.atoms())
-        if len(list(template.topology.residues())) != 1 or not atoms:
-            raise WorkError("invalidTemplate", "Each component coordinate template must be one complete molecule")
-        heads = item.get("headAtomIndices")
-        if not isinstance(heads, list) or any(not isinstance(number, int) or number < 1 or number > len(atoms) for number in heads):
-            raise WorkError("invalidRequest", "headAtomIndices must be one-based template atom indices")
-        if role == "lipid" and not heads:
-            raise WorkError("invalidTemplate", "A lipid requires explicit head-atom placement indices")
-        bounds = _region(item.get("regionAngstrom"), cell, origin)
-        raw_head_bounds = item.get("headRegionAngstrom")
-        head_bounds = _region(raw_head_bounds, cell, origin) if raw_head_bounds is not None else None
-        if role == "lipid":
-            if head_bounds is None:
-                raise WorkError("invalidRequest", "Upper/lower lipid packing requires a declared head region")
-            if any(head_bounds[i] < bounds[i] or head_bounds[i+3] > bounds[i+3] for i in range(3)):
-                raise WorkError("invalidRequest", "Head region must be within the molecule region")
-        elif head_bounds is not None:
-            raise WorkError("invalidRequest", "Only a lipid may declare a head region")
-        staged_name = f"component-{index:03d}.xyz"
-        _write_xyz(pack_dir / staged_name, template.topology, template.positions)
-        script += _packmol_component_script(staged_name, count, bounds, heads, head_bounds)
-        blocks.append((len(expected_sequence), count, side, bounds, head_bounds, heads,
-                       [tuple(point.value_in_unit(unit.angstrom)) for point in template.positions]))
-        for copy_index in range(count):
-            _copy_molecule(expected, template.topology)
-            expected_sequence.extend(_atom_sequence(template.topology))
-            molecule_role = "ion" if role in {"positiveIon", "negativeIon"} else role
-            role_by_index.extend((molecule_role, "head" if atom.index + 1 in heads else "body")
-                                 for atom in atoms)
-            side_by_index.extend(side for _ in atoms)
-            provenance_by_index.extend({"sourceAtomId": None, "sourceResidue": None,
-                                        "approvedChangeId": None, "role": "generated",
-                                        "generatedSpeciesId": species_id,
-                                        "generatedComponentRole": role} for _ in atoms)
-            result_atom_ids.extend("component:" + json.dumps(
-                [index, side, role, species_id, copy_index, atom.index], separators=(",", ":"))
-                                   for atom in atoms)
-        species_counts.append({"physicalSide": side, "role": role,
-                               "speciesId": species_id, "count": count})
-        if role == "water":
-            water_count += count
-        elif role == "positiveIon":
-            positive_count += count
-        elif role == "negativeIon":
-            negative_count += count
-    recipe = pack_dir / "packmol.inp"
-    recipe.write_text("\n".join(script) + "\n", encoding="utf-8")
-    progress("packingProviderStarted", {"expectedAtomCount": len(expected_sequence)})
-    packed = pack_dir / "packed.xyz"
-    maximum_attempts = require_integer(payload.get("maximumPackingAttempts"), "maximumPackingAttempts", 1)
-    stdout = stderr = None
-    for attempt_index in range(maximum_attempts):
-        if packed.exists():
-            packed.unlink()
-        completed = subprocess.run([str(executable)], cwd=pack_dir, input=recipe.read_text(encoding="utf-8"),
-                                   capture_output=True, text=True, check=False)
-        stdout = pack_dir / f"packmol-{attempt_index + 1:03d}-stdout.txt"
-        stderr = pack_dir / f"packmol-{attempt_index + 1:03d}-stderr.txt"
-        stdout.write_text(completed.stdout, encoding="utf-8")
-        stderr.write_text(completed.stderr, encoding="utf-8")
-        if completed.returncode == 0 and "Success!" in completed.stdout and packed.is_file():
-            break
-        progress("packingAttemptUnresolved", {"attempt": attempt_index + 1,
-                                               "maximumAttempts": maximum_attempts})
-    else:
-        raise WorkError("providerFailed", "Packmol did not establish a completed packed configuration",
-                        {"maximumAttempts": maximum_attempts, "stdoutPath": str(stdout),
-                         "stderrPath": str(stderr)})
-    coordinates = _read_xyz(packed, [element for _, element in expected_sequence])
-    if any(math.dist(actual, original) > _XYZ_FIXED_ROUNDTRIP_ANGSTROM for actual, original in
-           zip(coordinates[:protein_atom_count], protein_positions)):
-        raise WorkError("providerMismatch", "Packmol moved or changed the fixed oriented protein")
-    for start, count, side, bounds, head_bounds, heads, template_points in blocks:
-        width = len(template_points)
-        source_span = [math.dist(template_points[i], template_points[j]) for i in range(width) for j in range(i)]
-        tetrahedron = _signed_tetrahedral_volume(template_points)
-        for copy_index in range(count):
-            placed = coordinates[start + copy_index * width:start + (copy_index + 1) * width]
-            if len(placed) != width or any(not all(bounds[axis] - _XYZ_REGION_ROUNDTRIP_ANGSTROM <= point[axis] <=
-                                                    bounds[axis + 3] + _XYZ_REGION_ROUNDTRIP_ANGSTROM
-                                                    for axis in range(3)) for point in placed):
-                raise WorkError("providerMismatch", "A packed molecule lies outside its declared region")
-            if head_bounds is not None:
-                if any(not all(head_bounds[axis] - _XYZ_REGION_ROUNDTRIP_ANGSTROM <= placed[index - 1][axis] <=
-                                   head_bounds[axis + 3] + _XYZ_REGION_ROUNDTRIP_ANGSTROM
-                                   for axis in range(3)) for index in heads):
-                    raise WorkError("providerMismatch", "A lipid head lies outside its declared leaflet head region")
-                body = [point[2] for index, point in enumerate(placed, 1) if index not in heads]
-                head_mean_z = sum(placed[index - 1][2] for index in heads) / len(heads)
-                if not body or (side == "upper" and
-                                head_mean_z <= sum(body) / len(body)):
-                    raise WorkError("providerMismatch", "Upper-leaflet lipid head/body orientation was not established")
-                if side == "lower" and head_mean_z >= sum(body) / len(body):
-                    raise WorkError("providerMismatch", "Lower-leaflet lipid head/body orientation was not established")
-            placed_span = [math.dist(placed[i], placed[j]) for i in range(width) for j in range(i)]
-            if any(abs(a - b) > _XYZ_RIGID_DISTANCE_ROUNDTRIP_ANGSTROM for a, b in zip(source_span, placed_span)):
-                raise WorkError("providerMismatch", "A packed molecule lost rigid template geometry")
-            if tetrahedron is not None:
-                indices, signed = tetrahedron
-                result_signed = _signed_volume_at(placed, indices)
-                if abs(result_signed - signed) > max(_XYZ_CHIRAL_VOLUME_ROUNDTRIP_ANGSTROM_CUBED,
-                                                     abs(signed) * _XYZ_CHIRAL_VOLUME_ROUNDTRIP_FRACTION):
-                    raise WorkError("providerMismatch", "A packed molecule lost template handedness")
-    vectors = (Vec3(cell[0] / 10, 0, 0) * unit.nanometer,
-               Vec3(0, cell[1] / 10, 0) * unit.nanometer,
-               Vec3(0, 0, cell[2] / 10) * unit.nanometer)
-    expected.setPeriodicBoxVectors(vectors)
-    positions = [Vec3(*coordinate) * unit.angstrom for coordinate in coordinates]
-    settings = require_mapping(payload.get("systemSettings"), "systemSettings")
-    method_name = require_text(settings.get("nonbondedMethod"), "nonbondedMethod")
-    constraint_name = require_text(settings.get("constraints"), "constraints")
-    if method_name != "PME" or constraint_name != "HBonds":
-        raise WorkError("unsupportedPolicy", "Only the declared PME/HBonds all-atom route is materialized")
-    nonbonded_method = {"PME": PME}[method_name]
-    constraints = {"HBonds": HBonds}[constraint_name]
-    cutoff_nanometers = require_number(settings.get("nonbondedCutoffNanometers"),
-                                        "nonbondedCutoffNanometers", 0.000001)
-    if cutoff_nanometers >= min(cell) / 20:
-        raise WorkError("invalidGeometry", "Nonbonded cutoff must be less than half the shortest periodic cell dimension")
-    rigid_water = settings.get("rigidWater")
-    if not isinstance(rigid_water, bool):
-        raise WorkError("invalidRequest", "rigidWater must be an explicit policy boolean")
-    ewald_error = require_number(settings.get("ewaldErrorTolerance"), "ewaldErrorTolerance", 0.000000001)
-    switch_raw = settings.get("switchDistanceNanometers")
-    switch_nanometers = (None if switch_raw is None else
-                          require_number(switch_raw, "switchDistanceNanometers", 0.000001))
-    if switch_nanometers is not None and switch_nanometers >= cutoff_nanometers:
-        raise WorkError("invalidRequest", "Lennard-Jones switching must begin before the nonbonded cutoff")
-    dispersion = settings.get("useDispersionCorrection")
-    remove_cm_motion = settings.get("removeCMMotion")
-    if not isinstance(dispersion, bool) or not isinstance(remove_cm_motion, bool):
-        raise WorkError("invalidRequest", "Dispersion and center-of-mass controls must be explicit policy booleans")
-    hydrogen_raw = settings.get("hydrogenMassDaltons")
-    hydrogen_mass = (None if hydrogen_raw is None else
-                     require_number(hydrogen_raw, "hydrogenMassDaltons", 0.000001) * unit.dalton)
-    ff = ForceField(*_force_field_files(directory, payload.get("forceFieldFiles")))
-    system = ff.createSystem(expected, nonbondedMethod=nonbonded_method,
-                             nonbondedCutoff=cutoff_nanometers * unit.nanometer,
-                             constraints=constraints, rigidWater=rigid_water,
-                             ewaldErrorTolerance=ewald_error,
-                             switchDistance=(None if switch_nanometers is None else
-                                             switch_nanometers * unit.nanometer),
-                             removeCMMotion=remove_cm_motion, hydrogenMass=hydrogen_mass)
-    nonbonded_forces = [force for force in (system.getForce(index)
-                          for index in range(system.getNumForces())) if isinstance(force, NonbondedForce)]
-    if len(nonbonded_forces) != 1:
-        raise WorkError("providerMismatch", "Selected PME policy did not produce exactly one nonbonded force")
-    nonbonded = nonbonded_forces[0]
-    nonbonded.setUseDispersionCorrection(dispersion)
-    if (nonbonded.getNonbondedMethod() != NonbondedForce.PME or
-        abs(nonbonded.getCutoffDistance().value_in_unit(unit.nanometer) - cutoff_nanometers) > 1e-10 or
-        abs(nonbonded.getEwaldErrorTolerance() - ewald_error) > 1e-12 or
-        nonbonded.getUseSwitchingFunction() != (switch_nanometers is not None) or
-        (switch_nanometers is not None and
-         abs(nonbonded.getSwitchingDistance().value_in_unit(unit.nanometer) - switch_nanometers) > 1e-10) or
-        nonbonded.getUseDispersionCorrection() != dispersion or
-        sum(isinstance(system.getForce(index), CMMotionRemover)
-            for index in range(system.getNumForces())) != int(remove_cm_motion)):
-        raise WorkError("providerMismatch", "Realized OpenMM system controls differ from the declared policy")
-    constrained_pairs = {tuple(sorted(system.getConstraintParameters(index)[:2]))
-                         for index in range(system.getNumConstraints())}
-    bonded_hydrogens = set()
-    for first, second in expected.bonds():
-        if first.element.symbol == "H" or second.element.symbol == "H":
-            if tuple(sorted((first.index, second.index))) not in constrained_pairs:
-                raise WorkError("providerMismatch", "HBonds policy left a hydrogen bond unconstrained")
-            if first.element.symbol == "H" and second.element.symbol != "H":
-                bonded_hydrogens.add(first.index)
-            if second.element.symbol == "H" and first.element.symbol != "H":
-                bonded_hydrogens.add(second.index)
-    if rigid_water:
-        for residue in expected.residues():
-            atoms = list(residue.atoms())
-            if not atoms or any(role_by_index[atom.index][0] != "water" for atom in atoms):
-                continue
-            hydrogens = [atom.index for atom in atoms if atom.element.symbol == "H"]
-            if any(tuple(sorted((first, second))) not in constrained_pairs
-                   for first in hydrogens for second in hydrogens if first < second):
-                raise WorkError("providerMismatch", "Rigid-water policy left a water hydrogen pair unconstrained")
-    if hydrogen_mass is not None:
-        target_hydrogen_mass = hydrogen_mass.value_in_unit(unit.dalton)
-        for atom in expected.atoms():
-            if atom.index in bonded_hydrogens and role_by_index[atom.index][0] != "water":
-                if abs(system.getParticleMass(atom.index).value_in_unit(unit.dalton) - target_hydrogen_mass) > 1e-6:
-                    raise WorkError("providerMismatch", "Hydrogen mass repartitioning differs from the declared policy")
-    charge = _nonbonded_charge(system)
-    integrator = VerletIntegrator(0.001 * unit.picoseconds)
-    context = Context(system, integrator)
-    context.setPositions(positions)
-    initial = context.getState(getPositions=True, getEnergy=True, enforcePeriodicBox=False)
-    energy = initial.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
-    if not math.isfinite(energy):
-        raise WorkError("nonfiniteObservation", "Initial parameterized system has nonfinite potential energy")
-    topology_path = directory / "constructed-topology.cif"
-    with topology_path.open("w", encoding="utf-8") as stream:
-        PDBxFile.writeFile(expected, positions, stream, keepIds=True)
-    topology_json = directory / "constructed-topology.json"
-    topology_json.write_text(json.dumps(_topology_data(expected), separators=(",", ":")), encoding="utf-8")
-    readback = PDBxFile(str(topology_path))
-    if _full_atom_sequence(readback.topology) != _full_atom_sequence(expected) or len(readback.positions) != len(coordinates):
-        raise WorkError("providerMismatch", "Constructed mmCIF does not preserve atom order and identity")
-    system_path = directory / "constructed-system.xml"
-    state_path = directory / "constructed-state.xml"
-    system_path.write_text(XmlSerializer.serialize(system), encoding="utf-8")
-    state_path.write_text(XmlSerializer.serialize(initial), encoding="utf-8")
-    correspondence = directory / "constructed-correspondence.json"
-    if (len(provenance_by_index) != len(expected_sequence) or
-            len(result_atom_ids) != len(expected_sequence) or
-            len(set(result_atom_ids)) != len(result_atom_ids)):
-        raise WorkError("correspondenceFailed", "Constructed atom provenance is incomplete or nonunique")
-    correspondence_atoms = []
-    for index, atom in enumerate(expected.atoms()):
-        molecule_role, atom_role = role_by_index[index]
-        provenance = provenance_by_index[index]
-        correspondence_atoms.append({
-            "resultAtomIndex": index, "resultAtomId": result_atom_ids[index],
-            "sourceAtomId": provenance["sourceAtomId"], "role": provenance["role"],
-            "moleculeRole": molecule_role, "atomRole": atom_role,
-            "physicalSide": side_by_index[index],
-            "element": atom.element.symbol if atom.element else "",
-            "sourceResidue": provenance["sourceResidue"],
-            "approvedChangeId": provenance["approvedChangeId"],
-            "generatedSpeciesId": provenance["generatedSpeciesId"],
-            "generatedComponentRole": provenance["generatedComponentRole"]})
-    correspondence.write_text(json.dumps({"sourceId": sha256(protein_path),
-                                          "resultId": sha256(topology_path),
-                                          "atoms": correspondence_atoms,
-                                          "complete": len(correspondence_atoms) == len(expected_sequence)}, indent=2),
-                              encoding="utf-8")
-    from .local_state_observations import observe_local_state
-
-    local_state = observe_local_state(expected, initial.getPositions(),
-                                      {"complete": True, "atoms": correspondence_atoms},
-                                      payload.get("localObservationSpec"))
-    del context, integrator
-    progress("constructedCoordinatesObserved", {"atomCount": len(expected_sequence)})
-    return {"artifacts": [artifact(directory, topology_path, "topologyCif"),
-                          artifact(directory, topology_json, "topologyJson"),
-                          artifact(directory, packed, "packedXyz"),
-                          artifact(directory, system_path, "systemXml"),
-                          artifact(directory, state_path, "stateXml"),
-                          artifact(directory, correspondence, "correspondenceJson"),
-                          artifact(directory, recipe, "packmolRecipe"),
-                          artifact(directory, stdout, "packmolStdout"), artifact(directory, stderr, "packmolStderr")],
-            "observations": {"atomCount": len(expected_sequence), "speciesCounts": species_counts,
-                             "actualCellAngstrom": cell, "waterCount": water_count,
-                             "positiveIonCount": positive_count, "negativeIonCount": negative_count,
-                             "netChargeElementary": charge,
-                             "initialPotentialEnergyKjMol": energy,
-                             "correspondedResultAtomCount": len(correspondence_atoms),
-                             "contactWarnings": local_state["limitations"],
-                             "geometryWarnings": local_state["limitations"],
-                             "parameterWarnings": [], "localState": local_state},
-            "provider": _provider("Packmol/OpenMM",
-                                  f"host-declared {version}; binary-sha256={executable_hash.lower()} / OpenMM {_provider('OpenMM')['version']}")}
+    for name, vectors in (("mmCIF", pdb.coordinate_box_vectors),
+                          ("bonded topology sidecar", pdb.topology.getPeriodicBoxVectors()),
+                          ("System", system.getDefaultPeriodicBoxVectors())):
+        actual = cell_values(vectors)
+        if (actual is None or actual.shape != (3, 3) or not np.isfinite(actual).all() or
+                state_cell.shape != (3, 3) or not np.isfinite(state_cell).all() or
+                np.max(np.linalg.norm(actual - state_cell, axis=1)) > 0.001):
+            raise WorkError("inputMismatch", f"Stage {name} cell disagrees with the identified State")
 
 
 def observe_stage(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
@@ -616,14 +86,17 @@ def observe_stage(directory: Path, payload: dict[str, Any], progress: Callable) 
     from ProteinInMembraneSystem.worker.geometry_observations import observe_stage_protein_geometry
 
     pdb, system, state = _load_stage(directory, payload, "stateXmlPath")
-    integrator = VerletIntegrator(0.001 * unit.picoseconds)
-    context = _state_context(system, state, integrator)
-    observed = _final_state(context)
-    measurements = _stage_measurements(observed, system.getNumParticles())
+    _verify_stage_readback(pdb, system, state)
     sidecar = _read_topology_data(work_path(directory, payload.get("topologyJsonPath"), "topologyJsonPath"))
     atom_order_matched = _full_atom_sequence(pdb.topology) == _full_atom_sequence(sidecar)
     bonds_matched = (_bond_indices(pdb.topology) == _bond_indices(sidecar) and
                      _system_bonds_match(pdb.topology, system))
+    if not atom_order_matched or not bonds_matched:
+        raise WorkError("inputMismatch", "Stage atom order or bonded System identity disagrees")
+    integrator = VerletIntegrator(0.001 * unit.picoseconds)
+    context = _state_context(system, state, integrator)
+    observed = _final_state(context)
+    measurements = _stage_measurements(observed, system.getNumParticles())
     correspondence_path = work_path(directory, payload.get("correspondencePath"), "correspondencePath")
     verify_sha256(correspondence_path, require_text(payload.get("correspondenceSha256"),
                                                     "correspondenceSha256"), "correspondenceSha256")
@@ -646,3 +119,672 @@ def observe_stage(directory: Path, payload: dict[str, Any], progress: Callable) 
                              "numericalWarnings": [], "localState": local_state,
                              "proteinGeometry": protein_geometry},
             "provider": _provider("OpenMM stage observation")}
+
+
+def _native_representation(directory: Path, raw: Any, species: str, category: str,
+                           force_field_hashes: set[str]) -> tuple[dict[str, Any], Any]:
+    representation = require_mapping(raw, f"{species} molecular representation")
+    if (representation.get("speciesId") != species or
+            representation.get("category") != category or
+            not require_text(representation.get("chemistryId"), f"{species} chemistryId")):
+        raise WorkError("unsupportedPolicy", f"Native construction needs the exact {species} {category} representation")
+    template = work_path(directory, representation.get("templatePath"), f"{species} templatePath")
+    template_sha = require_text(representation.get("templateSha256"), f"{species} templateSha256")
+    verify_sha256(template, template_sha, f"{species} templateSha256")
+    if template_sha.lower() not in force_field_hashes:
+        raise WorkError("inputMismatch", f"{species} molecular parameter asset is absent from selected force fields")
+    coordinates = work_path(directory, representation.get("coordinateTemplatePath"),
+                            f"{species} coordinateTemplatePath")
+    verify_sha256(coordinates, require_text(representation.get("coordinateTemplateSha256"),
+                                            f"{species} coordinateTemplateSha256"),
+                  f"{species} coordinateTemplateSha256")
+    reference = _coordinate_file(coordinates)
+    atoms = list(reference.topology.atoms())
+    if (len(list(reference.topology.residues())) != 1 or
+            len(atoms) != require_integer(representation.get("atomCount"), f"{species} atomCount", 1) or
+            any(atom.element is None for atom in atoms)):
+        raise WorkError("invalidTemplate", f"{species} coordinate reference lacks one exact molecular identity")
+    require_number(representation.get("netChargeElementary"), f"{species} netChargeElementary")
+    return representation, reference
+
+
+def _native_atom_name(name: str, species: str) -> str:
+    # OpenMM's PDB reader moves the final digit of long Lipid21 acyl names to
+    # the front. The exact reference atom order and bonds are checked below.
+    if species in {"DMPC", "POPC"}:
+        match = re.fullmatch(r"([0-9])C(21|31)", name)
+        if match:
+            return f"C{match.group(2)}{match.group(1)}"
+    if species in {"NA", "CL"}:
+        return name.upper()
+    return name
+
+
+def _native_signed_volume(points: list[tuple[float, float, float]],
+                          names: dict[str, int], raw: Any, species: str) -> float:
+    check = require_mapping(raw, "molecular stereo check")
+    if check.get("kind") != "tetrahedral":
+        raise WorkError("unsupportedPolicy", f"Native {species} stereo policy needs a tetrahedral descriptor")
+    requested = check.get("atomNames")
+    if (not isinstance(requested, list) or len(requested) != 4 or
+            len(set(requested)) != 4 or any(name not in names for name in requested)):
+        raise WorkError("invalidTemplate", f"{species} stereo descriptor does not identify four distinct atoms")
+    value = _signed_volume_at(points, tuple(names[name] for name in
+                                            (requested[3], requested[0], requested[1], requested[2])))
+    expected = check.get("expected")
+    if expected not in {"negative", "positive"} or not math.isfinite(value):
+        raise WorkError("invalidTemplate", f"{species} stereo descriptor or observed volume is invalid")
+    if (expected == "negative" and value >= -1.0 or
+            expected == "positive" and value <= 1.0):
+        raise WorkError("providerMismatch", f"A {species} glycerol stereocenter differs from the declared chemistry")
+    return value
+
+
+def _native_alkene_cosine(points: list[tuple[float, float, float]],
+                          names: dict[str, int], bonds: set[tuple[int, int]],
+                          raw: Any) -> float:
+    check = require_mapping(raw, "molecular alkene check")
+    requested = check.get("atomNames")
+    if (check.get("kind") != "alkene" or check.get("expected") != "cis" or
+            not isinstance(requested, list) or len(requested) != 4 or
+            len(set(requested)) != 4 or any(name not in names for name in requested)):
+        raise WorkError("invalidTemplate", "POPC needs its identified cis-alkene descriptor")
+    indices = [names[name] for name in requested]
+    if any(tuple(sorted((first, second))) not in bonds
+           for first, second in zip(indices, indices[1:])):
+        raise WorkError("invalidTemplate", "POPC cis descriptor does not follow bonded atoms")
+    first, second, third, fourth = (points[index] for index in indices)
+    axis = tuple(third[i] - second[i] for i in range(3))
+    axis_squared = sum(value * value for value in axis)
+    if not math.isfinite(axis_squared) or axis_squared <= 1e-8:
+        raise WorkError("providerMismatch", "A POPC alkene has unresolved central-bond geometry")
+    left = tuple(first[i] - second[i] for i in range(3))
+    right = tuple(fourth[i] - third[i] for i in range(3))
+    dot_left = sum(left[i] * axis[i] for i in range(3)) / axis_squared
+    dot_right = sum(right[i] * axis[i] for i in range(3)) / axis_squared
+    left_projected = tuple(left[i] - dot_left * axis[i] for i in range(3))
+    right_projected = tuple(right[i] - dot_right * axis[i] for i in range(3))
+    numerator = sum(left_projected[i] * right_projected[i] for i in range(3))
+    denominator = math.sqrt(sum(value * value for value in left_projected) *
+                            sum(value * value for value in right_projected))
+    cosine = numerator / denominator if denominator > 1e-8 else math.nan
+    if not math.isfinite(cosine) or cosine <= 0.5:
+        raise WorkError("providerMismatch", "A POPC cis alkene differs from the declared chemistry")
+    return cosine
+
+
+def _native_molecule_bonds(topology: Any, residue: Any) -> set[tuple[int, int]]:
+    atoms = list(residue.atoms())
+    local = {atom.index: index for index, atom in enumerate(atoms)}
+    return {tuple(sorted((local[first.index], local[second.index])))
+            for first, second in topology.bonds()
+            if first.residue is residue and second.residue is residue}
+
+
+def _native_molecule_matches(residue: Any, reference: Any, species: str, positions: Any,
+                             stereo_checks: Any, actual_bonds: set[tuple[int, int]],
+                             expected_bonds: set[tuple[int, int]]) -> list[Any]:
+    from openmm import unit
+
+    actual = list(residue.atoms())
+    expected = list(reference.topology.atoms())
+    if (len(actual) != len(expected) or
+            any(_native_atom_name(a.name, species) != e.name or a.element != e.element
+                for a, e in zip(actual, expected)) or
+            actual_bonds != expected_bonds):
+        raise WorkError("providerMismatch", f"Native {species} atom order, element, or molecular bonds differ")
+    if species in {"DMPC", "POPC"}:
+        expected_count = 1 if species == "DMPC" else 2
+        if not isinstance(stereo_checks, list) or len(stereo_checks) != expected_count:
+            raise WorkError("invalidTemplate", f"{species} lacks its qualified stereo descriptors")
+        points = [tuple(float(value) for value in positions[atom.index].value_in_unit(unit.angstrom))
+                  for atom in actual]
+        names = {expected_atom.name: index for index, expected_atom in enumerate(expected)}
+        _native_signed_volume(points, names, stereo_checks[0], species)
+        if species == "POPC":
+            _native_alkene_cosine(points, names, actual_bonds, stereo_checks[1])
+    return actual
+
+
+def _native_lipid_side(atoms: list[Any], points: list[tuple[float, float, float]],
+                       center_angstrom: float, species: str) -> str:
+    if species not in {"DMPC", "POPC"}:
+        raise WorkError("unsupportedPolicy", "Native leaflet geometry has no identified lipid")
+    phosphorus = [atom for atom in atoms if atom.name == "P"]
+    if len(phosphorus) != 1:
+        raise WorkError("providerMismatch", f"Native {species} lacks its one phosphate side witness")
+    head_z = points[phosphorus[0].index][2]
+    if head_z == center_angstrom:
+        raise WorkError("providerMismatch", f"A {species} phosphate lies on the physical side divider")
+    side = "upper" if head_z > center_angstrom else "lower"
+    tail_names = {"C214", "C314"} if species == "DMPC" else {"C218", "C316"}
+    tails = [atom for atom in atoms if _native_atom_name(atom.name, species) in tail_names]
+    if len(tails) != 2 or (head_z - sum(points[atom.index][2] for atom in tails) / 2) * (
+            1 if side == "upper" else -1) <= 0:
+        raise WorkError("providerMismatch", f"A native {species} has the wrong leaflet head-to-tail orientation")
+    return side
+
+
+def _native_provider_identity(payload: dict[str, Any]) -> tuple[Path, str, str]:
+    import importlib.metadata
+    import openmm
+    import openmm.app
+
+    name = require_text(payload.get("providerName"), "providerName")
+    version = require_text(payload.get("providerVersion"), "providerVersion")
+    if (name != "OpenMM Modeller.addMembrane" or
+            version != openmm.version.full_version or
+            importlib.metadata.version("openmm") != "8.6.0"):
+        raise WorkError("providerMismatch", "Installed OpenMM provider is not the identified native 8.6 build")
+    species = payload.get("lipidTypeArgument")
+    if species not in {"DMPC", "POPC"}:
+        raise WorkError("unsupportedPolicy", "Native construction covers identified DMPC or POPC only")
+    mode = payload.get("nativePatchMode", "installed")
+    expected_path = (Path(openmm.app.__file__).resolve().parent / "data" / f"{species}.pdb").resolve()
+    if mode == "installed":
+        declared_path = Path(require_text(payload.get("nativePatchPath"), "nativePatchPath")).resolve()
+        if (declared_path != expected_path or not expected_path.is_file() or
+                payload.get("nativeSourcePatchPath") is not None or
+                payload.get("nativeSourcePatchSha256") is not None or
+                payload.get("removedNativeLipidResidueIds") not in (None, [])):
+            raise WorkError("providerMismatch", f"Declared {species} patch is not the installed OpenMM resource")
+        expected_sha = require_text(payload.get("nativePatchSha256"), "nativePatchSha256")
+        verify_sha256(expected_path, expected_sha, "nativePatchSha256")
+        return expected_path, expected_sha, version
+    if (mode != "popc-62-109-deletion" or species != "POPC" or
+            payload.get("removedNativeLipidResidueIds") != ["62", "109"]):
+        raise WorkError("unsupportedPolicy", "No identified custom native patch derivation matches this request")
+    declared_source = Path(require_text(payload.get("nativeSourcePatchPath"),
+                                        "nativeSourcePatchPath")).resolve()
+    if declared_source != expected_path or not expected_path.is_file():
+        raise WorkError("providerMismatch", "Custom POPC source is not the installed OpenMM resource")
+    source_sha = require_text(payload.get("nativeSourcePatchSha256"), "nativeSourcePatchSha256")
+    verify_sha256(expected_path, source_sha, "nativeSourcePatchSha256")
+    derived = Path(require_text(payload.get("nativePatchPath"), "nativePatchPath")).resolve()
+    if derived == expected_path or not derived.is_file():
+        raise WorkError("providerMismatch", "Custom POPC patch must be a separate identified resource")
+    derived_sha = require_text(payload.get("nativePatchSha256"), "nativePatchSha256")
+    verify_sha256(derived, derived_sha, "nativePatchSha256")
+    return derived, derived_sha, version
+
+
+def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any,
+                                       stereo_checks: Any,
+                                       removed_ids: list[str]) -> None:
+    """Prove the custom patch only deletes the named opposing lipids."""
+    from collections import Counter, defaultdict
+    from openmm import unit
+
+    original_residues = list(source.topology.residues())
+    derived_residues = list(derived.topology.residues())
+    omitted = [residue for residue in original_residues
+               if residue.name == "POP" and residue.id in removed_ids]
+    survivors = [residue for residue in original_residues if residue not in omitted]
+    if (len(omitted) != 2 or [residue.id for residue in omitted] != removed_ids or
+            len(survivors) != len(derived_residues) or
+            Counter(residue.name for residue in derived_residues) !=
+                Counter({"POP": 126, "HOH": 5120})):
+        raise WorkError("providerMismatch", "Custom POPC patch does not have the exact two-lipid deletion")
+    source_cell = source.topology.getPeriodicBoxVectors()
+    derived_cell = derived.topology.getPeriodicBoxVectors()
+    if (source_cell is None or derived_cell is None or
+            any(abs(source_cell[i][axis].value_in_unit(unit.angstrom) -
+                    derived_cell[i][axis].value_in_unit(unit.angstrom)) > 1e-6
+                for i in range(3) for axis in range(3))):
+        raise WorkError("providerMismatch", "Custom POPC patch changed the source periodic cell")
+
+    def bonds_by_residue(topology: Any) -> dict[int, set[tuple[int, int]]]:
+        local = {atom.index: index for residue in topology.residues()
+                 for index, atom in enumerate(residue.atoms())}
+        bonds: dict[int, set[tuple[int, int]]] = defaultdict(set)
+        for first, second in topology.bonds():
+            if first.residue is not second.residue:
+                raise WorkError("providerMismatch", "Custom POPC patch has a cross-residue bond")
+            bonds[first.residue.index].add(tuple(sorted((local[first.index], local[second.index]))))
+        return bonds
+
+    source_bonds = bonds_by_residue(source.topology)
+    derived_bonds = bonds_by_residue(derived.topology)
+    for original, retained in zip(survivors, derived_residues):
+        original_atoms = list(original.atoms())
+        retained_atoms = list(retained.atoms())
+        if ((original.name, original.id, original.chain.id, original.insertionCode) !=
+                (retained.name, retained.id, retained.chain.id, retained.insertionCode) or
+                len(original_atoms) != len(retained_atoms) or
+                source_bonds[original.index] != derived_bonds[retained.index]):
+            raise WorkError("providerMismatch", "Custom POPC patch changed a survivor identity or bond")
+        for before, after in zip(original_atoms, retained_atoms):
+            before_identity = before.element, before.name, before.formalCharge
+            after_identity = after.element, after.name, after.formalCharge
+            if (before_identity != after_identity or
+                    max(abs((source.positions[before.index][axis] -
+                             derived.positions[after.index][axis]).value_in_unit(unit.angstrom))
+                        for axis in range(3)) > 1e-4):
+                raise WorkError("providerMismatch", "Custom POPC patch changed survivor atom identity or coordinate")
+
+    expected_bonds = _native_molecule_bonds(reference.topology, next(reference.topology.residues()))
+    points = [tuple(float(value) for value in point.value_in_unit(unit.angstrom))
+              for point in derived.positions]
+    center = derived_cell[2][2].value_in_unit(unit.angstrom) / 2
+    sides: Counter[str] = Counter()
+    for residue in derived_residues:
+        if residue.name != "POP":
+            continue
+        atoms = _native_molecule_matches(residue, reference, "POPC", derived.positions,
+                                         stereo_checks, derived_bonds[residue.index], expected_bonds)
+        sides[_native_lipid_side(atoms, points, center, "POPC")] += 1
+    if sides != Counter({"upper": 63, "lower": 63}):
+        raise WorkError("providerMismatch", "Custom POPC patch lacks exact opposing 63/63 leaflets")
+
+
+def _native_system_settings(ff: Any, topology: Any, settings_raw: Any,
+                            cell: list[float], water_atoms: set[int]) -> Any:
+    from openmm import CMMotionRemover, NonbondedForce, unit
+    from openmm.app import HBonds, PME
+
+    settings = require_mapping(settings_raw, "systemSettings")
+    if settings.get("nonbondedMethod") != "PME" or settings.get("constraints") != "HBonds":
+        raise WorkError("unsupportedPolicy", "Native full-system route requires PME and HBonds")
+    cutoff = require_number(settings.get("nonbondedCutoffNanometers"),
+                            "nonbondedCutoffNanometers", 0.000001)
+    if cutoff >= min(cell) / 20:
+        raise WorkError("invalidGeometry", "PME cutoff is at least half the native cell's shortest dimension")
+    rigid_water = settings.get("rigidWater")
+    dispersion = settings.get("useDispersionCorrection")
+    remove_cm = settings.get("removeCMMotion")
+    if any(not isinstance(value, bool) for value in (rigid_water, dispersion, remove_cm)):
+        raise WorkError("invalidRequest", "OpenMM system booleans must be explicitly declared")
+    ewald = require_number(settings.get("ewaldErrorTolerance"), "ewaldErrorTolerance", 0.000000001)
+    switch_raw = settings.get("switchDistanceNanometers")
+    switch = None if switch_raw is None else require_number(switch_raw, "switchDistanceNanometers", 0.000001)
+    if switch is not None and switch >= cutoff:
+        raise WorkError("invalidRequest", "Nonbonded switching must begin before the cutoff")
+    hydrogen_raw = settings.get("hydrogenMassDaltons")
+    hydrogen_mass = None if hydrogen_raw is None else require_number(
+        hydrogen_raw, "hydrogenMassDaltons", 0.000001) * unit.dalton
+    system = ff.createSystem(topology, nonbondedMethod=PME,
+                             nonbondedCutoff=cutoff * unit.nanometer,
+                             constraints=HBonds, rigidWater=rigid_water,
+                             ewaldErrorTolerance=ewald,
+                             switchDistance=None if switch is None else switch * unit.nanometer,
+                             removeCMMotion=remove_cm, hydrogenMass=hydrogen_mass)
+    if system.getNumParticles() != topology.getNumAtoms() or not _system_bonds_match(topology, system):
+        raise WorkError("providerMismatch", "Native topology lacks complete combined System parameterization")
+    forces = [system.getForce(index) for index in range(system.getNumForces())]
+    nonbonded = [force for force in forces if isinstance(force, NonbondedForce)]
+    if len(nonbonded) != 1:
+        raise WorkError("providerMismatch", "Native full System needs exactly one nonbonded force")
+    nonbonded[0].setUseDispersionCorrection(dispersion)
+    if (nonbonded[0].getNonbondedMethod() != NonbondedForce.PME or
+            abs(nonbonded[0].getCutoffDistance().value_in_unit(unit.nanometer) - cutoff) > 1e-10 or
+            abs(nonbonded[0].getEwaldErrorTolerance() - ewald) > 1e-12 or
+            nonbonded[0].getUseSwitchingFunction() != (switch is not None) or
+            (switch is not None and abs(nonbonded[0].getSwitchingDistance().value_in_unit(unit.nanometer) - switch) > 1e-10) or
+            nonbonded[0].getUseDispersionCorrection() != dispersion or
+            sum(isinstance(force, CMMotionRemover) for force in forces) != int(remove_cm)):
+        raise WorkError("providerMismatch", "Native System settings differ from the selected policy")
+    constrained = {tuple(sorted(system.getConstraintParameters(index)[:2]))
+                   for index in range(system.getNumConstraints())}
+    for first, second in topology.bonds():
+        if ((first.element.symbol == "H" or second.element.symbol == "H") and
+                tuple(sorted((first.index, second.index))) not in constrained):
+            raise WorkError("providerMismatch", "HBonds setting left a bonded hydrogen unconstrained")
+    if rigid_water:
+        for residue in topology.residues():
+            indices = [atom.index for atom in residue.atoms() if atom.index in water_atoms and atom.element.symbol == "H"]
+            if len(indices) == 2 and tuple(sorted(indices)) not in constrained:
+                raise WorkError("providerMismatch", "Rigid-water setting left a water hydrogen pair unconstrained")
+    if hydrogen_mass is not None:
+        target = hydrogen_mass.value_in_unit(unit.dalton)
+        for first, second in topology.bonds():
+            for atom in (first, second):
+                if (atom.element.symbol == "H" and atom.index not in water_atoms and
+                        abs(system.getParticleMass(atom.index).value_in_unit(unit.dalton) - target) > 1e-6):
+                    raise WorkError("providerMismatch", "Hydrogen mass differs from selected repartitioning")
+    return system
+
+
+def construct_system(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
+    """Observe one exact native membrane build; the product judges its result."""
+    from collections import Counter, defaultdict
+    from openmm import Context, Platform, VerletIntegrator, XmlSerializer, unit
+    from openmm.app import ForceField, Modeller, PDBFile, PDBxFile
+    from .local_state_observations import observe_local_state
+
+    require_text(payload.get("studyRevisionId"), "studyRevisionId")
+    require_text(payload.get("attemptId"), "attemptId")
+    oriented_path = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
+    verify_sha256(oriented_path, require_text(payload.get("orientedPdbSha256"),
+                                              "orientedPdbSha256"), "orientedPdbSha256")
+    prepared_path = work_path(directory, payload.get("preparedPdbPath"), "preparedPdbPath")
+    prepared_sha = require_text(payload.get("preparedPdbSha256"), "preparedPdbSha256")
+    verify_sha256(prepared_path, prepared_sha, "preparedPdbSha256")
+    graph_path = work_path(directory, payload.get("preparedBondGraphPath"), "preparedBondGraphPath")
+    verify_sha256(graph_path, require_text(payload.get("preparedBondGraphSha256"),
+                                          "preparedBondGraphSha256"), "preparedBondGraphSha256")
+    lipid_type = payload.get("lipidTypeArgument")
+    patch_mode = payload.get("nativePatchMode", "installed")
+    installed_patch, patch_sha, provider_version = _native_provider_identity(payload)
+    if (lipid_type not in {"DMPC", "POPC"} or
+            payload.get("positiveIonArgument") != "Na+" or
+            payload.get("negativeIonArgument") != "Cl-"):
+        raise WorkError("unsupportedPolicy", "This native route covers identified pure DMPC or POPC with NaCl only")
+    center = require_number(payload.get("membraneCenterZNanometers"), "membraneCenterZNanometers")
+    padding = require_number(payload.get("minimumPaddingNanometers"), "minimumPaddingNanometers", 0.000001)
+    ionic_strength = require_number(payload.get("ionicStrengthMolar"), "ionicStrengthMolar", 0)
+    maximum_atoms = require_integer(payload.get("maximumAtomCount"), "maximumAtomCount", 1)
+    maximum_cell = require_number(payload.get("maximumCellDimensionAngstrom"),
+                                  "maximumCellDimensionAngstrom", 0.000001)
+    if (center != 0 or padding != 1 or ionic_strength != 0.15 or
+            maximum_atoms > 2_000_000 or maximum_cell > 10_000):
+        raise WorkError("unsupportedPolicy", "Native membrane invocation differs from the bounded method")
+
+    force_field_raw = payload.get("forceFieldFiles")
+    ff_files = _force_field_files(directory, force_field_raw)
+    ff_hashes = {require_text(raw.get("sha256"), "force-field sha256").lower()
+                 for raw in force_field_raw}
+    representations = {}
+    references = {}
+    for key, species, category in (("lipid", lipid_type, "lipid"), ("water", "HOH", "water"),
+                                   ("sodium", "NA", "ion"), ("chloride", "CL", "ion")):
+        representation, reference = _native_representation(
+            directory, payload.get(key), species, category, ff_hashes)
+        representations[species], references[species] = representation, reference
+    lipid = representations[lipid_type]
+    heads = lipid.get("headAtomIndices")
+    if heads != [20] or list(references[lipid_type].topology.atoms())[19].name != "P":
+        raise WorkError("invalidTemplate", f"The native {lipid_type} route requires the declared phosphate head index")
+
+    oriented = PDBFile(str(oriented_path))
+    prepared = PDBFile(str(prepared_path))
+    approved_graph = _read_topology_data(graph_path)
+    oriented_atoms = list(oriented.topology.atoms())
+    prepared_atoms = list(prepared.topology.atoms())
+    if len(oriented_atoms) > maximum_atoms:
+        raise WorkError("resourceRefused", "The prepared protein alone exceeds the native atom bound")
+    if (not oriented_atoms or
+            _full_atom_sequence(oriented.topology) != _full_atom_sequence(prepared.topology) or
+            _full_atom_sequence(oriented.topology) != _full_atom_sequence(approved_graph) or
+            _bond_indices(oriented.topology) != _bond_indices(approved_graph)):
+        raise WorkError("inputMismatch", "Oriented protein differs from the approved prepared identity and bonds")
+    mapping = require_mapping(payload.get("preparedCorrespondence"), "preparedCorrespondence")
+    mapped_atoms = mapping.get("atoms")
+    if (mapping.get("complete") is not True or mapping.get("resultId") != prepared_sha or
+            not isinstance(mapped_atoms, list) or len(mapped_atoms) != len(oriented_atoms)):
+        raise WorkError("inputMismatch", "Prepared protein correspondence is incomplete or addresses another source")
+    mapped_atoms = sorted((require_mapping(item, "prepared atom mapping") for item in mapped_atoms),
+                          key=lambda item: require_integer(item.get("resultAtomIndex"), "resultAtomIndex"))
+    if [item["resultAtomIndex"] for item in mapped_atoms] != list(range(len(oriented_atoms))):
+        raise WorkError("inputMismatch", "Prepared mapping does not identify every ordered protein atom")
+    for index, (atom, mapped) in enumerate(zip(prepared_atoms, mapped_atoms)):
+        residue = atom.residue
+        atom_id = f"{index}:{residue.chain.id}:{residue.id}:{residue.insertionCode.strip()}:{atom.name}"
+        if (mapped.get("moleculeRole") != "protein" or mapped.get("element") != atom.element.symbol or
+                mapped.get("resultAtomId") != atom_id or mapped.get("role") not in {"source", "generated"} or
+                (mapped.get("role") == "source") != (mapped.get("sourceAtomId") is not None)):
+            raise WorkError("inputMismatch", f"Prepared protein atom {index} lacks exact source correspondence")
+    oriented_points = [tuple(float(value) for value in position.value_in_unit(unit.angstrom))
+                       for position in oriented.positions]
+    if any(not all(math.isfinite(value) for value in point) for point in oriented_points):
+        raise WorkError("invalidStructure", "Oriented protein has a nonfinite coordinate")
+
+    ff = ForceField(*ff_files)
+    # The approved protein graph, rather than the PDB's implicit CONECT and
+    # residue heuristics, supplies the protein charge and bonded identity.
+    approved_graph.setUnitCellDimensions(None)
+    protein_charge = _nonbonded_charge(ff.createSystem(approved_graph))
+    if abs(protein_charge - round(protein_charge)) > 1e-4:
+        raise WorkError("unsupportedPolicy", "Native monovalent neutralization requires integral protein charge")
+    patch = PDBFile(str(installed_patch))
+    native_residue_name = {"DMPC": "DMP", "POPC": "POP"}[lipid_type]
+    patch_lipid = next((residue for residue in patch.topology.residues()
+                        if residue.name == native_residue_name), None)
+    if patch_lipid is None:
+        raise WorkError("providerMismatch", f"Pinned OpenMM patch contains no {native_residue_name} molecular reference")
+    reference_bonds = {species: _native_molecule_bonds(reference.topology,
+                        next(reference.topology.residues())) for species, reference in references.items()}
+    patch_bonds = _native_molecule_bonds(patch.topology, patch_lipid)
+    _native_molecule_matches(patch_lipid, references[lipid_type], lipid_type, patch.positions,
+                             lipid.get("stereoChecks"), patch_bonds, reference_bonds[lipid_type])
+    if patch_mode == "popc-62-109-deletion":
+        source_patch = PDBFile(require_text(payload.get("nativeSourcePatchPath"),
+                                            "nativeSourcePatchPath"))
+        _native_verified_custom_popc_patch(source_patch, patch, references[lipid_type],
+                                           lipid.get("stereoChecks"),
+                                           payload["removedNativeLipidResidueIds"])
+    # A source PDB may carry a placeholder 1 A CRYST1 record.  Modeller uses
+    # the input cell's Z when it exists, so it must be cleared before this call.
+    oriented.topology.setUnitCellDimensions(None)
+    modeller = Modeller(oriented.topology, oriented.positions)
+    if modeller.topology.getUnitCellDimensions() is not None:
+        raise WorkError("providerMismatch", "The placeholder oriented-protein cell was not cleared")
+    progress("nativeMembraneStarted", {"providerVersion": provider_version,
+                                       "nativePatchSha256": patch_sha.lower(),
+                                       "nativePatchMode": patch_mode})
+    modeller.addMembrane(ff, lipidType=patch if patch_mode == "popc-62-109-deletion" else lipid_type,
+                        membraneCenterZ=center * unit.nanometer,
+                        minimumPadding=padding * unit.nanometer,
+                        positiveIon="Na+", negativeIon="Cl-",
+                        ionicStrength=ionic_strength * unit.molar,
+                        platform=Platform.getPlatformByName("CPU"))
+    verify_sha256(installed_patch, patch_sha, "nativePatchSha256")
+    if patch_mode == "popc-62-109-deletion":
+        verify_sha256(Path(payload["nativeSourcePatchPath"]),
+                      payload["nativeSourcePatchSha256"], "nativeSourcePatchSha256")
+    for raw in force_field_raw:
+        asset = require_mapping(raw, "force-field asset")
+        verify_sha256(work_path(directory, asset.get("path"), "force-field path"),
+                      require_text(asset.get("sha256"), "force-field sha256"),
+                      "force-field sha256")
+    for species, representation in representations.items():
+        for path_key, digest_key in (("templatePath", "templateSha256"),
+                                     ("coordinateTemplatePath", "coordinateTemplateSha256")):
+            verify_sha256(work_path(directory, representation.get(path_key), f"{species} {path_key}"),
+                          require_text(representation.get(digest_key), f"{species} {digest_key}"),
+                          f"{species} {digest_key}")
+    progress("nativeMembraneReturned", {"atomCount": modeller.topology.getNumAtoms()})
+
+    topology = modeller.topology
+    positions = modeller.positions
+    atoms = list(topology.atoms())
+    protein_count = len(oriented_atoms)
+    if len(atoms) > maximum_atoms or len(atoms) != len(positions):
+        raise WorkError("resourceRefused", "Native membrane exceeds the declared atom count or lacks coordinates")
+    if _full_atom_sequence(topology)[:protein_count] != _full_atom_sequence(oriented.topology):
+        raise WorkError("providerMismatch", "Native builder changed prepared protein atom identity or order")
+    if ({pair for pair in _bond_indices(topology) if pair[0] < protein_count or pair[1] < protein_count} !=
+            _bond_indices(approved_graph)):
+        raise WorkError("providerMismatch", "Native builder changed approved protein bonds or added a cross-bond")
+    points = [tuple(float(value) for value in point.value_in_unit(unit.angstrom)) for point in positions]
+    if any(not all(math.isfinite(value) for value in point) for point in points):
+        raise WorkError("nonfiniteObservation", "Native membrane contains a nonfinite coordinate")
+    protein_deviation = max(math.dist(original, actual) for original, actual in
+                            zip(oriented_points, points[:protein_count]))
+    if protein_deviation > 1e-6:
+        raise WorkError("providerMismatch", "Native builder moved the approved oriented protein")
+    box = topology.getPeriodicBoxVectors()
+    if box is None:
+        raise WorkError("invalidGeometry", "Native membrane returned no periodic cell")
+    vectors = [[float(value) for value in vector.value_in_unit(unit.angstrom)] for vector in box]
+    if any(not math.isfinite(value) for vector in vectors for value in vector) or any(
+            abs(vectors[i][j]) > 1e-6 for i in range(3) for j in range(3) if i != j):
+        raise WorkError("invalidGeometry", "Native route requires a finite orthorhombic cell")
+    cell = [vectors[i][i] for i in range(3)]
+    if any(length <= 0 or length > maximum_cell for length in cell):
+        raise WorkError("invalidGeometry", "Native cell is outside the declared finite bounds")
+    extent = _coordinate_extent(oriented_points)
+    gaps = [cell[0] - (extent[1] - extent[0]), cell[1] - (extent[3] - extent[2]),
+            cell[2] - (extent[5] - extent[4])]
+    if any(gap < 20 * padding - 1e-4 for gap in gaps):
+        raise WorkError("invalidGeometry", "Native cell lacks required periodic image separation for the protein")
+
+    # One pass over bonds gives exact per-residue molecular graphs without a
+    # quadratic walk over the tens of thousands of generated residues.
+    bonds_by_residue: dict[int, set[tuple[int, int]]] = defaultdict(set)
+    local_index = {atom.index: index for residue in topology.residues()
+                   for index, atom in enumerate(residue.atoms())}
+    for first, second in topology.bonds():
+        if first.residue is second.residue:
+            bonds_by_residue[first.residue.index].add(tuple(sorted(
+                (local_index[first.index], local_index[second.index]))))
+        elif first.index >= protein_count or second.index >= protein_count:
+            raise WorkError("providerMismatch", "Native builder joined generated molecules across residues")
+
+    species_counts: Counter[tuple[str, str, str]] = Counter()
+    role_by_index: list[tuple[str, str] | None] = [None] * len(atoms)
+    side_by_index: list[str | None] = [None] * len(atoms)
+    generated_by_index: list[tuple[str, str, int] | None] = [None] * len(atoms)
+    water_atoms: set[int] = set()
+    for index, item in enumerate(mapped_atoms):
+        role_by_index[index] = ("protein", require_text(item.get("atomRole"), "protein atomRole"))
+    for residue in topology.residues():
+        residue_atoms = list(residue.atoms())
+        if not residue_atoms or residue_atoms[0].index < protein_count:
+            if any(atom.index >= protein_count for atom in residue_atoms):
+                raise WorkError("providerMismatch", "A generated atom shares a prepared-protein residue")
+            continue
+        species = {native_residue_name: lipid_type, "HOH": "HOH", "NA": "NA", "CL": "CL"}.get(residue.name)
+        if species is None:
+            raise WorkError("providerMismatch", f"Native builder generated unsupported residue {residue.name}")
+        actual = _native_molecule_matches(residue, references[species], species, positions,
+                                          representations[species].get("stereoChecks"),
+                                          bonds_by_residue[residue.index], reference_bonds[species])
+        if species == lipid_type:
+            side = _native_lipid_side(actual, points, 10 * center, lipid_type)
+            role, atom_role = "lipid", "body"
+        elif species == "HOH":
+            side = "upper" if points[actual[0].index][2] >= 10 * center else "lower"
+            role, atom_role = "water", "body"
+            water_atoms.update(atom.index for atom in actual)
+        else:
+            side = "upper" if points[actual[0].index][2] >= 10 * center else "lower"
+            role = "positiveIon" if species == "NA" else "negativeIon"
+            atom_role = "body"
+        species_counts[(role, side, species)] += 1
+        for atom in actual:
+            role_by_index[atom.index] = ("ion" if role in {"positiveIon", "negativeIon"} else role,
+                                        "head" if species == lipid_type and atom.name == "P" else atom_role)
+            side_by_index[atom.index] = side
+            generated_by_index[atom.index] = (species, role, residue.index)
+    if (any(role is None for role in role_by_index) or
+            species_counts[("lipid", "upper", lipid_type)] == 0 or
+            species_counts[("lipid", "lower", lipid_type)] == 0 or
+            species_counts[("lipid", "upper", lipid_type)] != species_counts[("lipid", "lower", lipid_type)]):
+        raise WorkError("providerMismatch", f"Native result lacks complete pure symmetric {lipid_type} leaflets")
+
+    system = _native_system_settings(ff, topology, payload.get("systemSettings"), cell, water_atoms)
+    from openmm import NonbondedForce
+    nonbonded = next(force for force in (system.getForce(index)
+                       for index in range(system.getNumForces())) if isinstance(force, NonbondedForce))
+    observed_charges = [float(nonbonded.getParticleParameters(index)[0].value_in_unit(unit.elementary_charge))
+                        for index in range(len(atoms))]
+    if any(not math.isfinite(value) for value in observed_charges):
+        raise WorkError("nonfiniteObservation", "A parameterized atom charge is nonfinite")
+    for residue in topology.residues():
+        residue_atoms = list(residue.atoms())
+        if residue_atoms[0].index < protein_count:
+            continue
+        species = generated_by_index[residue_atoms[0].index][0]
+        charge = sum(observed_charges[atom.index] for atom in residue_atoms)
+        declared = require_number(representations[species].get("netChargeElementary"),
+                                  f"{species} netChargeElementary")
+        if abs(charge - declared) > 1e-4:
+            raise WorkError("providerMismatch", f"Generated {species} charge differs from selected chemistry")
+    if abs(sum(observed_charges[:protein_count]) - protein_charge) > 1e-4:
+        raise WorkError("providerMismatch", "Protein charge changed in the combined parameterized System")
+    charge = sum(observed_charges)
+    # OpenMM's PDB reader spells an absent insertion code as one blank; the
+    # mmCIF reader returns the same absence as an empty string.  Canonicalize
+    # that one field before serializing the bonded stage identity.
+    for residue in topology.residues():
+        if residue.insertionCode == " ":
+            residue.insertionCode = ""
+    integrator = VerletIntegrator(0.001 * unit.picoseconds)
+    context = Context(system, integrator)
+    context.setPositions(positions)
+    initial = context.getState(getPositions=True, getEnergy=True, enforcePeriodicBox=False)
+    energy = initial.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+    if not math.isfinite(energy):
+        raise WorkError("nonfiniteObservation", "Native parameterized candidate has nonfinite initial energy")
+
+    topology_path = directory / "constructed-topology.cif"
+    with topology_path.open("w", encoding="utf-8") as stream:
+        PDBxFile.writeFile(topology, positions, stream, keepIds=True)
+    topology_json = directory / "constructed-topology.json"
+    topology_json.write_text(json.dumps(_topology_data(topology), separators=(",", ":")), encoding="utf-8")
+    readback = PDBxFile(str(topology_path))
+    if (_full_atom_sequence(readback.topology) != _full_atom_sequence(topology) or
+            len(readback.positions) != len(atoms)):
+        raise WorkError("providerMismatch", "Native mmCIF readback lost ordered atom identities")
+    readback_deviation = max(math.dist(actual, tuple(float(value) for value in exported.value_in_unit(unit.angstrom)))
+                             for actual, exported in zip(points, readback.positions))
+    if readback_deviation > 0.0002:
+        raise WorkError("providerMismatch", "Native mmCIF coordinate readback exceeds its precision bound")
+    system_path = directory / "constructed-system.xml"
+    state_path = directory / "constructed-state.xml"
+    system_path.write_text(XmlSerializer.serialize(system), encoding="utf-8")
+    state_path.write_text(XmlSerializer.serialize(initial), encoding="utf-8")
+
+    correspondence_atoms = []
+    result_ids = set()
+    for index, atom in enumerate(atoms):
+        role, atom_role = role_by_index[index]
+        if index < protein_count:
+            source = mapped_atoms[index]
+            result_id = "protein:" + json.dumps([index, atom.name, atom.residue.name], separators=(",", ":"))
+            provenance = {"sourceAtomId": source.get("sourceAtomId"), "role": source["role"],
+                          "sourceResidue": source.get("sourceResidue"),
+                          "approvedChangeId": source.get("approvedChangeId"),
+                          "generatedSpeciesId": None, "generatedComponentRole": None}
+        else:
+            species, component_role, residue_index = generated_by_index[index]
+            result_id = "component:" + json.dumps(["OpenMM-native", residue_index, index, atom.name],
+                                                   separators=(",", ":"))
+            provenance = {"sourceAtomId": None, "role": "generated", "sourceResidue": None,
+                          "approvedChangeId": None, "generatedSpeciesId": species,
+                          "generatedComponentRole": component_role}
+        if result_id in result_ids:
+            raise WorkError("correspondenceFailed", "Native candidate has duplicate result atom identities")
+        result_ids.add(result_id)
+        correspondence_atoms.append({"resultAtomIndex": index, "resultAtomId": result_id,
+                                     "moleculeRole": role, "atomRole": atom_role,
+                                     "physicalSide": side_by_index[index],
+                                     "element": atom.element.symbol, **provenance})
+    correspondence_path = directory / "constructed-correspondence.json"
+    correspondence = {"sourceId": sha256(oriented_path), "resultId": sha256(topology_path),
+                      "atoms": correspondence_atoms, "complete": len(correspondence_atoms) == len(atoms)}
+    correspondence_path.write_text(json.dumps(correspondence, separators=(",", ":")), encoding="utf-8")
+    local_state = observe_local_state(topology, initial.getPositions(), correspondence,
+                                      payload.get("localObservationSpec"))
+    del context, integrator
+    progress("constructedCoordinatesObserved", {"atomCount": len(atoms),
+                                                "actualCellAngstrom": cell})
+    counts = [{"role": role, "physicalSide": side, "speciesId": species, "count": count}
+              for (role, side, species), count in sorted(species_counts.items())]
+    return {"artifacts": [artifact(directory, topology_path, "topologyCif"),
+                          artifact(directory, topology_json, "topologyJson"),
+                          artifact(directory, system_path, "systemXml"),
+                          artifact(directory, state_path, "stateXml"),
+                          artifact(directory, correspondence_path, "correspondenceJson")],
+            "observations": {"atomCount": len(atoms), "speciesCounts": counts,
+                             "actualCellAngstrom": cell,
+                             "waterCount": sum(count for (role, _, _), count in species_counts.items()
+                                               if role == "water"),
+                             "positiveIonCount": sum(count for (role, _, _), count in species_counts.items()
+                                                     if role == "positiveIon"),
+                             "negativeIonCount": sum(count for (role, _, _), count in species_counts.items()
+                                                     if role == "negativeIon"),
+                             "netChargeElementary": charge,
+                             "proteinNetChargeElementary": protein_charge,
+                             "maximumProteinCoordinateDeviationAngstrom": protein_deviation,
+                             "proteinIdentityAndBondsPreserved": True,
+                             "proteinPeriodicImageGapsAngstrom": gaps,
+                             "nativePatchSha256": patch_sha.lower(),
+                             "nativePatchMode": patch_mode,
+                             "nativeSourcePatchSha256": payload.get("nativeSourcePatchSha256"),
+                             "initialPotentialEnergyKjMol": energy,
+                             "correspondedResultAtomCount": len(correspondence_atoms),
+                             "contactWarnings": local_state["limitations"],
+                             "geometryWarnings": local_state["limitations"],
+                             "parameterWarnings": [], "localState": local_state},
+            "provider": _provider("OpenMM Modeller.addMembrane", provider_version)}

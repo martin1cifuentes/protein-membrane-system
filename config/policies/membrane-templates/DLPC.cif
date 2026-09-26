@@ -1,0 +1,253 @@
+data_cell
+# Created with OpenMM 8.6, 2026-09-25
+#
+loop_
+_struct_conn.id
+_struct_conn.conn_type_id
+_struct_conn.ptnr1_label_asym_id
+_struct_conn.ptnr1_label_comp_id
+_struct_conn.ptnr1_label_seq_id
+_struct_conn.ptnr1_label_atom_id
+_struct_conn.ptnr2_label_asym_id
+_struct_conn.ptnr2_label_comp_id
+_struct_conn.ptnr2_label_seq_id
+_struct_conn.ptnr2_label_atom_id
+bond1 covale A DLPC     1 N    A DLPC     1 C12 
+bond2 covale A DLPC     1 N    A DLPC     1 C15 
+bond3 covale A DLPC     1 N    A DLPC     1 C14 
+bond4 covale A DLPC     1 N    A DLPC     1 C13 
+bond5 covale A DLPC     1 C13  A DLPC     1 H13C
+bond6 covale A DLPC     1 C13  A DLPC     1 H13B
+bond7 covale A DLPC     1 C13  A DLPC     1 H13A
+bond8 covale A DLPC     1 C14  A DLPC     1 H14B
+bond9 covale A DLPC     1 C14  A DLPC     1 H14A
+bond10 covale A DLPC     1 C14  A DLPC     1 H14C
+bond11 covale A DLPC     1 C15  A DLPC     1 H15A
+bond12 covale A DLPC     1 C15  A DLPC     1 H15B
+bond13 covale A DLPC     1 C15  A DLPC     1 H15C
+bond14 covale A DLPC     1 C12  A DLPC     1 H12A
+bond15 covale A DLPC     1 C12  A DLPC     1 C11 
+bond16 covale A DLPC     1 C12  A DLPC     1 H12B
+bond17 covale A DLPC     1 C11  A DLPC     1 H11A
+bond18 covale A DLPC     1 C11  A DLPC     1 O12 
+bond19 covale A DLPC     1 C11  A DLPC     1 H11B
+bond20 covale A DLPC     1 P    A DLPC     1 O11 
+bond21 covale A DLPC     1 P    A DLPC     1 O12 
+bond22 covale A DLPC     1 P    A DLPC     1 O14 
+bond23 covale A DLPC     1 P    A DLPC     1 O13 
+bond24 covale A DLPC     1 O11  A DLPC     1 C1  
+bond25 covale A DLPC     1 C1   A DLPC     1 C2  
+bond26 covale A DLPC     1 C1   A DLPC     1 HB  
+bond27 covale A DLPC     1 C1   A DLPC     1 HA  
+bond28 covale A DLPC     1 C2   A DLPC     1 HS  
+bond29 covale A DLPC     1 C2   A DLPC     1 O21 
+bond30 covale A DLPC     1 C2   A DLPC     1 C3  
+bond31 covale A DLPC     1 O21  A DLPC     1 C21 
+bond32 covale A DLPC     1 C21  A DLPC     1 C22 
+bond33 covale A DLPC     1 C21  A DLPC     1 O22 
+bond34 covale A DLPC     1 C22  A DLPC     1 C23 
+bond35 covale A DLPC     1 C22  A DLPC     1 H2S 
+bond36 covale A DLPC     1 C22  A DLPC     1 H2R 
+bond37 covale A DLPC     1 C3   A DLPC     1 O31 
+bond38 covale A DLPC     1 C3   A DLPC     1 HY  
+bond39 covale A DLPC     1 C3   A DLPC     1 HX  
+bond40 covale A DLPC     1 O31  A DLPC     1 C31 
+bond41 covale A DLPC     1 C31  A DLPC     1 C32 
+bond42 covale A DLPC     1 C31  A DLPC     1 O32 
+bond43 covale A DLPC     1 C32  A DLPC     1 H2X 
+bond44 covale A DLPC     1 C32  A DLPC     1 C33 
+bond45 covale A DLPC     1 C32  A DLPC     1 H2Y 
+bond46 covale A DLPC     1 C23  A DLPC     1 C24 
+bond47 covale A DLPC     1 C23  A DLPC     1 H3S 
+bond48 covale A DLPC     1 C23  A DLPC     1 H3R 
+bond49 covale A DLPC     1 C24  A DLPC     1 C25 
+bond50 covale A DLPC     1 C24  A DLPC     1 H4S 
+bond51 covale A DLPC     1 C24  A DLPC     1 H4R 
+bond52 covale A DLPC     1 C25  A DLPC     1 H5S 
+bond53 covale A DLPC     1 C25  A DLPC     1 C26 
+bond54 covale A DLPC     1 C25  A DLPC     1 H5R 
+bond55 covale A DLPC     1 C26  A DLPC     1 H6S 
+bond56 covale A DLPC     1 C26  A DLPC     1 H6R 
+bond57 covale A DLPC     1 C26  A DLPC     1 C27 
+bond58 covale A DLPC     1 C27  A DLPC     1 H7S 
+bond59 covale A DLPC     1 C27  A DLPC     1 C28 
+bond60 covale A DLPC     1 C27  A DLPC     1 H7R 
+bond61 covale A DLPC     1 C28  A DLPC     1 H8R 
+bond62 covale A DLPC     1 C28  A DLPC     1 C29 
+bond63 covale A DLPC     1 C28  A DLPC     1 H8S 
+bond64 covale A DLPC     1 C29  A DLPC     1 H9S 
+bond65 covale A DLPC     1 C29  A DLPC     1 C210
+bond66 covale A DLPC     1 C29  A DLPC     1 H9R 
+bond67 covale A DLPC     1 C210 A DLPC     1 H10R
+bond68 covale A DLPC     1 C210 A DLPC     1 H10S
+bond69 covale A DLPC     1 C210 A DLPC     1 C211
+bond70 covale A DLPC     1 C211 A DLPC     1 C212
+bond71 covale A DLPC     1 C211 A DLPC     1 H11S
+bond72 covale A DLPC     1 C211 A DLPC     1 H11R
+bond73 covale A DLPC     1 C212 A DLPC     1 H12T
+bond74 covale A DLPC     1 C212 A DLPC     1 H12R
+bond75 covale A DLPC     1 C212 A DLPC     1 H12S
+bond76 covale A DLPC     1 C33  A DLPC     1 C34 
+bond77 covale A DLPC     1 C33  A DLPC     1 H3Y 
+bond78 covale A DLPC     1 C33  A DLPC     1 H3X 
+bond79 covale A DLPC     1 C34  A DLPC     1 H4X 
+bond80 covale A DLPC     1 C34  A DLPC     1 C35 
+bond81 covale A DLPC     1 C34  A DLPC     1 H4Y 
+bond82 covale A DLPC     1 C35  A DLPC     1 C36 
+bond83 covale A DLPC     1 C35  A DLPC     1 H5Y 
+bond84 covale A DLPC     1 C35  A DLPC     1 H5X 
+bond85 covale A DLPC     1 C36  A DLPC     1 H6X 
+bond86 covale A DLPC     1 C36  A DLPC     1 C37 
+bond87 covale A DLPC     1 C36  A DLPC     1 H6Y 
+bond88 covale A DLPC     1 C37  A DLPC     1 H7X 
+bond89 covale A DLPC     1 C37  A DLPC     1 C38 
+bond90 covale A DLPC     1 C37  A DLPC     1 H7Y 
+bond91 covale A DLPC     1 C38  A DLPC     1 C39 
+bond92 covale A DLPC     1 C38  A DLPC     1 H8X 
+bond93 covale A DLPC     1 C38  A DLPC     1 H8Y 
+bond94 covale A DLPC     1 C39  A DLPC     1 H9Y 
+bond95 covale A DLPC     1 C39  A DLPC     1 C310
+bond96 covale A DLPC     1 C39  A DLPC     1 H9X 
+bond97 covale A DLPC     1 C310 A DLPC     1 H10Y
+bond98 covale A DLPC     1 C310 A DLPC     1 C311
+bond99 covale A DLPC     1 C310 A DLPC     1 H10X
+bond100 covale A DLPC     1 C311 A DLPC     1 C312
+bond101 covale A DLPC     1 C311 A DLPC     1 H11X
+bond102 covale A DLPC     1 C311 A DLPC     1 H11Y
+bond103 covale A DLPC     1 C312 A DLPC     1 H12Z
+bond104 covale A DLPC     1 C312 A DLPC     1 H12Y
+bond105 covale A DLPC     1 C312 A DLPC     1 H12X
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.Cartn_x_esd
+_atom_site.Cartn_y_esd
+_atom_site.Cartn_z_esd
+_atom_site.occupancy_esd
+_atom_site.B_iso_or_equiv_esd
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+HETATM      1 N   N    . DLPC A ?     1 .    19.0720    60.9320    46.8930  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A    N     1
+HETATM      2 C   C13  . DLPC A ?     1 .    18.5710    59.7450    47.6330  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C13     1
+HETATM      3 H   H13A . DLPC A ?     1 .    18.1270    60.0630    48.5770  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H13A     1
+HETATM      4 H   H13B . DLPC A ?     1 .    19.4050    59.1160    47.9490  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H13B     1
+HETATM      5 H   H13C . DLPC A ?     1 .    17.9030    59.2210    46.9480  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H13C     1
+HETATM      6 C   C14  . DLPC A ?     1 .    20.0830    61.5450    47.7410  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C14     1
+HETATM      7 H   H14A . DLPC A ?     1 .    20.9430    60.8810    47.8460  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H14A     1
+HETATM      8 H   H14B . DLPC A ?     1 .    19.7610    61.8250    48.7450  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H14B     1
+HETATM      9 H   H14C . DLPC A ?     1 .    20.4510    62.4410    47.2400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H14C     1
+HETATM     10 C   C15  . DLPC A ?     1 .    19.6430    60.3680    45.5960  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C15     1
+HETATM     11 H   H15A . DLPC A ?     1 .    20.4960    59.7020    45.7350  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H15A     1
+HETATM     12 H   H15B . DLPC A ?     1 .    19.8470    61.1200    44.8320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H15B     1
+HETATM     13 H   H15C . DLPC A ?     1 .    18.8940    59.7250    45.1310  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H15C     1
+HETATM     14 C   C12  . DLPC A ?     1 .    17.9730    61.9310    46.6680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C12     1
+HETATM     15 H   H12A . DLPC A ?     1 .    18.5080    62.7310    46.1550  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12A     1
+HETATM     16 H   H12B . DLPC A ?     1 .    17.7020    62.3340    47.6450  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12B     1
+HETATM     17 C   C11  . DLPC A ?     1 .    16.7600    61.4110    45.8820  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C11     1
+HETATM     18 H   H11A . DLPC A ?     1 .    16.4610    60.4780    46.3670  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11A     1
+HETATM     19 H   H11B . DLPC A ?     1 .    16.9640    61.2050    44.8280  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11B     1
+HETATM     20 P   P    . DLPC A ?     1 .    14.3840    62.2490    45.4920  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A    P     1
+HETATM     21 O   O13  . DLPC A ?     1 .    13.5030    63.0360    46.3250  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O13     1
+HETATM     22 O   O14  . DLPC A ?     1 .    14.0690    60.8240    45.2900  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O14     1
+HETATM     23 O   O11  . DLPC A ?     1 .    14.5020    62.9530    44.0940  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O11     1
+HETATM     24 O   O12  . DLPC A ?     1 .    15.7760    62.3990    46.1150  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O12     1
+HETATM     25 C   C1   . DLPC A ?     1 .    14.5410    64.3730    44.0180  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   C1     1
+HETATM     26 H   HA   . DLPC A ?     1 .    15.2730    64.6030    44.7970  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   HA     1
+HETATM     27 H   HB   . DLPC A ?     1 .    13.5620    64.7630    44.3050  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   HB     1
+HETATM     28 C   C2   . DLPC A ?     1 .    14.9560    64.9700    42.6520  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   C2     1
+HETATM     29 H   HS   . DLPC A ?     1 .    15.2130    66.0310    42.6930  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   HS     1
+HETATM     30 O   O21  . DLPC A ?     1 .    13.9890    64.6950    41.7290  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O21     1
+HETATM     31 C   C21  . DLPC A ?     1 .    12.8360    65.3610    41.7000  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C21     1
+HETATM     32 O   O22  . DLPC A ?     1 .    12.5100    66.0750    42.6440  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O22     1
+HETATM     33 C   C22  . DLPC A ?     1 .    12.0780    65.0790    40.4190  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C22     1
+HETATM     34 H   H2R  . DLPC A ?     1 .    11.6300    64.0830    40.4180  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H2R     1
+HETATM     35 H   H2S  . DLPC A ?     1 .    12.7160    65.2090    39.5430  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H2S     1
+HETATM     36 C   C3   . DLPC A ?     1 .    16.1830    64.1280    42.1400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   C3     1
+HETATM     37 H   HX   . DLPC A ?     1 .    15.7900    63.2460    41.6270  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   HX     1
+HETATM     38 H   HY   . DLPC A ?     1 .    16.7990    63.7900    42.9770  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A   HY     1
+HETATM     39 O   O31  . DLPC A ?     1 .    16.9430    64.9820    41.2510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O31     1
+HETATM     40 C   C31  . DLPC A ?     1 .    18.2000    64.5790    40.8680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C31     1
+HETATM     41 O   O32  . DLPC A ?     1 .    18.6610    63.5580    41.1260  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  O32     1
+HETATM     42 C   C32  . DLPC A ?     1 .    18.9760    65.6610    40.2130  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C32     1
+HETATM     43 H   H2X  . DLPC A ?     1 .    19.8420    65.9370    40.8190  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H2X     1
+HETATM     44 H   H2Y  . DLPC A ?     1 .    18.3120    66.5270    40.1860  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H2Y     1
+HETATM     45 C   C23  . DLPC A ?     1 .    10.9410    66.0990    40.2550  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C23     1
+HETATM     46 H   H3R  . DLPC A ?     1 .    11.3160    67.1200    40.1550  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H3R     1
+HETATM     47 H   H3S  . DLPC A ?     1 .    10.4500    66.0600    41.2290  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H3S     1
+HETATM     48 C   C24  . DLPC A ?     1 .     9.9470    65.7000    39.1060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C24     1
+HETATM     49 H   H4R  . DLPC A ?     1 .     9.2660    64.9020    39.4090  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H4R     1
+HETATM     50 H   H4S  . DLPC A ?     1 .    10.5650    65.4140    38.2520  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H4S     1
+HETATM     51 C   C25  . DLPC A ?     1 .     9.0920    66.8940    38.7710  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C25     1
+HETATM     52 H   H5R  . DLPC A ?     1 .     9.7290    67.7550    38.5590  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H5R     1
+HETATM     53 H   H5S  . DLPC A ?     1 .     8.4100    67.1570    39.5830  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H5S     1
+HETATM     54 C   C26  . DLPC A ?     1 .     8.3330    66.4980    37.5540  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C26     1
+HETATM     55 H   H6R  . DLPC A ?     1 .     7.3430    66.9580    37.5750  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H6R     1
+HETATM     56 H   H6S  . DLPC A ?     1 .     8.0220    65.4540    37.6310  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H6S     1
+HETATM     57 C   C27  . DLPC A ?     1 .     9.0000    66.7940    36.2180  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C27     1
+HETATM     58 H   H7R  . DLPC A ?     1 .     9.8170    66.1090    35.9810  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H7R     1
+HETATM     59 H   H7S  . DLPC A ?     1 .     9.3870    67.8140    36.1860  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H7S     1
+HETATM     60 C   C28  . DLPC A ?     1 .     8.0440    66.6420    34.9980  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C28     1
+HETATM     61 H   H8R  . DLPC A ?     1 .     7.2650    67.4030    35.0830  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H8R     1
+HETATM     62 H   H8S  . DLPC A ?     1 .     7.4700    65.7180    35.0970  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H8S     1
+HETATM     63 C   C29  . DLPC A ?     1 .     8.8740    67.0400    33.7600  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C29     1
+HETATM     64 H   H9R  . DLPC A ?     1 .     9.7420    66.3770    33.7730  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H9R     1
+HETATM     65 H   H9S  . DLPC A ?     1 .     9.2370    68.0690    33.7930  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H9S     1
+HETATM     66 C   C210 . DLPC A ?     1 .     8.1060    67.0030    32.4430  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C210     1
+HETATM     67 H   H10R . DLPC A ?     1 .     7.3370    67.7760    32.5030  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H10R     1
+HETATM     68 H   H10S . DLPC A ?     1 .     7.6120    66.0320    32.3610  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H10S     1
+HETATM     69 C   C211 . DLPC A ?     1 .     9.0080    67.3320    31.1800  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C211     1
+HETATM     70 H   H11R . DLPC A ?     1 .     9.6330    66.4490    31.0300  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11R     1
+HETATM     71 H   H11S . DLPC A ?     1 .     9.6700    68.1650    31.4230  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11S     1
+HETATM     72 C   C212 . DLPC A ?     1 .     8.0970    67.6380    30.0010  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C212     1
+HETATM     73 H   H12R . DLPC A ?     1 .     7.2550    68.2700    30.2910  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12R     1
+HETATM     74 H   H12S . DLPC A ?     1 .     7.6120    66.7430    29.6060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12S     1
+HETATM     75 H   H12T . DLPC A ?     1 .     8.7080    68.0960    29.2200  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12T     1
+HETATM     76 C   C33  . DLPC A ?     1 .    19.2970    65.2780    38.7530  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C33     1
+HETATM     77 H   H3X  . DLPC A ?     1 .    19.7160    64.2700    38.7880  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H3X     1
+HETATM     78 H   H3Y  . DLPC A ?     1 .    20.0370    65.9540    38.3190  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H3Y     1
+HETATM     79 C   C34  . DLPC A ?     1 .    18.0780    65.1830    37.7520  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C34     1
+HETATM     80 H   H4X  . DLPC A ?     1 .    17.9120    66.2310    37.4940  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H4X     1
+HETATM     81 H   H4Y  . DLPC A ?     1 .    17.2420    64.7490    38.3050  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H4Y     1
+HETATM     82 C   C35  . DLPC A ?     1 .    18.3330    64.2770    36.5360  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C35     1
+HETATM     83 H   H5X  . DLPC A ?     1 .    18.4410    63.2790    36.9670  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H5X     1
+HETATM     84 H   H5Y  . DLPC A ?     1 .    19.3030    64.4600    36.0690  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H5Y     1
+HETATM     85 C   C36  . DLPC A ?     1 .    17.2700    64.1510    35.4250  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C36     1
+HETATM     86 H   H6X  . DLPC A ?     1 .    17.2540    65.1560    34.9980  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H6X     1
+HETATM     87 H   H6Y  . DLPC A ?     1 .    16.3350    63.8640    35.9100  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H6Y     1
+HETATM     88 C   C37  . DLPC A ?     1 .    17.5460    63.1070    34.3320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C37     1
+HETATM     89 H   H7X  . DLPC A ?     1 .    17.9080    62.2700    34.9320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H7X     1
+HETATM     90 H   H7Y  . DLPC A ?     1 .    18.3570    63.4680    33.6960  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H7Y     1
+HETATM     91 C   C38  . DLPC A ?     1 .    16.3990    62.7590    33.3810  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C38     1
+HETATM     92 H   H8X  . DLPC A ?     1 .    15.9470    63.6840    33.0180  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H8X     1
+HETATM     93 H   H8Y  . DLPC A ?     1 .    15.5220    62.3310    33.8710  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H8Y     1
+HETATM     94 C   C39  . DLPC A ?     1 .    16.8980    61.9260    32.1830  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  C39     1
+HETATM     95 H   H9X  . DLPC A ?     1 .    17.3990    60.9940    32.4510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H9X     1
+HETATM     96 H   H9Y  . DLPC A ?     1 .    17.6520    62.4300    31.5750  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A  H9Y     1
+HETATM     97 C   C310 . DLPC A ?     1 .    15.8060    61.5550    31.1030  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C310     1
+HETATM     98 H   H10X . DLPC A ?     1 .    15.1940    60.7290    31.4700  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H10X     1
+HETATM     99 H   H10Y . DLPC A ?     1 .    16.3490    61.3480    30.1780  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H10Y     1
+HETATM    100 C   C311 . DLPC A ?     1 .    14.8170    62.6790    30.7130  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C311     1
+HETATM    101 H   H11X . DLPC A ?     1 .    14.2040    63.0200    31.5500  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11X     1
+HETATM    102 H   H11Y . DLPC A ?     1 .    14.0330    62.2030    30.1200  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H11Y     1
+HETATM    103 C   C312 . DLPC A ?     1 .    15.3970    63.9290    29.9510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A C312     1
+HETATM    104 H   H12X . DLPC A ?     1 .    16.2180    63.6850    29.2750  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12X     1
+HETATM    105 H   H12Y . DLPC A ?     1 .    15.8870    64.5230    30.7260  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12Y     1
+HETATM    106 H   H12Z . DLPC A ?     1 .    14.6660    64.6240    29.5320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DLPC A H12Z     1

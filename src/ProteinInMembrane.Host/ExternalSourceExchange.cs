@@ -14,7 +14,7 @@ public sealed record SourceSearchResult(
 
 // Search hits are candidates. This exchange retrieves original source bytes;
 // Protein Preparation decides whether the selected coordinates are usable.
-public sealed partial class ExternalSourceExchange
+public partial class ExternalSourceExchange
 {
     private const long MaximumCoordinateBytes = 100_000_000;
     private const long MaximumPredictionEvidenceBytes = 100_000_000;
@@ -160,7 +160,7 @@ public sealed partial class ExternalSourceExchange
     // OPM's oriented PDB asset is optional reference evidence, not an orientation
     // for the prepared construct. The exact correspondence still belongs to
     // Placement Assessment; missing or uninterpretable records stay unavailable.
-    public async Task<OpmReferenceRecord?> TryRetrieveOpmReferenceAsync(
+    public virtual async Task<OpmReferenceRecord?> TryRetrieveOpmReferenceAsync(
         string pdbAccession,
         string targetDirectory,
         CancellationToken cancellationToken)

@@ -45,10 +45,6 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
         ScientificWorkRequest<MembraneAssessmentPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<MembraneAssessmentPayload, MembraneAssessmentObservations>("assess_membrane", request, cancellationToken);
 
-    public Task<WorkerResult<ConstructionInputObservations>> MeasureConstructionInputsAsync(
-        ScientificWorkRequest<ConstructionInputPayload> request, CancellationToken cancellationToken)
-        => InvokeAsync<ConstructionInputPayload, ConstructionInputObservations>("measure_construction_inputs", request, cancellationToken);
-
     public Task<WorkerResult<ProteinPreparationObservations>> PrepareProteinAsync(
         ScientificWorkRequest<ProteinPreparationPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<ProteinPreparationPayload, ProteinPreparationObservations>("prepare_protein", request, cancellationToken);
@@ -74,8 +70,19 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
         => InvokeAsync<MinimizationPayload, MinimizationObservations>("minimize", request, cancellationToken);
 
     public Task<WorkerResult<EquilibrationObservations>> EquilibrateAsync(
-        ScientificWorkRequest<EquilibrationPayload> request, CancellationToken cancellationToken)
-        => InvokeAsync<EquilibrationPayload, EquilibrationObservations>("equilibrate", request, cancellationToken);
+        ScientificWorkRequest<EquilibrationPayload> request,
+        IProgress<EquilibrationWorkProgress>? progress,
+        CancellationToken cancellationToken)
+        => InvokeAsync<EquilibrationPayload, EquilibrationObservations>("equilibrate", request,
+            cancellationToken, payload =>
+            {
+                var observed = ReadEquilibrationProgress(payload);
+                if (observed is not null &&
+                    observed.StudyRevisionId == request.Payload.StudyRevisionId &&
+                    observed.AttemptId == request.Payload.AttemptId &&
+                    observed.StageId == request.Payload.StageId)
+                    progress?.Report(observed);
+            });
 
     public Task<WorkerResult<StageObservationObservations>> ObserveStageAsync(
         ScientificWorkRequest<StageObservationPayload> request, CancellationToken cancellationToken)
@@ -88,7 +95,8 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     private async Task<WorkerResult<TObservation>> InvokeAsync<TPayload, TObservation>(
         string operation,
         ScientificWorkRequest<TPayload> request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<JsonElement>? requestProgress = null)
         where TPayload : class
         where TObservation : class
     {
@@ -142,6 +150,10 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                 var kind = kindElement.GetString();
                 if (kind == "progress")
                 {
+                    if (terminal is not null)
+                        return Unobserved<TObservation>(request.RequestId, "late-worker-progress",
+                            "The worker reported progress after its terminal outcome.");
+                    requestProgress?.Invoke(payload);
                     ProgressObserved?.Invoke(request.RequestId, payload.Clone());
                     continue;
                 }
@@ -217,11 +229,32 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     private static string? OptionalString(JsonElement payload, string property)
         => payload.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
+    private static EquilibrationWorkProgress? ReadEquilibrationProgress(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object ||
+            OptionalString(payload, "operation") != "equilibrate" ||
+            OptionalString(payload, "stage") != "equilibrationProgress" ||
+            !payload.TryGetProperty("detail", out var detail) || detail.ValueKind != JsonValueKind.Object ||
+            OptionalString(detail, "window") is not { Length: > 0 } window ||
+            !detail.TryGetProperty("completedSteps", out var completed) ||
+            !completed.TryGetInt32(out var completedSteps) || completedSteps <= 0 ||
+            !detail.TryGetProperty("requestedSteps", out var requested) ||
+            !requested.TryGetInt32(out var requestedSteps) || requestedSteps <= 0 ||
+            completedSteps > requestedSteps ||
+            OptionalString(payload, "studyRevisionId") is not { Length: > 0 } revisionId ||
+            OptionalString(payload, "attemptId") is not { Length: > 0 } attemptId ||
+            OptionalString(payload, "stageId") is not { Length: > 0 } stageId)
+            return null;
+        return new EquilibrationWorkProgress(revisionId, attemptId, stageId, window,
+            completedSteps, requestedSteps);
+    }
+
     // Every instruction reads an immutable request-local copy of its molecular
     // inputs. A previous stage's artifact may be reused, but the worker never
     // opens a mutable external path while carrying out this request. Explicit
-    // executable paths and OpenMM's built-in force-field selectors are not
-    // molecular file inputs and retain their declared meanings.
+    // executable paths and OpenMM's identified installed membrane patch are
+    // provider resources checked by their owner worker. A separately derived
+    // custom patch is a molecular input and is staged by its exact digest.
     private static async Task<JsonNode> StageInputsAsync<TPayload>(
         TPayload payload, string workingDirectory, CancellationToken cancellationToken)
         where TPayload : class
@@ -243,6 +276,21 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
             return;
         }
         if (node is not JsonObject objectNode) return;
+
+        if (objectNode["nativePatchMode"]?.GetValue<string>() == "popc-62-109-deletion")
+        {
+            var derived = objectNode["nativePatchPath"]?.GetValue<string>();
+            var derivedHash = objectNode["nativePatchSha256"]?.GetValue<string>();
+            var installedSource = objectNode["nativeSourcePatchPath"]?.GetValue<string>();
+            var installedSourceHash = objectNode["nativeSourcePatchSha256"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(derived) || string.IsNullOrWhiteSpace(derivedHash) ||
+                string.IsNullOrWhiteSpace(installedSource) ||
+                string.IsNullOrWhiteSpace(installedSourceHash) ||
+                Path.GetFullPath(derived) == Path.GetFullPath(installedSource))
+                throw new InvalidDataException("The custom membrane patch lacks distinct, identified source and derived bytes.");
+            objectNode["nativePatchPath"] = await StageFileAsync(derived, derivedHash,
+                inputDirectory, cancellationToken);
+        }
 
         foreach (var entry in objectNode.ToArray())
         {
@@ -268,6 +316,8 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                     "preparedPdbPath" => objectNode.ContainsKey("preparedPdbSha256")
                         ? "preparedPdbSha256" : "preparedSha256",
                     "preparedBondGraphPath" => "preparedBondGraphSha256",
+                    "orientedPdbPath" => "orientedPdbSha256",
+                    "ppmResidueLibraryPath" => "ppmResidueLibrarySha256",
                     "templatePath" => "templateSha256",
                     "coordinateTemplatePath" => "coordinateTemplateSha256",
                     "templateCoordinatePath" => "templateCoordinateSha256",
@@ -285,7 +335,8 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                 var expectedHash = hashName is not null && objectNode[hashName] is JsonValue hashValue &&
                     hashValue.TryGetValue<string>(out var hash) ? hash : null;
                 if ((entry.Key is "topologyCifPath" or "topologyJsonPath" or "systemXmlPath" or
-                    "stateXmlPath" or "minimizedStateXmlPath") && string.IsNullOrWhiteSpace(expectedHash))
+                    "stateXmlPath" or "minimizedStateXmlPath" or "orientedPdbPath" or
+                    "ppmResidueLibraryPath") && string.IsNullOrWhiteSpace(expectedHash))
                     throw new InvalidDataException("An identified stage input lacks its expected content hash.");
                 objectNode[entry.Key] = await StageFileAsync(originalPath, expectedHash, inputDirectory, cancellationToken);
             }
@@ -296,6 +347,7 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
 
     private static bool IsMolecularFileProperty(string name)
         => name is "sourcePath" or "preparedPdbPath" or "preparedBondGraphPath" or "orientedPdbPath" or
+            "ppmResidueLibraryPath" or
             "topologyPdbPath" or "systemXmlPath" or "stateXmlPath" or
             "topologyCifPath" or "topologyJsonPath" or "minimizedStateXmlPath" or
             "templatePdbPath" or "templatePath" or "templateCoordinatePath" or

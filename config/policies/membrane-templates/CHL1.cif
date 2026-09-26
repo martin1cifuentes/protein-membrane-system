@@ -1,0 +1,193 @@
+data_cell
+# Created with OpenMM 8.6, 2026-09-25
+#
+loop_
+_struct_conn.id
+_struct_conn.conn_type_id
+_struct_conn.ptnr1_label_asym_id
+_struct_conn.ptnr1_label_comp_id
+_struct_conn.ptnr1_label_seq_id
+_struct_conn.ptnr1_label_atom_id
+_struct_conn.ptnr2_label_asym_id
+_struct_conn.ptnr2_label_comp_id
+_struct_conn.ptnr2_label_seq_id
+_struct_conn.ptnr2_label_atom_id
+bond1 covale A CHL1     1 C1   A CHL1     1 C2  
+bond2 covale A CHL1     1 C1   A CHL1     1 C10 
+bond3 covale A CHL1     1 C1   A CHL1     1 H1A 
+bond4 covale A CHL1     1 C1   A CHL1     1 H1B 
+bond5 covale A CHL1     1 C2   A CHL1     1 C3  
+bond6 covale A CHL1     1 C2   A CHL1     1 H2A 
+bond7 covale A CHL1     1 C2   A CHL1     1 H2B 
+bond8 covale A CHL1     1 C3   A CHL1     1 C4  
+bond9 covale A CHL1     1 C3   A CHL1     1 O3  
+bond10 covale A CHL1     1 C3   A CHL1     1 H3  
+bond11 covale A CHL1     1 C4   A CHL1     1 C5  
+bond12 covale A CHL1     1 C4   A CHL1     1 H4A 
+bond13 covale A CHL1     1 C4   A CHL1     1 H4B 
+bond14 covale A CHL1     1 C5   A CHL1     1 C6  
+bond15 covale A CHL1     1 C5   A CHL1     1 C10 
+bond16 covale A CHL1     1 C6   A CHL1     1 C7  
+bond17 covale A CHL1     1 C6   A CHL1     1 H6  
+bond18 covale A CHL1     1 C7   A CHL1     1 C8  
+bond19 covale A CHL1     1 C7   A CHL1     1 H7A 
+bond20 covale A CHL1     1 C7   A CHL1     1 H7B 
+bond21 covale A CHL1     1 C8   A CHL1     1 C9  
+bond22 covale A CHL1     1 C8   A CHL1     1 C14 
+bond23 covale A CHL1     1 C8   A CHL1     1 H8  
+bond24 covale A CHL1     1 C9   A CHL1     1 C10 
+bond25 covale A CHL1     1 C9   A CHL1     1 C11 
+bond26 covale A CHL1     1 C9   A CHL1     1 H9  
+bond27 covale A CHL1     1 C10  A CHL1     1 C19 
+bond28 covale A CHL1     1 C11  A CHL1     1 C12 
+bond29 covale A CHL1     1 C11  A CHL1     1 H11A
+bond30 covale A CHL1     1 C11  A CHL1     1 H11B
+bond31 covale A CHL1     1 C12  A CHL1     1 C13 
+bond32 covale A CHL1     1 C12  A CHL1     1 H12A
+bond33 covale A CHL1     1 C12  A CHL1     1 H12B
+bond34 covale A CHL1     1 C13  A CHL1     1 C14 
+bond35 covale A CHL1     1 C13  A CHL1     1 C17 
+bond36 covale A CHL1     1 C13  A CHL1     1 C18 
+bond37 covale A CHL1     1 C14  A CHL1     1 C15 
+bond38 covale A CHL1     1 C14  A CHL1     1 H14 
+bond39 covale A CHL1     1 C15  A CHL1     1 C16 
+bond40 covale A CHL1     1 C15  A CHL1     1 H15A
+bond41 covale A CHL1     1 C15  A CHL1     1 H15B
+bond42 covale A CHL1     1 C16  A CHL1     1 C17 
+bond43 covale A CHL1     1 C16  A CHL1     1 H16A
+bond44 covale A CHL1     1 C16  A CHL1     1 H16B
+bond45 covale A CHL1     1 C17  A CHL1     1 C20 
+bond46 covale A CHL1     1 C17  A CHL1     1 H17 
+bond47 covale A CHL1     1 C18  A CHL1     1 H18A
+bond48 covale A CHL1     1 C18  A CHL1     1 H18B
+bond49 covale A CHL1     1 C18  A CHL1     1 H18C
+bond50 covale A CHL1     1 C19  A CHL1     1 H19A
+bond51 covale A CHL1     1 C19  A CHL1     1 H19B
+bond52 covale A CHL1     1 C19  A CHL1     1 H19C
+bond53 covale A CHL1     1 C20  A CHL1     1 C21 
+bond54 covale A CHL1     1 C20  A CHL1     1 C22 
+bond55 covale A CHL1     1 C20  A CHL1     1 H20 
+bond56 covale A CHL1     1 C21  A CHL1     1 H21A
+bond57 covale A CHL1     1 C21  A CHL1     1 H21B
+bond58 covale A CHL1     1 C21  A CHL1     1 H21C
+bond59 covale A CHL1     1 C22  A CHL1     1 C23 
+bond60 covale A CHL1     1 C22  A CHL1     1 H22A
+bond61 covale A CHL1     1 C22  A CHL1     1 H22B
+bond62 covale A CHL1     1 C23  A CHL1     1 C24 
+bond63 covale A CHL1     1 C23  A CHL1     1 H23A
+bond64 covale A CHL1     1 C23  A CHL1     1 H23B
+bond65 covale A CHL1     1 C24  A CHL1     1 C25 
+bond66 covale A CHL1     1 C24  A CHL1     1 H24A
+bond67 covale A CHL1     1 C24  A CHL1     1 H24B
+bond68 covale A CHL1     1 C25  A CHL1     1 C26 
+bond69 covale A CHL1     1 C25  A CHL1     1 C27 
+bond70 covale A CHL1     1 C25  A CHL1     1 H25 
+bond71 covale A CHL1     1 C26  A CHL1     1 H26A
+bond72 covale A CHL1     1 C26  A CHL1     1 H26B
+bond73 covale A CHL1     1 C26  A CHL1     1 H26C
+bond74 covale A CHL1     1 C27  A CHL1     1 H27A
+bond75 covale A CHL1     1 C27  A CHL1     1 H27B
+bond76 covale A CHL1     1 C27  A CHL1     1 H27C
+bond77 covale A CHL1     1 O3   A CHL1     1 H3' 
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.Cartn_x_esd
+_atom_site.Cartn_y_esd
+_atom_site.Cartn_z_esd
+_atom_site.occupancy_esd
+_atom_site.B_iso_or_equiv_esd
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+HETATM      1 C   C1   . CHL1 A ?     1 .    -4.5870     1.2700    -0.8600  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C1     1
+HETATM      2 C   C2   . CHL1 A ?     1 .    -5.8980     1.5380    -0.1180  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C2     1
+HETATM      3 C   C3   . CHL1 A ?     1 .    -6.5920     0.2110     0.1950  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C3     1
+HETATM      4 C   C4   . CHL1 A ?     1 .    -5.7200    -0.6110     1.1480  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C4     1
+HETATM      5 C   C5   . CHL1 A ?     1 .    -4.3430    -0.7670     0.5240  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C5     1
+HETATM      6 C   C6   . CHL1 A ?     1 .    -3.8380    -1.9620     0.4380  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C6     1
+HETATM      7 C   C7   . CHL1 A ?     1 .    -2.4920    -2.2400    -0.1640  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C7     1
+HETATM      8 C   C8   . CHL1 A ?     1 .    -1.6100    -0.9950    -0.0270  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C8     1
+HETATM      9 C   C9   . CHL1 A ?     1 .    -2.3420     0.1850    -0.6810  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   C9     1
+HETATM     10 C   C10  . CHL1 A ?     1 .    -3.6450     0.4720     0.0460  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C10     1
+HETATM     11 C   C11  . CHL1 A ?     1 .    -1.4790     1.4440    -0.7070  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C11     1
+HETATM     12 C   C12  . CHL1 A ?     1 .    -0.1140     1.1860    -1.3630  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C12     1
+HETATM     13 C   C13  . CHL1 A ?     1 .     0.5520     0.0680    -0.5840  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C13     1
+HETATM     14 C   C14  . CHL1 A ?     1 .    -0.3120    -1.2060    -0.7860  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C14     1
+HETATM     15 C   C15  . CHL1 A ?     1 .     0.6120    -2.2980    -0.2350  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C15     1
+HETATM     16 C   C16  . CHL1 A ?     1 .     2.0040    -1.8890    -0.7900  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C16     1
+HETATM     17 C   C17  . CHL1 A ?     1 .     1.9340    -0.3660    -1.0650  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C17     1
+HETATM     18 C   C18  . CHL1 A ?     1 .     0.6040     0.4300     0.9020  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C18     1
+HETATM     19 C   C19  . CHL1 A ?     1 .    -3.3150     1.3330     1.2660  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C19     1
+HETATM     20 C   C20  . CHL1 A ?     1 .     3.0230     0.3650    -0.2770  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C20     1
+HETATM     21 C   C21  . CHL1 A ?     1 .     2.9650     1.8610    -0.5950  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C21     1
+HETATM     22 C   C22  . CHL1 A ?     1 .     4.3940    -0.1870    -0.6720  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C22     1
+HETATM     23 C   C23  . CHL1 A ?     1 .     5.4730     0.4550     0.2040  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C23     1
+HETATM     24 C   C24  . CHL1 A ?     1 .     6.8440    -0.0970    -0.1900  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C24     1
+HETATM     25 C   C25  . CHL1 A ?     1 .     7.9230     0.5450     0.6850  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C25     1
+HETATM     26 C   C26  . CHL1 A ?     1 .     7.7190     0.1190     2.1400  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C26     1
+HETATM     27 C   C27  . CHL1 A ?     1 .     9.3040     0.0880     0.2090  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  C27     1
+HETATM     28 O   O3   . CHL1 A ?     1 .    -7.8570     0.4690     0.8090  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   O3     1
+HETATM     29 H   H1A  . CHL1 A ?     1 .    -4.7910     0.6990    -1.7650  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H1A     1
+HETATM     30 H   H1B  . CHL1 A ?     1 .    -4.1190     2.2180    -1.1250  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H1B     1
+HETATM     31 H   H2A  . CHL1 A ?     1 .    -5.6870     2.0650     0.8130  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H2A     1
+HETATM     32 H   H2B  . CHL1 A ?     1 .    -6.5490     2.1500    -0.7410  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H2B     1
+HETATM     33 H   H3   . CHL1 A ?     1 .    -6.7440    -0.3460    -0.7300  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   H3     1
+HETATM     34 H   H4A  . CHL1 A ?     1 .    -5.6330    -0.0940     2.1040  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H4A     1
+HETATM     35 H   H4B  . CHL1 A ?     1 .    -6.1670    -1.5930     1.3000  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H4B     1
+HETATM     36 H   H6   . CHL1 A ?     1 .    -4.4130    -2.7930     0.8190  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   H6     1
+HETATM     37 H   H7A  . CHL1 A ?     1 .    -2.0250    -3.0760     0.3570  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H7A     1
+HETATM     38 H   H7B  . CHL1 A ?     1 .    -2.6090    -2.4890    -1.2190  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H7B     1
+HETATM     39 H   H8   . CHL1 A ?     1 .    -1.4170    -0.7830     1.0250  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   H8     1
+HETATM     40 H   H9   . CHL1 A ?     1 .    -2.5750    -0.0830    -1.7110  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A   H9     1
+HETATM     41 H   H11A . CHL1 A ?     1 .    -2.0000     2.2210    -1.2670  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H11A     1
+HETATM     42 H   H11B . CHL1 A ?     1 .    -1.3220     1.7880     0.3150  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H11B     1
+HETATM     43 H   H12A . CHL1 A ?     1 .    -0.2520     0.8830    -2.4010  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H12A     1
+HETATM     44 H   H12B . CHL1 A ?     1 .     0.4980     2.0870    -1.3160  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H12B     1
+HETATM     45 H   H14  . CHL1 A ?     1 .    -0.5140    -1.3640    -1.8450  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H14     1
+HETATM     46 H   H15A . CHL1 A ?     1 .     0.6130    -2.2890     0.8550  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H15A     1
+HETATM     47 H   H15B . CHL1 A ?     1 .     0.3190    -3.2780    -0.6130  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H15B     1
+HETATM     48 H   H16A . CHL1 A ?     1 .     2.7780    -2.1010    -0.0530  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H16A     1
+HETATM     49 H   H16B . CHL1 A ?     1 .     2.2100    -2.4270    -1.7160  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H16B     1
+HETATM     50 H   H17  . CHL1 A ?     1 .     2.0410    -0.1690    -2.1310  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H17     1
+HETATM     51 H   H18A . CHL1 A ?     1 .    -0.4090     0.5900     1.2720  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H18A     1
+HETATM     52 H   H18B . CHL1 A ?     1 .     1.0710    -0.3820     1.4580  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H18B     1
+HETATM     53 H   H18C . CHL1 A ?     1 .     1.1870     1.3420     1.0330  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H18C     1
+HETATM     54 H   H19A . CHL1 A ?     1 .    -4.2340     1.5750     1.8000  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H19A     1
+HETATM     55 H   H19B . CHL1 A ?     1 .    -2.6440     0.7850     1.9280  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H19B     1
+HETATM     56 H   H19C . CHL1 A ?     1 .    -2.8310     2.2540     0.9410  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H19C     1
+HETATM     57 H   H20  . CHL1 A ?     1 .     2.8630     0.2140     0.7900  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H20     1
+HETATM     58 H   H21A . CHL1 A ?     1 .     3.0600     2.0080    -1.6700  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H21A     1
+HETATM     59 H   H21B . CHL1 A ?     1 .     2.0120     2.2670    -0.2550  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H21B     1
+HETATM     60 H   H21C . CHL1 A ?     1 .     3.7800     2.3720    -0.0840  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H21C     1
+HETATM     61 H   H22A . CHL1 A ?     1 .     4.4060    -1.2670    -0.5290  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H22A     1
+HETATM     62 H   H22B . CHL1 A ?     1 .     4.5910     0.0440    -1.7190  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H22B     1
+HETATM     63 H   H23A . CHL1 A ?     1 .     5.4610     1.5360     0.0610  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H23A     1
+HETATM     64 H   H23B . CHL1 A ?     1 .     5.2760     0.2250     1.2510  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H23B     1
+HETATM     65 H   H24A . CHL1 A ?     1 .     6.8560    -1.1770    -0.0480  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H24A     1
+HETATM     66 H   H24B . CHL1 A ?     1 .     7.0420     0.1330    -1.2370  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H24B     1
+HETATM     67 H   H25  . CHL1 A ?     1 .     7.8530     1.6300     0.6100  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H25     1
+HETATM     68 H   H26A . CHL1 A ?     1 .     6.7350     0.4450     2.4790  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H26A     1
+HETATM     69 H   H26B . CHL1 A ?     1 .     7.7880    -0.9660     2.2150  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H26B     1
+HETATM     70 H   H26C . CHL1 A ?     1 .     8.4870     0.5770     2.7640  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H26C     1
+HETATM     71 H   H27A . CHL1 A ?     1 .     9.4490     0.3910    -0.8280  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H27A     1
+HETATM     72 H   H27B . CHL1 A ?     1 .    10.0720     0.5450     0.8330  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H27B     1
+HETATM     73 H   H27C . CHL1 A ?     1 .     9.3730    -0.9970     0.2840  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A H27C     1
+HETATM     74 H   H3'  . CHL1 A ?     1 .    -8.3540    -0.3290     1.0350  0.0  0.0  ?  ?  ?  ?  ?  .      1 CHL1 A  H3'     1

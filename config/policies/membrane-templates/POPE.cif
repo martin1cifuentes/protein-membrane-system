@@ -1,0 +1,291 @@
+data_cell
+# Created with OpenMM 8.6, 2026-09-25
+#
+loop_
+_struct_conn.id
+_struct_conn.conn_type_id
+_struct_conn.ptnr1_label_asym_id
+_struct_conn.ptnr1_label_comp_id
+_struct_conn.ptnr1_label_seq_id
+_struct_conn.ptnr1_label_atom_id
+_struct_conn.ptnr2_label_asym_id
+_struct_conn.ptnr2_label_comp_id
+_struct_conn.ptnr2_label_seq_id
+_struct_conn.ptnr2_label_atom_id
+bond1 covale A POPE     1 N    A POPE     1 HN1 
+bond2 covale A POPE     1 N    A POPE     1 HN2 
+bond3 covale A POPE     1 N    A POPE     1 HN3 
+bond4 covale A POPE     1 N    A POPE     1 C12 
+bond5 covale A POPE     1 C12  A POPE     1 H12A
+bond6 covale A POPE     1 C12  A POPE     1 H12B
+bond7 covale A POPE     1 C12  A POPE     1 C11 
+bond8 covale A POPE     1 C11  A POPE     1 H11A
+bond9 covale A POPE     1 C11  A POPE     1 H11B
+bond10 covale A POPE     1 C11  A POPE     1 O12 
+bond11 covale A POPE     1 P    A POPE     1 O12 
+bond12 covale A POPE     1 P    A POPE     1 O11 
+bond13 covale A POPE     1 P    A POPE     1 O13 
+bond14 covale A POPE     1 P    A POPE     1 O14 
+bond15 covale A POPE     1 O11  A POPE     1 C1  
+bond16 covale A POPE     1 C1   A POPE     1 HA  
+bond17 covale A POPE     1 C1   A POPE     1 HB  
+bond18 covale A POPE     1 C1   A POPE     1 C2  
+bond19 covale A POPE     1 C2   A POPE     1 HS  
+bond20 covale A POPE     1 C2   A POPE     1 C3  
+bond21 covale A POPE     1 C2   A POPE     1 O21 
+bond22 covale A POPE     1 O21  A POPE     1 C21 
+bond23 covale A POPE     1 C21  A POPE     1 C22 
+bond24 covale A POPE     1 C21  A POPE     1 O22 
+bond25 covale A POPE     1 C22  A POPE     1 H2R 
+bond26 covale A POPE     1 C22  A POPE     1 H2S 
+bond27 covale A POPE     1 C22  A POPE     1 C23 
+bond28 covale A POPE     1 C3   A POPE     1 HX  
+bond29 covale A POPE     1 C3   A POPE     1 HY  
+bond30 covale A POPE     1 C3   A POPE     1 O31 
+bond31 covale A POPE     1 O31  A POPE     1 C31 
+bond32 covale A POPE     1 C31  A POPE     1 C32 
+bond33 covale A POPE     1 C31  A POPE     1 O32 
+bond34 covale A POPE     1 C32  A POPE     1 H2X 
+bond35 covale A POPE     1 C32  A POPE     1 H2Y 
+bond36 covale A POPE     1 C32  A POPE     1 C33 
+bond37 covale A POPE     1 C23  A POPE     1 H3R 
+bond38 covale A POPE     1 C23  A POPE     1 H3S 
+bond39 covale A POPE     1 C23  A POPE     1 C24 
+bond40 covale A POPE     1 C24  A POPE     1 H4R 
+bond41 covale A POPE     1 C24  A POPE     1 H4S 
+bond42 covale A POPE     1 C24  A POPE     1 C25 
+bond43 covale A POPE     1 C25  A POPE     1 H5R 
+bond44 covale A POPE     1 C25  A POPE     1 H5S 
+bond45 covale A POPE     1 C25  A POPE     1 C26 
+bond46 covale A POPE     1 C26  A POPE     1 H6R 
+bond47 covale A POPE     1 C26  A POPE     1 H6S 
+bond48 covale A POPE     1 C26  A POPE     1 C27 
+bond49 covale A POPE     1 C27  A POPE     1 H7R 
+bond50 covale A POPE     1 C27  A POPE     1 H7S 
+bond51 covale A POPE     1 C27  A POPE     1 C28 
+bond52 covale A POPE     1 C28  A POPE     1 H8R 
+bond53 covale A POPE     1 C28  A POPE     1 H8S 
+bond54 covale A POPE     1 C28  A POPE     1 C29 
+bond55 covale A POPE     1 C29  A POPE     1 H91 
+bond56 covale A POPE     1 C29  A POPE     1 C210
+bond57 covale A POPE     1 C210 A POPE     1 H101
+bond58 covale A POPE     1 C210 A POPE     1 C211
+bond59 covale A POPE     1 C211 A POPE     1 H11R
+bond60 covale A POPE     1 C211 A POPE     1 H11S
+bond61 covale A POPE     1 C211 A POPE     1 C212
+bond62 covale A POPE     1 C212 A POPE     1 H12R
+bond63 covale A POPE     1 C212 A POPE     1 H12S
+bond64 covale A POPE     1 C212 A POPE     1 C213
+bond65 covale A POPE     1 C213 A POPE     1 H13R
+bond66 covale A POPE     1 C213 A POPE     1 H13S
+bond67 covale A POPE     1 C213 A POPE     1 C214
+bond68 covale A POPE     1 C214 A POPE     1 H14R
+bond69 covale A POPE     1 C214 A POPE     1 H14S
+bond70 covale A POPE     1 C214 A POPE     1 C215
+bond71 covale A POPE     1 C215 A POPE     1 H15R
+bond72 covale A POPE     1 C215 A POPE     1 H15S
+bond73 covale A POPE     1 C215 A POPE     1 C216
+bond74 covale A POPE     1 C216 A POPE     1 H16R
+bond75 covale A POPE     1 C216 A POPE     1 H16S
+bond76 covale A POPE     1 C216 A POPE     1 C217
+bond77 covale A POPE     1 C217 A POPE     1 H17R
+bond78 covale A POPE     1 C217 A POPE     1 H17S
+bond79 covale A POPE     1 C217 A POPE     1 C218
+bond80 covale A POPE     1 C218 A POPE     1 H18R
+bond81 covale A POPE     1 C218 A POPE     1 H18S
+bond82 covale A POPE     1 C218 A POPE     1 H18T
+bond83 covale A POPE     1 C33  A POPE     1 H3X 
+bond84 covale A POPE     1 C33  A POPE     1 H3Y 
+bond85 covale A POPE     1 C33  A POPE     1 C34 
+bond86 covale A POPE     1 C34  A POPE     1 H4X 
+bond87 covale A POPE     1 C34  A POPE     1 H4Y 
+bond88 covale A POPE     1 C34  A POPE     1 C35 
+bond89 covale A POPE     1 C35  A POPE     1 H5X 
+bond90 covale A POPE     1 C35  A POPE     1 H5Y 
+bond91 covale A POPE     1 C35  A POPE     1 C36 
+bond92 covale A POPE     1 C36  A POPE     1 H6X 
+bond93 covale A POPE     1 C36  A POPE     1 H6Y 
+bond94 covale A POPE     1 C36  A POPE     1 C37 
+bond95 covale A POPE     1 C37  A POPE     1 H7X 
+bond96 covale A POPE     1 C37  A POPE     1 H7Y 
+bond97 covale A POPE     1 C37  A POPE     1 C38 
+bond98 covale A POPE     1 C38  A POPE     1 H8X 
+bond99 covale A POPE     1 C38  A POPE     1 H8Y 
+bond100 covale A POPE     1 C38  A POPE     1 C39 
+bond101 covale A POPE     1 C39  A POPE     1 H9X 
+bond102 covale A POPE     1 C39  A POPE     1 H9Y 
+bond103 covale A POPE     1 C39  A POPE     1 C310
+bond104 covale A POPE     1 C310 A POPE     1 H10X
+bond105 covale A POPE     1 C310 A POPE     1 H10Y
+bond106 covale A POPE     1 C310 A POPE     1 C311
+bond107 covale A POPE     1 C311 A POPE     1 H11X
+bond108 covale A POPE     1 C311 A POPE     1 H11Y
+bond109 covale A POPE     1 C311 A POPE     1 C312
+bond110 covale A POPE     1 C312 A POPE     1 H12X
+bond111 covale A POPE     1 C312 A POPE     1 H12Y
+bond112 covale A POPE     1 C312 A POPE     1 C313
+bond113 covale A POPE     1 C313 A POPE     1 H13X
+bond114 covale A POPE     1 C313 A POPE     1 H13Y
+bond115 covale A POPE     1 C313 A POPE     1 C314
+bond116 covale A POPE     1 C314 A POPE     1 H14X
+bond117 covale A POPE     1 C314 A POPE     1 H14Y
+bond118 covale A POPE     1 C314 A POPE     1 C315
+bond119 covale A POPE     1 C315 A POPE     1 H15X
+bond120 covale A POPE     1 C315 A POPE     1 H15Y
+bond121 covale A POPE     1 C315 A POPE     1 C316
+bond122 covale A POPE     1 C316 A POPE     1 H16X
+bond123 covale A POPE     1 C316 A POPE     1 H16Y
+bond124 covale A POPE     1 C316 A POPE     1 H16Z
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.Cartn_x_esd
+_atom_site.Cartn_y_esd
+_atom_site.Cartn_z_esd
+_atom_site.occupancy_esd
+_atom_site.B_iso_or_equiv_esd
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+HETATM      1 N   N    . POPE A ?     1 .    58.6700    21.8400    65.3100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A    N     1
+HETATM      2 H   HN1  . POPE A ?     1 .    59.3300    22.4500    64.7900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  HN1     1
+HETATM      3 H   HN2  . POPE A ?     1 .    57.7700    21.7900    64.7900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  HN2     1
+HETATM      4 H   HN3  . POPE A ?     1 .    58.3300    22.3600    66.1400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  HN3     1
+HETATM      5 C   C12  . POPE A ?     1 .    59.2100    20.5000    65.7800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C12     1
+HETATM      6 H   H12A . POPE A ?     1 .    58.4900    20.1300    66.5500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12A     1
+HETATM      7 H   H12B . POPE A ?     1 .    60.1100    20.7200    66.4000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12B     1
+HETATM      8 C   C11  . POPE A ?     1 .    59.3000    19.4300    64.6900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C11     1
+HETATM      9 H   H11A . POPE A ?     1 .    59.2600    18.4300    65.1700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11A     1
+HETATM     10 H   H11B . POPE A ?     1 .    60.3000    19.5500    64.2200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11B     1
+HETATM     11 P   P    . POPE A ?     1 .    58.4200    18.6700    62.4800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A    P     1
+HETATM     12 O   O13  . POPE A ?     1 .    57.4000    19.0300    61.4700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O13     1
+HETATM     13 O   O14  . POPE A ?     1 .    58.2600    17.3100    63.0300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O14     1
+HETATM     14 O   O11  . POPE A ?     1 .    59.8700    18.8100    61.8200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O11     1
+HETATM     15 O   O12  . POPE A ?     1 .    58.3300    19.7200    63.6800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O12     1
+HETATM     16 C   C1   . POPE A ?     1 .    60.4000    20.0200    61.2700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   C1     1
+HETATM     17 H   HA   . POPE A ?     1 .    61.3300    20.1800    61.8500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   HA     1
+HETATM     18 H   HB   . POPE A ?     1 .    59.8200    20.9500    61.4300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   HB     1
+HETATM     19 C   C2   . POPE A ?     1 .    60.7600    19.9700    59.7700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   C2     1
+HETATM     20 H   HS   . POPE A ?     1 .    60.9200    21.0100    59.4200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   HS     1
+HETATM     21 O   O21  . POPE A ?     1 .    59.7200    19.3500    59.0200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O21     1
+HETATM     22 C   C21  . POPE A ?     1 .    58.7600    20.2400    58.7600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C21     1
+HETATM     23 O   O22  . POPE A ?     1 .    58.8900    21.4200    59.0500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O22     1
+HETATM     24 C   C22  . POPE A ?     1 .    57.4900    19.7200    58.1100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C22     1
+HETATM     25 H   H2R  . POPE A ?     1 .    56.8200    20.5700    57.8500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H2R     1
+HETATM     26 H   H2S  . POPE A ?     1 .    57.0200    19.0900    58.8800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H2S     1
+HETATM     27 C   C3   . POPE A ?     1 .    62.0900    19.2400    59.5100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   C3     1
+HETATM     28 H   HX   . POPE A ?     1 .    62.0400    18.2300    59.9700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   HX     1
+HETATM     29 H   HY   . POPE A ?     1 .    62.9500    19.7000    60.0400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A   HY     1
+HETATM     30 O   O31  . POPE A ?     1 .    62.4700    19.2100    58.1300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O31     1
+HETATM     31 C   C31  . POPE A ?     1 .    62.7200    20.4200    57.6200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C31     1
+HETATM     32 O   O32  . POPE A ?     1 .    62.9400    21.4300    58.2600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  O32     1
+HETATM     33 C   C32  . POPE A ?     1 .    62.8100    20.2000    56.1100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C32     1
+HETATM     34 H   H2X  . POPE A ?     1 .    62.7100    21.1400    55.5300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H2X     1
+HETATM     35 H   H2Y  . POPE A ?     1 .    62.0600    19.4600    55.7600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H2Y     1
+HETATM     36 C   C23  . POPE A ?     1 .    57.8000    18.9300    56.8400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C23     1
+HETATM     37 H   H3R  . POPE A ?     1 .    56.9000    18.3700    56.4800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H3R     1
+HETATM     38 H   H3S  . POPE A ?     1 .    58.7000    18.3000    57.0000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H3S     1
+HETATM     39 C   C24  . POPE A ?     1 .    58.1200    19.9100    55.7100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C24     1
+HETATM     40 H   H4R  . POPE A ?     1 .    58.9300    20.5600    56.1100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H4R     1
+HETATM     41 H   H4S  . POPE A ?     1 .    57.2100    20.4700    55.4200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H4S     1
+HETATM     42 C   C25  . POPE A ?     1 .    58.4300    19.2300    54.3800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C25     1
+HETATM     43 H   H5R  . POPE A ?     1 .    57.5400    18.6700    54.0300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H5R     1
+HETATM     44 H   H5S  . POPE A ?     1 .    59.3200    18.5700    54.5200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H5S     1
+HETATM     45 C   C26  . POPE A ?     1 .    58.7900    20.1000    53.1700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C26     1
+HETATM     46 H   H6R  . POPE A ?     1 .    59.6100    20.7600    53.5300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H6R     1
+HETATM     47 H   H6S  . POPE A ?     1 .    57.9400    20.6400    52.7000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H6S     1
+HETATM     48 C   C27  . POPE A ?     1 .    59.3800    19.2000    52.0800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C27     1
+HETATM     49 H   H7R  . POPE A ?     1 .    60.0800    18.4300    52.4800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H7R     1
+HETATM     50 H   H7S  . POPE A ?     1 .    60.0600    19.8200    51.4500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H7S     1
+HETATM     51 C   C28  . POPE A ?     1 .    58.3200    18.4300    51.3000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C28     1
+HETATM     52 H   H8R  . POPE A ?     1 .    57.6400    19.2500    51.0100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H8R     1
+HETATM     53 H   H8S  . POPE A ?     1 .    57.7400    17.7600    51.9800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H8S     1
+HETATM     54 C   C29  . POPE A ?     1 .    59.0200    17.6200    50.2500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C29     1
+HETATM     55 H   H91  . POPE A ?     1 .    59.5900    16.8000    50.7000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H91     1
+HETATM     56 C   C210 . POPE A ?     1 .    59.0600    17.8500    48.9300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C210     1
+HETATM     57 H   H101 . POPE A ?     1 .    59.5700    17.2400    48.1700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H101     1
+HETATM     58 C   C211 . POPE A ?     1 .    58.3300    18.8800    48.1200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C211     1
+HETATM     59 H   H11R . POPE A ?     1 .    57.6000    19.4700    48.7200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11R     1
+HETATM     60 H   H11S . POPE A ?     1 .    57.6200    18.3000    47.4800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11S     1
+HETATM     61 C   C212 . POPE A ?     1 .    59.3700    19.6500    47.3000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C212     1
+HETATM     62 H   H12R . POPE A ?     1 .    58.7300    20.4000    46.7800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12R     1
+HETATM     63 H   H12S . POPE A ?     1 .    59.9700    19.0700    46.5800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12S     1
+HETATM     64 C   C213 . POPE A ?     1 .    60.2900    20.5000    48.1800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C213     1
+HETATM     65 H   H13R . POPE A ?     1 .    60.8900    19.9300    48.9300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H13R     1
+HETATM     66 H   H13S . POPE A ?     1 .    59.5800    21.1100    48.7800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H13S     1
+HETATM     67 C   C214 . POPE A ?     1 .    61.1100    21.5100    47.3700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C214     1
+HETATM     68 H   H14R . POPE A ?     1 .    60.3300    21.9300    46.7100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H14R     1
+HETATM     69 H   H14S . POPE A ?     1 .    61.8900    21.0400    46.7200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H14S     1
+HETATM     70 C   C215 . POPE A ?     1 .    61.6700    22.6200    48.2600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C215     1
+HETATM     71 H   H15R . POPE A ?     1 .    60.8900    23.2700    48.7100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H15R     1
+HETATM     72 H   H15S . POPE A ?     1 .    62.2000    23.2800    47.5400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H15S     1
+HETATM     73 C   C216 . POPE A ?     1 .    62.7100    22.2000    49.3000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C216     1
+HETATM     74 H   H16R . POPE A ?     1 .    63.5900    21.8400    48.7200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H16R     1
+HETATM     75 H   H16S . POPE A ?     1 .    62.3400    21.4500    50.0300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H16S     1
+HETATM     76 C   C217 . POPE A ?     1 .    63.2000    23.3300    50.2000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C217     1
+HETATM     77 H   H17R . POPE A ?     1 .    64.1500    22.9600    50.6600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H17R     1
+HETATM     78 H   H17S . POPE A ?     1 .    62.5000    23.6900    50.9800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H17S     1
+HETATM     79 C   C218 . POPE A ?     1 .    63.7100    24.4900    49.3500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C218     1
+HETATM     80 H   H18R . POPE A ?     1 .    64.1800    25.2500    50.0000  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H18R     1
+HETATM     81 H   H18S . POPE A ?     1 .    62.9200    25.0000    48.7500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H18S     1
+HETATM     82 H   H18T . POPE A ?     1 .    64.4700    24.0500    48.6500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H18T     1
+HETATM     83 C   C33  . POPE A ?     1 .    64.2300    19.7000    55.8400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C33     1
+HETATM     84 H   H3X  . POPE A ?     1 .    64.4100    18.6900    56.2500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H3X     1
+HETATM     85 H   H3Y  . POPE A ?     1 .    64.9500    20.3100    56.4200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H3Y     1
+HETATM     86 C   C34  . POPE A ?     1 .    64.6100    19.9100    54.3700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C34     1
+HETATM     87 H   H4X  . POPE A ?     1 .    65.6500    19.5200    54.2700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H4X     1
+HETATM     88 H   H4Y  . POPE A ?     1 .    64.5500    20.9900    54.1500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H4Y     1
+HETATM     89 C   C35  . POPE A ?     1 .    63.6900    19.0600    53.4900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C35     1
+HETATM     90 H   H5X  . POPE A ?     1 .    62.7400    19.6300    53.5100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H5X     1
+HETATM     91 H   H5Y  . POPE A ?     1 .    63.5500    18.0300    53.8800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H5Y     1
+HETATM     92 C   C36  . POPE A ?     1 .    64.1900    18.7800    52.0600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C36     1
+HETATM     93 H   H6X  . POPE A ?     1 .    65.1900    18.3000    52.1100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H6X     1
+HETATM     94 H   H6Y  . POPE A ?     1 .    64.1600    19.7000    51.4400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H6Y     1
+HETATM     95 C   C37  . POPE A ?     1 .    63.2000    17.8100    51.4100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C37     1
+HETATM     96 H   H7X  . POPE A ?     1 .    62.2200    18.3000    51.2200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H7X     1
+HETATM     97 H   H7Y  . POPE A ?     1 .    62.9700    16.9900    52.1200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H7Y     1
+HETATM     98 C   C38  . POPE A ?     1 .    63.7500    17.3200    50.0700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C38     1
+HETATM     99 H   H8X  . POPE A ?     1 .    64.7200    16.8100    50.2800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H8X     1
+HETATM    100 H   H8Y  . POPE A ?     1 .    63.9600    18.2700    49.5300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H8Y     1
+HETATM    101 C   C39  . POPE A ?     1 .    62.8400    16.4100    49.2500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  C39     1
+HETATM    102 H   H9X  . POPE A ?     1 .    61.8700    16.9200    49.0900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H9X     1
+HETATM    103 H   H9Y  . POPE A ?     1 .    62.6400    15.4800    49.8300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A  H9Y     1
+HETATM    104 C   C310 . POPE A ?     1 .    63.5000    16.0200    47.9300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C310     1
+HETATM    105 H   H10X . POPE A ?     1 .    62.7300    15.5500    47.2800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H10X     1
+HETATM    106 H   H10Y . POPE A ?     1 .    64.2200    15.1800    48.0700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H10Y     1
+HETATM    107 C   C311 . POPE A ?     1 .    64.1700    17.1800    47.1800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C311     1
+HETATM    108 H   H11X . POPE A ?     1 .    65.0800    17.4500    47.7500  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11X     1
+HETATM    109 H   H11Y . POPE A ?     1 .    63.4700    18.0400    47.1700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H11Y     1
+HETATM    110 C   C312 . POPE A ?     1 .    64.6100    16.7700    45.7800  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C312     1
+HETATM    111 H   H12X . POPE A ?     1 .    64.6600    17.7400    45.2300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12X     1
+HETATM    112 H   H12Y . POPE A ?     1 .    63.8800    16.1400    45.2200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H12Y     1
+HETATM    113 C   C313 . POPE A ?     1 .    66.0200    16.1700    45.7300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C313     1
+HETATM    114 H   H13X . POPE A ?     1 .    66.5800    16.6500    46.5600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H13X     1
+HETATM    115 H   H13Y . POPE A ?     1 .    66.5300    16.3800    44.7600  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H13Y     1
+HETATM    116 C   C314 . POPE A ?     1 .    66.0900    14.6500    45.8400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C314     1
+HETATM    117 H   H14X . POPE A ?     1 .    66.0000    14.3800    46.9200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H14X     1
+HETATM    118 H   H14Y . POPE A ?     1 .    67.1000    14.2800    45.5400  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H14Y     1
+HETATM    119 C   C315 . POPE A ?     1 .    65.1200    13.7500    45.0700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C315     1
+HETATM    120 H   H15X . POPE A ?     1 .    65.1400    14.0700    44.0100  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H15X     1
+HETATM    121 H   H15Y . POPE A ?     1 .    64.1100    14.0700    45.4300  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H15Y     1
+HETATM    122 C   C316 . POPE A ?     1 .    65.3300    12.2500    45.2700  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A C316     1
+HETATM    123 H   H16X . POPE A ?     1 .    66.2800    11.9000    44.8200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H16X     1
+HETATM    124 H   H16Y . POPE A ?     1 .    64.4800    11.7200    44.7900  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H16Y     1
+HETATM    125 H   H16Z . POPE A ?     1 .    65.2200    11.9200    46.3200  0.0  0.0  ?  ?  ?  ?  ?  .      1 POPE A H16Z     1

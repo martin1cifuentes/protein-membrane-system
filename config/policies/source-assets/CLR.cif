@@ -1,0 +1,259 @@
+data_CLR
+# 
+_chem_comp.id                                    CLR 
+_chem_comp.name                                  CHOLESTEROL 
+_chem_comp.type                                  NON-POLYMER 
+_chem_comp.pdbx_type                             HETAIN 
+_chem_comp.formula                               "C27 H46 O" 
+_chem_comp.mon_nstd_parent_comp_id               ? 
+_chem_comp.pdbx_synonyms                         ? 
+_chem_comp.pdbx_formal_charge                    0 
+_chem_comp.pdbx_initial_date                     2002-05-16 
+_chem_comp.pdbx_modified_date                    2026-08-14 
+_chem_comp.pdbx_ambiguous_flag                   N 
+_chem_comp.pdbx_release_status                   REL 
+_chem_comp.pdbx_replaced_by                      ? 
+_chem_comp.pdbx_replaces                         ? 
+_chem_comp.formula_weight                        386.654 
+_chem_comp.one_letter_code                       ? 
+_chem_comp.three_letter_code                     CLR 
+_chem_comp.pdbx_model_coordinates_details        ? 
+_chem_comp.pdbx_model_coordinates_missing_flag   N 
+_chem_comp.pdbx_ideal_coordinates_details        Corina 
+_chem_comp.pdbx_ideal_coordinates_missing_flag   N 
+_chem_comp.pdbx_model_coordinates_db_code        1LRI 
+_chem_comp.pdbx_subcomponent_list                ? 
+_chem_comp.pdbx_processing_site                  RCSB 
+_chem_comp.pdbx_pcm                              Y 
+# 
+loop_
+_chem_comp_atom.comp_id 
+_chem_comp_atom.atom_id 
+_chem_comp_atom.alt_atom_id 
+_chem_comp_atom.type_symbol 
+_chem_comp_atom.charge 
+_chem_comp_atom.pdbx_align 
+_chem_comp_atom.pdbx_aromatic_flag 
+_chem_comp_atom.pdbx_leaving_atom_flag 
+_chem_comp_atom.pdbx_stereo_config 
+_chem_comp_atom.pdbx_n_terminal_atom_flag 
+_chem_comp_atom.pdbx_backbone_atom_flag 
+_chem_comp_atom.pdbx_c_terminal_atom_flag 
+_chem_comp_atom.model_Cartn_x 
+_chem_comp_atom.model_Cartn_y 
+_chem_comp_atom.model_Cartn_z 
+_chem_comp_atom.pdbx_model_Cartn_x_ideal 
+_chem_comp_atom.pdbx_model_Cartn_y_ideal 
+_chem_comp_atom.pdbx_model_Cartn_z_ideal 
+_chem_comp_atom.pdbx_component_atom_id 
+_chem_comp_atom.pdbx_component_comp_id 
+_chem_comp_atom.pdbx_ordinal 
+CLR C1   C1   C 0 1 N N N N N N 7.375 11.573 2.719  -4.587 1.270  -0.860 C1   CLR 1  
+CLR C2   C2   C 0 1 N N N N N N 7.708 12.020 1.294  -5.898 1.538  -0.118 C2   CLR 2  
+CLR C3   C3   C 0 1 N N S N N N 6.704 11.477 0.256  -6.592 0.211  0.195  C3   CLR 3  
+CLR C4   C4   C 0 1 N N N N N N 5.290 11.925 0.686  -5.720 -0.611 1.148  C4   CLR 4  
+CLR C5   C5   C 0 1 N N N N N N 4.910 11.585 2.121  -4.343 -0.767 0.524  C5   CLR 5  
+CLR C6   C6   C 0 1 N N N N N N 3.730 10.985 2.364  -3.838 -1.962 0.438  C6   CLR 6  
+CLR C7   C7   C 0 1 N N N N N N 3.282 10.583 3.776  -2.492 -2.240 -0.164 C7   CLR 7  
+CLR C8   C8   C 0 1 N N S N N N 4.135 11.297 4.864  -1.610 -0.995 -0.027 C8   CLR 8  
+CLR C9   C9   C 0 1 N N S N N N 5.646 11.220 4.495  -2.342 0.185  -0.681 C9   CLR 9  
+CLR C10  C10  C 0 1 N N R N N N 5.956 11.983 3.184  -3.645 0.472  0.046  C10  CLR 10 
+CLR C11  C11  C 0 1 N N N N N N 6.562 11.606 5.668  -1.479 1.444  -0.707 C11  CLR 11 
+CLR C12  C12  C 0 1 N N N N N N 6.230 10.865 6.976  -0.114 1.186  -1.363 C12  CLR 12 
+CLR C13  C13  C 0 1 N N R N N N 4.747 11.133 7.362  0.552  0.068  -0.584 C13  CLR 13 
+CLR C14  C14  C 0 1 N N S N N N 3.901 10.577 6.172  -0.312 -1.206 -0.786 C14  CLR 14 
+CLR C15  C15  C 0 1 N N N N N N 2.423 10.515 6.686  0.612  -2.298 -0.235 C15  CLR 15 
+CLR C16  C16  C 0 1 N N N N N N 2.603 10.254 8.244  2.004  -1.889 -0.790 C16  CLR 16 
+CLR C17  C17  C 0 1 N N R N N N 4.184 10.213 8.492  1.934  -0.366 -1.065 C17  CLR 17 
+CLR C18  C18  C 0 1 N N N N N N 4.427 12.609 7.643  0.604  0.430  0.902  C18  CLR 18 
+CLR C19  C19  C 0 1 N N N N N N 5.904 13.519 3.455  -3.315 1.333  1.266  C19  CLR 19 
+CLR C20  C20  C 0 1 N N R N N N 4.485 10.635 9.927  3.023  0.365  -0.277 C20  CLR 20 
+CLR C21  C21  C 0 1 N N N N N N 5.984 10.768 10.284 2.965  1.861  -0.595 C21  CLR 21 
+CLR C22  C22  C 0 1 N N N N N N 3.880 9.480  10.796 4.394  -0.187 -0.672 C22  CLR 22 
+CLR C23  C23  C 0 1 N N N N N N 3.871 9.810  12.292 5.473  0.455  0.204  C23  CLR 23 
+CLR C24  C24  C 0 1 N N N N N N 2.942 8.704  12.917 6.844  -0.097 -0.190 C24  CLR 24 
+CLR C25  C25  C 0 1 N N N N N N 2.687 9.037  14.404 7.923  0.545  0.685  C25  CLR 25 
+CLR C26  C26  C 0 1 N N N N N N 4.072 9.088  15.104 7.719  0.119  2.140  C26  CLR 26 
+CLR C27  C27  C 0 1 N N N N N N 1.649 8.119  15.096 9.304  0.088  0.209  C27  CLR 27 
+CLR O1   O1   O 0 1 N N N N N N 7.001 11.833 -1.087 -7.857 0.469  0.809  O1   CLR 28 
+CLR H11  1H1  H 0 1 N N N N N N 7.453 10.477 2.766  -4.791 0.699  -1.765 H11  CLR 29 
+CLR H12  2H1  H 0 1 N N N N N N 8.109 12.023 3.404  -4.119 2.218  -1.125 H12  CLR 30 
+CLR H21  1H2  H 0 1 N N N N N N 7.695 13.119 1.257  -5.687 2.065  0.813  H21  CLR 31 
+CLR H22  2H2  H 0 1 N N N N N N 8.714 11.657 1.036  -6.549 2.150  -0.741 H22  CLR 32 
+CLR H3   H3   H 0 1 N N N N N N 6.727 10.380 0.335  -6.744 -0.346 -0.730 H3   CLR 33 
+CLR H41  1H4  H 0 1 N N N N N N 5.228 13.017 0.567  -5.633 -0.094 2.104  H41  CLR 34 
+CLR H42  2H4  H 0 1 N N N N N N 4.562 11.442 0.018  -6.167 -1.593 1.300  H42  CLR 35 
+CLR H6   H6   H 0 1 N N N N N N 3.072 10.778 1.533  -4.413 -2.793 0.819  H6   CLR 36 
+CLR H71  1H7  H 0 1 N N N N N N 2.226 10.860 3.909  -2.025 -3.076 0.357  H71  CLR 37 
+CLR H72  2H7  H 0 1 N N N N N N 3.393 9.495  3.891  -2.609 -2.489 -1.219 H72  CLR 38 
+CLR H8   H8   H 0 1 N N N N N N 3.826 12.350 4.946  -1.417 -0.783 1.025  H8   CLR 39 
+CLR H9   H9   H 0 1 N N N N N N 5.851 10.160 4.284  -2.575 -0.083 -1.711 H9   CLR 40 
+CLR H111 1H11 H 0 0 N N N N N N 7.601 11.373 5.390  -2.000 2.221  -1.267 H111 CLR 41 
+CLR H112 2H11 H 0 0 N N N N N N 6.463 12.687 5.846  -1.322 1.788  0.315  H112 CLR 42 
+CLR H121 1H12 H 0 0 N N N N N N 6.383 9.785  6.834  -0.252 0.883  -2.401 H121 CLR 43 
+CLR H122 2H12 H 0 0 N N N N N N 6.889 11.226 7.779  0.498  2.087  -1.316 H122 CLR 44 
+CLR H14  H14  H 0 1 N N N N N N 4.221 9.535  6.025  -0.514 -1.364 -1.845 H14  CLR 45 
+CLR H151 1H15 H 0 0 N N N N N N 1.899 11.464 6.501  0.613  -2.289 0.855  H151 CLR 46 
+CLR H152 2H15 H 0 0 N N N N N N 1.871 9.692  6.208  0.319  -3.278 -0.613 H152 CLR 47 
+CLR H161 1H16 H 0 0 N N N N N N 2.144 11.067 8.825  2.778  -2.101 -0.053 H161 CLR 48 
+CLR H162 2H16 H 0 0 N N N N N N 2.144 9.295  8.529  2.210  -2.427 -1.716 H162 CLR 49 
+CLR H17  H17  H 0 1 N N N N N N 4.538 9.185  8.329  2.041  -0.169 -2.131 H17  CLR 50 
+CLR H181 1H18 H 0 0 N N N N N N 3.364 12.710 7.907  -0.409 0.590  1.272  H181 CLR 51 
+CLR H182 2H18 H 0 0 N N N N N N 5.048 12.966 8.478  1.071  -0.382 1.458  H182 CLR 52 
+CLR H183 3H18 H 0 0 N N N N N N 4.640 13.208 6.745  1.187  1.342  1.033  H183 CLR 53 
+CLR H191 1H19 H 0 0 N N N N N N 4.893 13.800 3.784  -4.234 1.575  1.800  H191 CLR 54 
+CLR H192 2H19 H 0 0 N N N N N N 6.630 13.778 4.240  -2.644 0.785  1.928  H192 CLR 55 
+CLR H193 3H19 H 0 0 N N N N N N 6.153 14.063 2.532  -2.831 2.254  0.941  H193 CLR 56 
+CLR H20  H20  H 0 1 N N N N N N 3.965 11.576 10.158 2.863  0.214  0.790  H20  CLR 57 
+CLR H211 1H21 H 0 0 N N N N N N 6.085 11.075 11.335 3.060  2.008  -1.670 H211 CLR 58 
+CLR H212 2H21 H 0 0 N N N N N N 6.484 9.799  10.135 2.012  2.267  -0.255 H212 CLR 59 
+CLR H213 3H21 H 0 0 N N N N N N 6.450 11.524 9.635  3.780  2.372  -0.084 H213 CLR 60 
+CLR H221 1H22 H 0 0 N N N N N N 2.845 9.298  10.469 4.406  -1.267 -0.529 H221 CLR 61 
+CLR H222 2H22 H 0 0 N N N N N N 4.479 8.571  10.640 4.591  0.044  -1.719 H222 CLR 62 
+CLR H231 1H23 H 0 0 N N N N N N 4.886 9.752  12.712 5.461  1.536  0.061  H231 CLR 63 
+CLR H232 2H23 H 0 0 N N N N N N 3.458 10.814 12.469 5.276  0.225  1.251  H232 CLR 64 
+CLR H241 1H24 H 0 0 N N N N N N 1.985 8.679  12.376 6.856  -1.177 -0.048 H241 CLR 65 
+CLR H242 2H24 H 0 0 N N N N N N 3.433 7.723  12.839 7.042  0.133  -1.237 H242 CLR 66 
+CLR H25  H25  H 0 1 N N N N N N 2.279 10.058 14.436 7.853  1.630  0.610  H25  CLR 67 
+CLR H261 1H26 H 0 0 N N N N N N 3.936 9.323  16.170 6.735  0.445  2.479  H261 CLR 68 
+CLR H262 2H26 H 0 0 N N N N N N 4.569 8.112  15.005 7.788  -0.966 2.215  H262 CLR 69 
+CLR H263 3H26 H 0 0 N N N N N N 4.692 9.865  14.633 8.487  0.577  2.764  H263 CLR 70 
+CLR H271 1H27 H 0 0 N N N N N N 1.530 8.425  16.146 9.449  0.391  -0.828 H271 CLR 71 
+CLR H272 2H27 H 0 0 N N N N N N 0.682 8.203  14.578 10.072 0.545  0.833  H272 CLR 72 
+CLR H273 3H27 H 0 0 N N N N N N 1.997 7.076  15.056 9.373  -0.997 0.284  H273 CLR 73 
+CLR H1   H1   H 0 1 N N N N N N 6.343 11.465 -1.665 -8.354 -0.329 1.035  H1   CLR 74 
+# 
+loop_
+_chem_comp_bond.comp_id 
+_chem_comp_bond.atom_id_1 
+_chem_comp_bond.atom_id_2 
+_chem_comp_bond.value_order 
+_chem_comp_bond.pdbx_aromatic_flag 
+_chem_comp_bond.pdbx_stereo_config 
+_chem_comp_bond.pdbx_ordinal 
+CLR C1  C2   SING N N 1  
+CLR C1  C10  SING N N 2  
+CLR C1  H11  SING N N 3  
+CLR C1  H12  SING N N 4  
+CLR C2  C3   SING N N 5  
+CLR C2  H21  SING N N 6  
+CLR C2  H22  SING N N 7  
+CLR C3  C4   SING N N 8  
+CLR C3  O1   SING N N 9  
+CLR C3  H3   SING N N 10 
+CLR C4  C5   SING N N 11 
+CLR C4  H41  SING N N 12 
+CLR C4  H42  SING N N 13 
+CLR C5  C6   DOUB N N 14 
+CLR C5  C10  SING N N 15 
+CLR C6  C7   SING N N 16 
+CLR C6  H6   SING N N 17 
+CLR C7  C8   SING N N 18 
+CLR C7  H71  SING N N 19 
+CLR C7  H72  SING N N 20 
+CLR C8  C9   SING N N 21 
+CLR C8  C14  SING N N 22 
+CLR C8  H8   SING N N 23 
+CLR C9  C10  SING N N 24 
+CLR C9  C11  SING N N 25 
+CLR C9  H9   SING N N 26 
+CLR C10 C19  SING N N 27 
+CLR C11 C12  SING N N 28 
+CLR C11 H111 SING N N 29 
+CLR C11 H112 SING N N 30 
+CLR C12 C13  SING N N 31 
+CLR C12 H121 SING N N 32 
+CLR C12 H122 SING N N 33 
+CLR C13 C14  SING N N 34 
+CLR C13 C17  SING N N 35 
+CLR C13 C18  SING N N 36 
+CLR C14 C15  SING N N 37 
+CLR C14 H14  SING N N 38 
+CLR C15 C16  SING N N 39 
+CLR C15 H151 SING N N 40 
+CLR C15 H152 SING N N 41 
+CLR C16 C17  SING N N 42 
+CLR C16 H161 SING N N 43 
+CLR C16 H162 SING N N 44 
+CLR C17 C20  SING N N 45 
+CLR C17 H17  SING N N 46 
+CLR C18 H181 SING N N 47 
+CLR C18 H182 SING N N 48 
+CLR C18 H183 SING N N 49 
+CLR C19 H191 SING N N 50 
+CLR C19 H192 SING N N 51 
+CLR C19 H193 SING N N 52 
+CLR C20 C21  SING N N 53 
+CLR C20 C22  SING N N 54 
+CLR C20 H20  SING N N 55 
+CLR C21 H211 SING N N 56 
+CLR C21 H212 SING N N 57 
+CLR C21 H213 SING N N 58 
+CLR C22 C23  SING N N 59 
+CLR C22 H221 SING N N 60 
+CLR C22 H222 SING N N 61 
+CLR C23 C24  SING N N 62 
+CLR C23 H231 SING N N 63 
+CLR C23 H232 SING N N 64 
+CLR C24 C25  SING N N 65 
+CLR C24 H241 SING N N 66 
+CLR C24 H242 SING N N 67 
+CLR C25 C26  SING N N 68 
+CLR C25 C27  SING N N 69 
+CLR C25 H25  SING N N 70 
+CLR C26 H261 SING N N 71 
+CLR C26 H262 SING N N 72 
+CLR C26 H263 SING N N 73 
+CLR C27 H271 SING N N 74 
+CLR C27 H272 SING N N 75 
+CLR C27 H273 SING N N 76 
+CLR O1  H1   SING N N 77 
+# 
+loop_
+_pdbx_chem_comp_descriptor.comp_id 
+_pdbx_chem_comp_descriptor.type 
+_pdbx_chem_comp_descriptor.program 
+_pdbx_chem_comp_descriptor.program_version 
+_pdbx_chem_comp_descriptor.descriptor 
+CLR SMILES           ACDLabs              14.52   "CC(C)CCCC(C)C1CCC2C3CC=C4CC(O)CCC4(C)C3CCC12C"                                                                                                                                        
+CLR InChI            InChI                1.06    "InChI=1S/C27H46O/c1-18(2)7-6-8-19(3)23-11-12-24-22-10-9-20-17-21(28)13-15-26(20,4)25(22)14-16-27(23,24)5/h9,18-19,21-25,28H,6-8,10-17H2,1-5H3/t19-,21+,22+,23-,24+,25+,26+,27-/m1/s1" 
+CLR InChIKey         InChI                1.06    HVYWMOMLDIMFJA-DPAQBDIFSA-N                                                                                                                                                            
+CLR SMILES_CANONICAL CACTVS               3.385   "CC(C)CCC[C@@H](C)[C@H]1CC[C@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C"                                                                                                       
+CLR SMILES           CACTVS               3.385   "CC(C)CCC[CH](C)[CH]1CC[CH]2[CH]3CC=C4C[CH](O)CC[C]4(C)[CH]3CC[C]12C"                                                                                                                  
+CLR SMILES_CANONICAL "OpenEye OEToolkits" 3.1.0.0 "C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@]1(CC[C@H]3[C@H]2CC=C4[C@@]3(CC[C@@H](C4)O)C)C"                                                                                                    
+CLR SMILES           "OpenEye OEToolkits" 3.1.0.0 "CC(C)CCCC(C)C1CCC2C1(CCC3C2CC=C4C3(CCC(C4)O)C)C"                                                                                                                                      
+# 
+loop_
+_pdbx_chem_comp_identifier.comp_id 
+_pdbx_chem_comp_identifier.type 
+_pdbx_chem_comp_identifier.program 
+_pdbx_chem_comp_identifier.program_version 
+_pdbx_chem_comp_identifier.identifier 
+CLR "SYSTEMATIC NAME" ACDLabs              14.52   10xi,13xi,14beta,17alpha-cholest-5-en-3beta-ol                                                                                                                                  
+CLR "SYSTEMATIC NAME" "OpenEye OEToolkits" 3.1.0.0 "(3~{S},8~{S},9~{S},10~{R},13~{R},14~{S},17~{R})-10,13-dimethyl-17-[(2~{R})-6-methylheptan-2-yl]-2,3,4,7,8,9,11,12,14,15,16,17-dodecahydro-1~{H}-cyclopenta[a]phenanthren-3-ol" 
+# 
+loop_
+_pdbx_chem_comp_pcm.pcm_id 
+_pdbx_chem_comp_pcm.comp_id 
+_pdbx_chem_comp_pcm.modified_residue_id 
+_pdbx_chem_comp_pcm.type 
+_pdbx_chem_comp_pcm.category 
+_pdbx_chem_comp_pcm.position 
+_pdbx_chem_comp_pcm.polypeptide_position 
+_pdbx_chem_comp_pcm.comp_id_linking_atom 
+_pdbx_chem_comp_pcm.modified_residue_id_linking_atom 
+_pdbx_chem_comp_pcm.uniprot_specific_ptm_accession 
+_pdbx_chem_comp_pcm.uniprot_generic_ptm_accession 
+1 CLR GLY Cholesterylation Lipid/lipid-like "Amino-acid backbone"   C-terminal     O1  C   PTM-0090 ? 
+2 CLR GLN Cholesterylation Lipid/lipid-like "Amino-acid side chain" "Any position" C21 NE2 ?        ? 
+# 
+loop_
+_pdbx_chem_comp_audit.comp_id 
+_pdbx_chem_comp_audit.action_type 
+_pdbx_chem_comp_audit.date 
+_pdbx_chem_comp_audit.processing_site 
+CLR "Create component"  2002-05-16 RCSB 
+CLR "Modify descriptor" 2011-06-04 RCSB 
+CLR "Modify PCM"        2024-09-27 PDBE 
+CLR "Modify PCM"        2026-08-14 RCSB 
+# 

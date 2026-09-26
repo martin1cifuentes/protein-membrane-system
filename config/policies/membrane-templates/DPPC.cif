@@ -1,0 +1,301 @@
+data_cell
+# Created with OpenMM 8.6, 2026-09-25
+#
+loop_
+_struct_conn.id
+_struct_conn.conn_type_id
+_struct_conn.ptnr1_label_asym_id
+_struct_conn.ptnr1_label_comp_id
+_struct_conn.ptnr1_label_seq_id
+_struct_conn.ptnr1_label_atom_id
+_struct_conn.ptnr2_label_asym_id
+_struct_conn.ptnr2_label_comp_id
+_struct_conn.ptnr2_label_seq_id
+_struct_conn.ptnr2_label_atom_id
+bond1 covale A DPPC     1 N    A DPPC     1 C14 
+bond2 covale A DPPC     1 N    A DPPC     1 C15 
+bond3 covale A DPPC     1 N    A DPPC     1 C13 
+bond4 covale A DPPC     1 N    A DPPC     1 C12 
+bond5 covale A DPPC     1 C13  A DPPC     1 H13B
+bond6 covale A DPPC     1 C13  A DPPC     1 H13A
+bond7 covale A DPPC     1 C13  A DPPC     1 H13C
+bond8 covale A DPPC     1 C14  A DPPC     1 H14C
+bond9 covale A DPPC     1 C14  A DPPC     1 H14B
+bond10 covale A DPPC     1 C14  A DPPC     1 H14A
+bond11 covale A DPPC     1 C15  A DPPC     1 H15C
+bond12 covale A DPPC     1 C15  A DPPC     1 H15A
+bond13 covale A DPPC     1 C15  A DPPC     1 H15B
+bond14 covale A DPPC     1 C12  A DPPC     1 H12A
+bond15 covale A DPPC     1 C12  A DPPC     1 H12B
+bond16 covale A DPPC     1 C12  A DPPC     1 C11 
+bond17 covale A DPPC     1 C11  A DPPC     1 H11A
+bond18 covale A DPPC     1 C11  A DPPC     1 H11B
+bond19 covale A DPPC     1 C11  A DPPC     1 O12 
+bond20 covale A DPPC     1 P    A DPPC     1 O12 
+bond21 covale A DPPC     1 P    A DPPC     1 O13 
+bond22 covale A DPPC     1 P    A DPPC     1 O14 
+bond23 covale A DPPC     1 P    A DPPC     1 O11 
+bond24 covale A DPPC     1 O11  A DPPC     1 C1  
+bond25 covale A DPPC     1 C1   A DPPC     1 HB  
+bond26 covale A DPPC     1 C1   A DPPC     1 HA  
+bond27 covale A DPPC     1 C1   A DPPC     1 C2  
+bond28 covale A DPPC     1 C2   A DPPC     1 HS  
+bond29 covale A DPPC     1 C2   A DPPC     1 O21 
+bond30 covale A DPPC     1 C2   A DPPC     1 C3  
+bond31 covale A DPPC     1 O21  A DPPC     1 C21 
+bond32 covale A DPPC     1 C21  A DPPC     1 O22 
+bond33 covale A DPPC     1 C21  A DPPC     1 C22 
+bond34 covale A DPPC     1 C22  A DPPC     1 H2R 
+bond35 covale A DPPC     1 C22  A DPPC     1 H2S 
+bond36 covale A DPPC     1 C22  A DPPC     1 C23 
+bond37 covale A DPPC     1 C3   A DPPC     1 HY  
+bond38 covale A DPPC     1 C3   A DPPC     1 HX  
+bond39 covale A DPPC     1 C3   A DPPC     1 O31 
+bond40 covale A DPPC     1 O31  A DPPC     1 C31 
+bond41 covale A DPPC     1 C31  A DPPC     1 O32 
+bond42 covale A DPPC     1 C31  A DPPC     1 C32 
+bond43 covale A DPPC     1 C32  A DPPC     1 C33 
+bond44 covale A DPPC     1 C32  A DPPC     1 H2Y 
+bond45 covale A DPPC     1 C32  A DPPC     1 H2X 
+bond46 covale A DPPC     1 C23  A DPPC     1 H3S 
+bond47 covale A DPPC     1 C23  A DPPC     1 H3R 
+bond48 covale A DPPC     1 C23  A DPPC     1 C24 
+bond49 covale A DPPC     1 C24  A DPPC     1 H4R 
+bond50 covale A DPPC     1 C24  A DPPC     1 H4S 
+bond51 covale A DPPC     1 C24  A DPPC     1 C25 
+bond52 covale A DPPC     1 C25  A DPPC     1 H5S 
+bond53 covale A DPPC     1 C25  A DPPC     1 H5R 
+bond54 covale A DPPC     1 C25  A DPPC     1 C26 
+bond55 covale A DPPC     1 C26  A DPPC     1 H6R 
+bond56 covale A DPPC     1 C26  A DPPC     1 H6S 
+bond57 covale A DPPC     1 C26  A DPPC     1 C27 
+bond58 covale A DPPC     1 C27  A DPPC     1 H7S 
+bond59 covale A DPPC     1 C27  A DPPC     1 H7R 
+bond60 covale A DPPC     1 C27  A DPPC     1 C28 
+bond61 covale A DPPC     1 C28  A DPPC     1 H8R 
+bond62 covale A DPPC     1 C28  A DPPC     1 H8S 
+bond63 covale A DPPC     1 C28  A DPPC     1 C29 
+bond64 covale A DPPC     1 C29  A DPPC     1 H9S 
+bond65 covale A DPPC     1 C29  A DPPC     1 H9R 
+bond66 covale A DPPC     1 C29  A DPPC     1 C210
+bond67 covale A DPPC     1 C210 A DPPC     1 H10R
+bond68 covale A DPPC     1 C210 A DPPC     1 H10S
+bond69 covale A DPPC     1 C210 A DPPC     1 C211
+bond70 covale A DPPC     1 C211 A DPPC     1 H11S
+bond71 covale A DPPC     1 C211 A DPPC     1 H11R
+bond72 covale A DPPC     1 C211 A DPPC     1 C212
+bond73 covale A DPPC     1 C212 A DPPC     1 H12R
+bond74 covale A DPPC     1 C212 A DPPC     1 C213
+bond75 covale A DPPC     1 C212 A DPPC     1 H12S
+bond76 covale A DPPC     1 C213 A DPPC     1 H13S
+bond77 covale A DPPC     1 C213 A DPPC     1 H13R
+bond78 covale A DPPC     1 C213 A DPPC     1 C214
+bond79 covale A DPPC     1 C214 A DPPC     1 H14S
+bond80 covale A DPPC     1 C214 A DPPC     1 H14R
+bond81 covale A DPPC     1 C214 A DPPC     1 C215
+bond82 covale A DPPC     1 C215 A DPPC     1 H15R
+bond83 covale A DPPC     1 C215 A DPPC     1 H15S
+bond84 covale A DPPC     1 C215 A DPPC     1 C216
+bond85 covale A DPPC     1 C216 A DPPC     1 H16R
+bond86 covale A DPPC     1 C216 A DPPC     1 H16T
+bond87 covale A DPPC     1 C216 A DPPC     1 H16S
+bond88 covale A DPPC     1 C33  A DPPC     1 H3X 
+bond89 covale A DPPC     1 C33  A DPPC     1 H3Y 
+bond90 covale A DPPC     1 C33  A DPPC     1 C34 
+bond91 covale A DPPC     1 C34  A DPPC     1 H4Y 
+bond92 covale A DPPC     1 C34  A DPPC     1 H4X 
+bond93 covale A DPPC     1 C34  A DPPC     1 C35 
+bond94 covale A DPPC     1 C35  A DPPC     1 H5X 
+bond95 covale A DPPC     1 C35  A DPPC     1 H5Y 
+bond96 covale A DPPC     1 C35  A DPPC     1 C36 
+bond97 covale A DPPC     1 C36  A DPPC     1 H6Y 
+bond98 covale A DPPC     1 C36  A DPPC     1 C37 
+bond99 covale A DPPC     1 C36  A DPPC     1 H6X 
+bond100 covale A DPPC     1 C37  A DPPC     1 H7X 
+bond101 covale A DPPC     1 C37  A DPPC     1 H7Y 
+bond102 covale A DPPC     1 C37  A DPPC     1 C38 
+bond103 covale A DPPC     1 C38  A DPPC     1 H8Y 
+bond104 covale A DPPC     1 C38  A DPPC     1 C39 
+bond105 covale A DPPC     1 C38  A DPPC     1 H8X 
+bond106 covale A DPPC     1 C39  A DPPC     1 H9X 
+bond107 covale A DPPC     1 C39  A DPPC     1 H9Y 
+bond108 covale A DPPC     1 C39  A DPPC     1 C310
+bond109 covale A DPPC     1 C310 A DPPC     1 C311
+bond110 covale A DPPC     1 C310 A DPPC     1 H10Y
+bond111 covale A DPPC     1 C310 A DPPC     1 H10X
+bond112 covale A DPPC     1 C311 A DPPC     1 H11X
+bond113 covale A DPPC     1 C311 A DPPC     1 H11Y
+bond114 covale A DPPC     1 C311 A DPPC     1 C312
+bond115 covale A DPPC     1 C312 A DPPC     1 H12Y
+bond116 covale A DPPC     1 C312 A DPPC     1 C313
+bond117 covale A DPPC     1 C312 A DPPC     1 H12X
+bond118 covale A DPPC     1 C313 A DPPC     1 H13X
+bond119 covale A DPPC     1 C313 A DPPC     1 H13Y
+bond120 covale A DPPC     1 C313 A DPPC     1 C314
+bond121 covale A DPPC     1 C314 A DPPC     1 H14Y
+bond122 covale A DPPC     1 C314 A DPPC     1 H14X
+bond123 covale A DPPC     1 C314 A DPPC     1 C315
+bond124 covale A DPPC     1 C315 A DPPC     1 H15X
+bond125 covale A DPPC     1 C315 A DPPC     1 H15Y
+bond126 covale A DPPC     1 C315 A DPPC     1 C316
+bond127 covale A DPPC     1 C316 A DPPC     1 H16Z
+bond128 covale A DPPC     1 C316 A DPPC     1 H16X
+bond129 covale A DPPC     1 C316 A DPPC     1 H16Y
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.Cartn_x_esd
+_atom_site.Cartn_y_esd
+_atom_site.Cartn_z_esd
+_atom_site.occupancy_esd
+_atom_site.B_iso_or_equiv_esd
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+HETATM      1 N   N    . DPPC A ?     1 .    35.7210    60.6890    16.6580  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A    N     1
+HETATM      2 C   C13  . DPPC A ?     1 .    37.0060    61.2470    16.2590  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C13     1
+HETATM      3 H   H13A . DPPC A ?     1 .    37.4070    61.7410    17.1450  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13A     1
+HETATM      4 H   H13B . DPPC A ?     1 .    36.8020    61.9530    15.4520  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13B     1
+HETATM      5 H   H13C . DPPC A ?     1 .    37.7300    60.5250    15.8790  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13C     1
+HETATM      6 C   C14  . DPPC A ?     1 .    34.9880    61.6930    17.4790  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C14     1
+HETATM      7 H   H14A . DPPC A ?     1 .    34.0870    61.2750    17.9310  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14A     1
+HETATM      8 H   H14B . DPPC A ?     1 .    34.6710    62.4780    16.7920  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14B     1
+HETATM      9 H   H14C . DPPC A ?     1 .    35.6950    62.1580    18.1680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14C     1
+HETATM     10 C   C15  . DPPC A ?     1 .    34.8790    60.3420    15.4540  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C15     1
+HETATM     11 H   H15A . DPPC A ?     1 .    35.3540    59.5540    14.8680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15A     1
+HETATM     12 H   H15B . DPPC A ?     1 .    34.6610    61.1150    14.7160  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15B     1
+HETATM     13 H   H15C . DPPC A ?     1 .    33.9740    59.8610    15.8300  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15C     1
+HETATM     14 C   C12  . DPPC A ?     1 .    35.9670    59.5160    17.4340  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C12     1
+HETATM     15 H   H12A . DPPC A ?     1 .    36.5440    58.7840    16.8660  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12A     1
+HETATM     16 H   H12B . DPPC A ?     1 .    35.0280    59.0540    17.7400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12B     1
+HETATM     17 C   C11  . DPPC A ?     1 .    36.7950    59.7210    18.7310  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C11     1
+HETATM     18 H   H11A . DPPC A ?     1 .    36.1340    60.1740    19.4750  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11A     1
+HETATM     19 H   H11B . DPPC A ?     1 .    37.6520    60.3890    18.6190  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11B     1
+HETATM     20 P   P    . DPPC A ?     1 .    37.9880    58.0770    20.4060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A    P     1
+HETATM     21 O   O13  . DPPC A ?     1 .    39.2220    58.8750    20.3330  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O13     1
+HETATM     22 O   O14  . DPPC A ?     1 .    38.0440    56.6320    20.5300  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O14     1
+HETATM     23 O   O11  . DPPC A ?     1 .    37.1160    58.7630    21.5000  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O11     1
+HETATM     24 O   O12  . DPPC A ?     1 .    37.2300    58.4340    19.0940  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O12     1
+HETATM     25 C   C1   . DPPC A ?     1 .    37.4620    59.9420    22.1630  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   C1     1
+HETATM     26 H   HA   . DPPC A ?     1 .    36.5540    60.2710    22.6760  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   HA     1
+HETATM     27 H   HB   . DPPC A ?     1 .    37.7450    60.7750    21.5140  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   HB     1
+HETATM     28 C   C2   . DPPC A ?     1 .    38.4710    59.7740    23.2420  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   C2     1
+HETATM     29 H   HS   . DPPC A ?     1 .    39.2800    59.2880    22.6910  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   HS     1
+HETATM     30 O   O21  . DPPC A ?     1 .    37.8990    58.9510    24.3070  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O21     1
+HETATM     31 C   C21  . DPPC A ?     1 .    38.6690    58.1320    25.0320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C21     1
+HETATM     32 O   O22  . DPPC A ?     1 .    39.7460    57.7400    24.5880  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O22     1
+HETATM     33 C   C22  . DPPC A ?     1 .    38.0240    57.7750    26.3200  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C22     1
+HETATM     34 H   H2R  . DPPC A ?     1 .    38.0590    58.6510    26.9710  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H2R     1
+HETATM     35 H   H2S  . DPPC A ?     1 .    38.6540    56.9500    26.6570  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H2S     1
+HETATM     36 C   C3   . DPPC A ?     1 .    39.0010    61.0910    23.8720  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   C3     1
+HETATM     37 H   HX   . DPPC A ?     1 .    38.2390    61.6000    24.4670  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   HX     1
+HETATM     38 H   HY   . DPPC A ?     1 .    39.3410    61.7930    23.1060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A   HY     1
+HETATM     39 O   O31  . DPPC A ?     1 .    40.1310    60.9300    24.7580  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O31     1
+HETATM     40 C   C31  . DPPC A ?     1 .    41.3490    60.5130    24.3400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C31     1
+HETATM     41 O   O32  . DPPC A ?     1 .    41.5890    60.4080    23.2090  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  O32     1
+HETATM     42 C   C32  . DPPC A ?     1 .    42.3630    60.3750    25.4000  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C32     1
+HETATM     43 H   H2X  . DPPC A ?     1 .    42.2450    61.0330    26.2630  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H2X     1
+HETATM     44 H   H2Y  . DPPC A ?     1 .    43.3470    60.5890    24.9780  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H2Y     1
+HETATM     45 C   C23  . DPPC A ?     1 .    36.5510    57.5630    26.2320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C23     1
+HETATM     46 H   H3R  . DPPC A ?     1 .    36.3660    56.7360    25.5430  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H3R     1
+HETATM     47 H   H3S  . DPPC A ?     1 .    36.0850    58.4500    25.7980  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H3S     1
+HETATM     48 C   C24  . DPPC A ?     1 .    35.7450    57.3460    27.5460  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C24     1
+HETATM     49 H   H4R  . DPPC A ?     1 .    34.6950    57.0870    27.3970  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H4R     1
+HETATM     50 H   H4S  . DPPC A ?     1 .    35.8020    58.3760    27.9060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H4S     1
+HETATM     51 C   C25  . DPPC A ?     1 .    36.3430    56.3550    28.5510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C25     1
+HETATM     52 H   H5R  . DPPC A ?     1 .    37.3730    56.5620    28.8500  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H5R     1
+HETATM     53 H   H5S  . DPPC A ?     1 .    36.3060    55.3920    28.0370  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H5S     1
+HETATM     54 C   C26  . DPPC A ?     1 .    35.5510    56.1080    29.7620  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C26     1
+HETATM     55 H   H6R  . DPPC A ?     1 .    34.5020    56.0770    29.4620  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H6R     1
+HETATM     56 H   H6S  . DPPC A ?     1 .    35.6550    56.8630    30.5440  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H6S     1
+HETATM     57 C   C27  . DPPC A ?     1 .    35.9050    54.8910    30.5400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C27     1
+HETATM     58 H   H7R  . DPPC A ?     1 .    36.8960    55.1050    30.9460  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H7R     1
+HETATM     59 H   H7S  . DPPC A ?     1 .    36.0650    54.0950    29.8110  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H7S     1
+HETATM     60 C   C28  . DPPC A ?     1 .    34.8980    54.4470    31.5820  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C28     1
+HETATM     61 H   H8R  . DPPC A ?     1 .    33.9170    54.2740    31.1350  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H8R     1
+HETATM     62 H   H8S  . DPPC A ?     1 .    34.7430    55.2820    32.2690  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H8S     1
+HETATM     63 C   C29  . DPPC A ?     1 .    35.3310    53.2680    32.3510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C29     1
+HETATM     64 H   H9R  . DPPC A ?     1 .    36.2510    53.4930    32.8950  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H9R     1
+HETATM     65 H   H9S  . DPPC A ?     1 .    35.5370    52.4910    31.6130  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H9S     1
+HETATM     66 C   C210 . DPPC A ?     1 .    34.3550    52.8980    33.3830  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C210     1
+HETATM     67 H   H10R . DPPC A ?     1 .    33.5840    52.4700    32.7390  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H10R     1
+HETATM     68 H   H10S . DPPC A ?     1 .    33.9520    53.7870    33.8740  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H10S     1
+HETATM     69 C   C211 . DPPC A ?     1 .    34.7980    51.8420    34.4300  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C211     1
+HETATM     70 H   H11R . DPPC A ?     1 .    35.6630    52.1740    35.0070  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11R     1
+HETATM     71 H   H11S . DPPC A ?     1 .    35.2000    51.0060    33.8550  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11S     1
+HETATM     72 C   C212 . DPPC A ?     1 .    33.6790    51.2630    35.2480  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C212     1
+HETATM     73 H   H12R . DPPC A ?     1 .    32.8450    50.8470    34.6780  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12R     1
+HETATM     74 H   H12S . DPPC A ?     1 .    33.2890    51.9770    35.9770  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12S     1
+HETATM     75 C   C213 . DPPC A ?     1 .    34.1330    50.1260    36.1100  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C213     1
+HETATM     76 H   H13R . DPPC A ?     1 .    35.1210    50.2840    36.5480  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13R     1
+HETATM     77 H   H13S . DPPC A ?     1 .    34.2070    49.2460    35.4680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13S     1
+HETATM     78 C   C214 . DPPC A ?     1 .    33.3220    49.8770    37.3690  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C214     1
+HETATM     79 H   H14R . DPPC A ?     1 .    32.2530    49.8960    37.1480  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14R     1
+HETATM     80 H   H14S . DPPC A ?     1 .    33.3210    50.8070    37.9410  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14S     1
+HETATM     81 C   C215 . DPPC A ?     1 .    33.9000    48.7160    38.2170  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C215     1
+HETATM     82 H   H15R . DPPC A ?     1 .    34.9580    48.9420    38.3630  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15R     1
+HETATM     83 H   H15S . DPPC A ?     1 .    33.9010    47.8150    37.5990  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15S     1
+HETATM     84 C   C216 . DPPC A ?     1 .    33.2250    48.3960    39.5470  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C216     1
+HETATM     85 H   H16R . DPPC A ?     1 .    32.3380    47.7690    39.4320  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16R     1
+HETATM     86 H   H16S . DPPC A ?     1 .    32.8020    49.2660    40.0540  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16S     1
+HETATM     87 H   H16T . DPPC A ?     1 .    33.9280    48.0430    40.3050  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16T     1
+HETATM     88 C   C33  . DPPC A ?     1 .    42.3860    58.9540    25.9480  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C33     1
+HETATM     89 H   H3X  . DPPC A ?     1 .    43.3990    58.6640    26.2330  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H3X     1
+HETATM     90 H   H3Y  . DPPC A ?     1 .    42.0750    58.1480    25.2790  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H3Y     1
+HETATM     91 C   C34  . DPPC A ?     1 .    41.5780    58.7990    27.2810  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C34     1
+HETATM     92 H   H4X  . DPPC A ?     1 .    40.5310    58.9870    27.0340  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H4X     1
+HETATM     93 H   H4Y  . DPPC A ?     1 .    41.9010    59.4730    28.0770  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H4Y     1
+HETATM     94 C   C35  . DPPC A ?     1 .    41.7910    57.4410    28.0460  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C35     1
+HETATM     95 H   H5X  . DPPC A ?     1 .    42.7300    57.5310    28.5970  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H5X     1
+HETATM     96 H   H5Y  . DPPC A ?     1 .    41.8830    56.7040    27.2460  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H5Y     1
+HETATM     97 C   C36  . DPPC A ?     1 .    40.6730    57.0120    28.9580  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C36     1
+HETATM     98 H   H6X  . DPPC A ?     1 .    39.6990    56.9510    28.4680  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H6X     1
+HETATM     99 H   H6Y  . DPPC A ?     1 .    40.5870    57.7590    29.7510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H6Y     1
+HETATM    100 C   C37  . DPPC A ?     1 .    40.9120    55.7130    29.7060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C37     1
+HETATM    101 H   H7X  . DPPC A ?     1 .    41.8220    55.8820    30.2860  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H7X     1
+HETATM    102 H   H7Y  . DPPC A ?     1 .    41.1510    54.9550    28.9580  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H7Y     1
+HETATM    103 C   C38  . DPPC A ?     1 .    39.8330    55.2570    30.6590  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C38     1
+HETATM    104 H   H8X  . DPPC A ?     1 .    38.9810    54.7440    30.2080  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H8X     1
+HETATM    105 H   H8Y  . DPPC A ?     1 .    39.4030    56.0670    31.2520  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H8Y     1
+HETATM    106 C   C39  . DPPC A ?     1 .    40.4030    54.0640    31.5250  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  C39     1
+HETATM    107 H   H9X  . DPPC A ?     1 .    41.2770    54.4440    32.0590  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H9X     1
+HETATM    108 H   H9Y  . DPPC A ?     1 .    40.7130    53.2370    30.8830  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A  H9Y     1
+HETATM    109 C   C310 . DPPC A ?     1 .    39.4020    53.5010    32.5400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C310     1
+HETATM    110 H   H10X . DPPC A ?     1 .    38.6140    52.9410    32.0330  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H10X     1
+HETATM    111 H   H10Y . DPPC A ?     1 .    38.7900    54.3860    32.7250  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H10Y     1
+HETATM    112 C   C311 . DPPC A ?     1 .    40.0250    52.8040    33.7060  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C311     1
+HETATM    113 H   H11X . DPPC A ?     1 .    40.4490    53.5230    34.4110  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11X     1
+HETATM    114 H   H11Y . DPPC A ?     1 .    40.9790    52.4040    33.3570  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H11Y     1
+HETATM    115 C   C312 . DPPC A ?     1 .    39.1290    51.6910    34.3660  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C312     1
+HETATM    116 H   H12X . DPPC A ?     1 .    38.8090    50.9410    33.6400  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12X     1
+HETATM    117 H   H12Y . DPPC A ?     1 .    38.1820    52.2030    34.5510  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H12Y     1
+HETATM    118 C   C313 . DPPC A ?     1 .    39.8680    51.1270    35.6020  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C313     1
+HETATM    119 H   H13X . DPPC A ?     1 .    40.1590    51.9700    36.2310  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13X     1
+HETATM    120 H   H13Y . DPPC A ?     1 .    40.8400    50.6780    35.3870  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H13Y     1
+HETATM    121 C   C314 . DPPC A ?     1 .    38.9680    50.1630    36.4120  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C314     1
+HETATM    122 H   H14X . DPPC A ?     1 .    38.6840    49.3180    35.7810  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14X     1
+HETATM    123 H   H14Y . DPPC A ?     1 .    38.0310    50.6580    36.6780  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H14Y     1
+HETATM    124 C   C315 . DPPC A ?     1 .    39.5900    49.7100    37.7600  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C315     1
+HETATM    125 H   H15X . DPPC A ?     1 .    39.8920    50.6600    38.2070  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15X     1
+HETATM    126 H   H15Y . DPPC A ?     1 .    40.5170    49.1630    37.5760  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H15Y     1
+HETATM    127 C   C316 . DPPC A ?     1 .    38.6010    49.0630    38.8000  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A C316     1
+HETATM    128 H   H16X . DPPC A ?     1 .    39.1220    48.6040    39.6420  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16X     1
+HETATM    129 H   H16Y . DPPC A ?     1 .    37.8990    48.3140    38.4260  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16Y     1
+HETATM    130 H   H16Z . DPPC A ?     1 .    37.9930    49.9020    39.1450  0.0  0.0  ?  ?  ?  ?  ?  .      1 DPPC A H16Z     1

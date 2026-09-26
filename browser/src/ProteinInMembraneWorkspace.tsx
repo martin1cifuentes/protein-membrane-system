@@ -18,7 +18,7 @@ export type ActorActionKind =
   | 'approvePreparationChange' | 'declinePreparationChange'
   | 'proposeMembrane' | 'adoptMembrane' | 'proposePlacement'
   | 'revisePlacement' | 'adoptPlacement' | 'startPreparation'
-  | 'stopAttempt' | 'requestEquilibration' | 'selectInspectionSubject'
+  | 'continueMinimization' | 'stopAttempt' | 'requestEquilibration' | 'selectInspectionSubject'
   | 'setInspectionFocus' | 'exportStage';
 type ActorCommandKind = Exclude<ActorActionKind, 'declinePreparationChange'>;
 
@@ -37,6 +37,7 @@ interface StudyAccount {
   uploadProvenance?: UploadOriginKind | null;
   uploadProvenanceNote?: string | null;
   modelIndex: number | null;
+  adoptedPlacementProposalId: string | null;
   biologicalAssemblyId: string | null;
   chainIds: string[];
   partners: PartnerSelection[];
@@ -128,8 +129,8 @@ interface PreparationChangeProposal {
   residue: { model: number; chain: string; residue: number; insertionCode: string; copyId: string };
 }
 
-export interface ScientificFinding { id: string; meaning: string; consequence: string; disposition: string; material: boolean; }
-export interface ScientificEvidence { id: string; source: string; method: string; observation: string; applicability: string; uncertainty: string; bearing: string; }
+export interface ScientificFinding { id: string; subjectId: string; evidenceId: string; meaning: string; consequence: string; disposition: string; material: boolean; }
+export interface ScientificEvidence { id: string; subjectId: string; source: string; method: string; observation: string; applicability: string; uncertainty: string; bearing: string; }
 
 interface ProteinAccount {
   subjectId: string;
@@ -145,6 +146,16 @@ interface ProteinAccount {
 }
 
 interface LipidFraction { speciesId: string; fraction: number; }
+interface MembraneSpeciesSupportAccount {
+  speciesId: string;
+  chemistryId: string;
+  category: string;
+  forceFieldFamily: string;
+  forceFieldVersion: string;
+  coordinateSha256: string;
+  parameterSha256: string;
+  limitations: string[];
+}
 interface MembraneAccount {
   modelId: string;
   status: string;
@@ -152,18 +163,80 @@ interface MembraneAccount {
   lower: LipidFraction[];
   scientificPurpose: string;
   limitations: string[];
+  reason: string | null;
+  policyId: string | null;
+  policyVersion: string | null;
+  evidence: ScientificEvidence[];
+  speciesSupport: MembraneSpeciesSupportAccount[];
 }
 
 interface PlacementAccount {
   proposalId: string;
   status: string;
+  preparedProteinId: string | null;
+  membraneModelId: string | null;
   topologyKind: ProteinTopologyKind;
+  physicalSide: PlacementPhysicalSide;
+  midplaneAngstrom: number | null;
+  thicknessAngstrom: number | null;
   depthAngstrom: number | null;
   tiltDegrees: number | null;
   sidedness: string | null;
+  contactingRegions: string[];
+  limitations: string[];
+  policyId: string | null;
+  policyVersion: string | null;
+  witnessId: string | null;
   reason: string;
   evidence: ScientificEvidence[];
   prediction: PredictionRegionSummaryObservations | null;
+}
+
+interface SpeciesCountAccount {
+  physicalSide: LeafletSide;
+  speciesId: string;
+  count: number;
+  intendedFraction: number;
+}
+
+interface MeasuredValueAccount { name: string; value: number; unit: string; scope: string; }
+interface LocalStateAccount {
+  standing: string;
+  unavailableReason: string | null;
+  measurements: MeasuredValueAccount[];
+  limitations: string[];
+  rolePairMeasurements: {
+    firstMoleculeRole: string;
+    secondMoleculeRole: string;
+    pairsWithinSearchRadius: number;
+    minimumDistanceAngstrom: number | null;
+  }[];
+}
+interface ConstructionDerivationAccount {
+  attemptId: string;
+  lipidCounts: SpeciesCountAccount[];
+  cellAngstrom: number[];
+  waterCount: number;
+  sodiumCount: number;
+  chlorideCount: number;
+  proteinNetChargeElementary: number;
+  intendedNaClMolar: number;
+  estimatedNaClMolar: number;
+  estimatedAqueousVolumeAngstromCubed: number;
+  approximations: string[];
+  limitations: string[];
+}
+interface ConstructedSystemAccount {
+  subjectId: string;
+  attemptId: string;
+  atomCount: number;
+  achievedComposition: SpeciesCountAccount[];
+  cellAngstrom: number[];
+  waterCount: number;
+  sodiumCount: number;
+  chlorideCount: number;
+  conditionsTreatment: string;
+  localState: LocalStateAccount | null;
 }
 
 interface AttemptAccount {
@@ -172,9 +245,39 @@ interface AttemptAccount {
   stageKind: StageKind | null;
   progress: number | null;
   message: string;
+  studyRevisionId: string | null;
+  policyId: string | null;
+  policyVersion: string | null;
+  currentStageId: string | null;
+  derivation: ConstructionDerivationAccount | null;
+  constructed: ConstructedSystemAccount | null;
 }
 
-interface PreparationAssessmentResult {
+interface StageObservationAccount {
+  stageId: string;
+  attemptId: string;
+  kind: StageKind;
+  measurements: MeasuredValueAccount[];
+  evidence: ScientificEvidence[];
+  termination: string;
+  providerVersion: string;
+  observedAt: string;
+  localState: LocalStateAccount | null;
+  proteinGeometry: ProteinGeometryObservations | null;
+}
+
+interface ExportAccount {
+  stageId: string;
+  assessmentId: string;
+  status: 'verified' | 'failed';
+  reason: string | null;
+  sha256: string | null;
+  byteLength: number | null;
+}
+
+export interface PreparationAssessmentResult {
+  id: string;
+  stageId: string;
   qualification: string;
   reason: string;
   evidence: ScientificEvidence[];
@@ -188,9 +291,13 @@ interface StageAccount {
   attemptId: string;
   studyRevisionId: string;
   kind: StageKind;
+  sourceStageId?: string | null;
   status: string;
   assessment: PreparationAssessmentResult | null;
   summary: string;
+  observation: StageObservationAccount | null;
+  constructed?: ConstructedSystemAccount | null;
+  export: ExportAccount | null;
 }
 
 interface AvailableAction { kind: ActorActionKind; subjectId: string | null; enabled: boolean; reason: string | null; }
@@ -213,8 +320,8 @@ export interface WorkspaceState {
   notices: WorkspaceNotice[];
 }
 
-interface EditableFraction { speciesId: string; percent: string; }
-const blankFraction = (): EditableFraction => ({ speciesId: '', percent: '100' });
+interface EditableFraction { speciesId: string; percent: string; manual: boolean; }
+const blankFraction = (): EditableFraction => ({ speciesId: '', percent: '100', manual: false });
 
 function action(state: WorkspaceState, kind: ActorActionKind, subjectId: string | null = null): AvailableAction | undefined {
   return state.actions.find(item => item.kind === kind && item.subjectId === subjectId);
@@ -222,6 +329,7 @@ function action(state: WorkspaceState, kind: ActorActionKind, subjectId: string 
 
 function readable(value: string | null | undefined): string {
   if (!value) return 'Not established';
+  if (value === 'readyForMinimization') return 'Ready for minimization';
   return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ');
 }
 
@@ -310,27 +418,41 @@ function FractionEditor({ label, rows, onChange, options }: {
     <span className="field-label">{label} leaflet · <span className="tabular">{sum.toFixed(1)}%</span></span>
     {rows.map((row, index) => <div key={index}>
       <div className="fraction-row">
-        <select className="select-input" aria-label={`${label} leaflet lipid ${index + 1}`} value={row.speciesId} onChange={event => update(index, { speciesId: event.target.value })}>
+        <select className="select-input" aria-label={`${label} leaflet lipid ${index + 1}`} value={row.manual ? '__other__' : row.speciesId} onChange={event => {
+          const value = event.target.value;
+          update(index, { speciesId: value === '__other__' ? '' : value, manual: value === '__other__' });
+        }}>
           <option value="">Choose lipid</option>
           {options.map(lipid => <option value={lipid.speciesId} key={lipid.speciesId}>{lipid.displayName} ({lipid.speciesId})</option>)}
+          <option value="__other__">Other exact species ID…</option>
         </select>
         <input className="number-input tabular" type="number" min="0" max="100" step="0.1" aria-label={`${label} leaflet percentage ${index + 1}`} value={row.percent} onChange={event => update(index, { percent: event.target.value })} />
         <button className="button compact" type="button" aria-label={`Remove ${label} leaflet lipid ${index + 1}`} disabled={rows.length === 1} onClick={() => onChange(rows.filter((_, current) => current !== index))}>×</button>
       </div>
-      {options.find(lipid => lipid.speciesId === row.speciesId)?.limitations.map(limit => <p className="help-text" key={limit}>{limit}</p>)}
+      {row.manual && <>
+        <input className="text-input tabular" aria-label={`${label} leaflet exact species ID ${index + 1}`}
+          value={row.speciesId} onChange={event => update(index, { speciesId: event.target.value })}
+          placeholder="Exact chemical species ID" autoCapitalize="off" spellCheck={false} />
+        <p className="help-text">This exact choice will be assessed as entered. An unsupported species is reported; no catalogue species is substituted.</p>
+      </>}
+      {!row.manual && options.find(lipid => lipid.speciesId === row.speciesId)?.limitations.map(limit => <p className="help-text" key={limit}>{limit}</p>)}
     </div>)}
-    <button className="button compact" type="button" onClick={() => onChange([...rows, { speciesId: '', percent: '0' }])}>Add lipid</button>
+    <button className="button compact" type="button" onClick={() => onChange([...rows, { speciesId: '', percent: '0', manual: false }])}>Add lipid</button>
   </div>;
 }
 
 function validFractions(rows: EditableFraction[]): boolean {
-  if (rows.length === 0 || rows.some(row => !row.speciesId || !Number.isFinite(Number(row.percent)) || Number(row.percent) <= 0)) return false;
-  if (new Set(rows.map(row => row.speciesId)).size !== rows.length) return false;
+  if (rows.length === 0 || rows.some(row => row.percent.trim() === '' ||
+      !Number.isFinite(Number(row.percent)) || Number(row.percent) < 0)) return false;
+  const present = rows.filter(row => Number(row.percent) > 0);
+  if (present.length === 0 || present.some(row => !row.speciesId.trim())) return false;
+  if (new Set(present.map(row => row.speciesId.trim())).size !== present.length) return false;
   return Math.abs(rows.reduce((sum, row) => sum + Number(row.percent), 0) - 100) < 0.01;
 }
 
 function toFractions(rows: EditableFraction[]): LipidFraction[] {
-  return rows.map(row => ({ speciesId: row.speciesId, fraction: Number(row.percent) / 100 }));
+  return rows.filter(row => Number(row.percent) > 0)
+    .map(row => ({ speciesId: row.speciesId.trim(), fraction: Number(row.percent) / 100 }));
 }
 
 function selectedSourceModel(state: WorkspaceState, choice: string): SourceModelObservation | undefined {
@@ -346,11 +468,21 @@ export function ProteinInMembraneWorkspace() {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const latestState = useRef<WorkspaceState | null>(null);
   const [communication, setCommunication] = useState<string | null>(null);
+  const [streamInterrupted, setStreamInterrupted] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [localExportFault, setLocalExportFault] = useState<{ stageId: string; reason: string } | null>(null);
+  const [localExportNotice, setLocalExportNotice] = useState<{ stageId: string; message: string } | null>(null);
+  const [requestedStageTab, setRequestedStageTab] = useState<{
+    stageId: string; tab: 'stage' | 'export';
+  } | null>(null);
   const [workflowOpen, setWorkflowOpen] = useState(true);
+  const [attemptReviewRequested, setAttemptReviewRequested] = useState(false);
   const busyRef = useRef(false);
   const refreshIndex = useRef(0);
+  const initialAccountPresented = useRef(false);
+  const automaticallyInspectedConstruction = useRef<string | null>(null);
 
   const [query, setQuery] = useState('');
   const [exactSourceKind, setExactSourceKind] = useState<'rcsb' | 'alphafold'>('rcsb');
@@ -388,6 +520,13 @@ export function ProteinInMembraneWorkspace() {
         if (!latestState.current || latestState.current.revision <= account.revision) {
           latestState.current = account;
           setState(account);
+          if (!initialAccountPresented.current) {
+            initialAccountPresented.current = true;
+            if (account.attempt && (!account.inspection ||
+                account.inspection.subjectId === account.attempt.constructed?.subjectId ||
+                account.stages.some(stage => stage.stageId === account.inspection?.subjectId)))
+              setWorkflowOpen(false);
+          }
         }
         setCommunication(null);
       }
@@ -399,14 +538,19 @@ export function ProteinInMembraneWorkspace() {
   useEffect(() => {
     void refresh();
     const events = new EventSource('/api/events');
-    events.onmessage = () => { void refresh(); };
-    events.onerror = () => setCommunication('The live connection is interrupted. Reconnecting to the local workspace…');
+    events.onopen = () => { setStreamInterrupted(false); void refresh(); };
+    events.onmessage = () => { setStreamInterrupted(false); void refresh(); };
+    events.onerror = () => setStreamInterrupted(true);
     return () => events.close();
   }, []);
 
   useEffect(() => {
     if (!state?.membrane) return;
-    const toEditable = (fractions: LipidFraction[]) => fractions.map(item => ({ speciesId: item.speciesId, percent: String(item.fraction * 100) }));
+    const toEditable = (fractions: LipidFraction[]) => fractions.map(item => ({
+      speciesId: item.speciesId,
+      percent: String(item.fraction * 100),
+      manual: !state.availableLipids.some(candidate => candidate.speciesId === item.speciesId),
+    }));
     setUpper(toEditable(state.membrane.upper));
     setLower(toEditable(state.membrane.lower));
   }, [state?.membrane?.modelId]);
@@ -427,7 +571,8 @@ export function ProteinInMembraneWorkspace() {
     setPlacementRationale('');
   }, [state?.placement?.proposalId]);
 
-  async function command(kind: ActorCommandKind, data: object): Promise<boolean> {
+  async function command(kind: ActorCommandKind, data: object,
+                         onFailure?: (reason: string) => void): Promise<boolean> {
     const current = latestState.current;
     if (!current || busyRef.current) return false;
     busyRef.current = true;
@@ -443,6 +588,7 @@ export function ProteinInMembraneWorkspace() {
         const reason = typeof result === 'object' && result !== null && 'reason' in result
           ? String(result.reason) : `The request was refused (${response.status}).`;
         setFeedback(reason);
+        onFailure?.(reason);
         await refresh();
         return false;
       }
@@ -455,7 +601,9 @@ export function ProteinInMembraneWorkspace() {
       setFeedback(null);
       return true;
     } catch (cause) {
-      setFeedback(cause instanceof Error ? cause.message : 'The local request did not complete.');
+      const reason = cause instanceof Error ? cause.message : 'The local request did not complete.';
+      setFeedback(reason);
+      onFailure?.(reason);
       await refresh();
       return false;
     } finally {
@@ -464,8 +612,45 @@ export function ProteinInMembraneWorkspace() {
     }
   }
 
+  useEffect(() => {
+    const subjectId = state?.attempt?.constructed?.subjectId;
+    if (!attemptReviewRequested || !subjectId || busy || busyRef.current ||
+        state?.inspection?.subjectId === subjectId ||
+        automaticallyInspectedConstruction.current === subjectId ||
+        action(state, 'selectInspectionSubject')?.enabled !== true) return;
+    automaticallyInspectedConstruction.current = subjectId;
+    void command('selectInspectionSubject', { subjectId });
+  }, [attemptReviewRequested, busy, state?.attempt?.constructed?.subjectId,
+      state?.inspection?.subjectId, state?.revision]);
+
   async function inspectSubject(subjectId: string) {
-    if (await command('selectInspectionSubject', { subjectId })) setWorkflowOpen(false);
+    if (await command('selectInspectionSubject', { subjectId })) {
+      setAttemptReviewRequested(false);
+      setWorkflowOpen(false);
+    }
+  }
+
+  async function startPreparation() {
+    if (await command('startPreparation', {})) {
+      setAttemptReviewRequested(true);
+      setWorkflowOpen(false);
+    }
+  }
+
+  async function continueMinimization(attempt: AttemptAccount) {
+    if (!attempt.constructed) return;
+    if (await command('continueMinimization', {
+      attemptId: attempt.attemptId,
+      constructedSubjectId: attempt.constructed.subjectId,
+    })) {
+      setAttemptReviewRequested(true);
+      setWorkflowOpen(false);
+    }
+  }
+
+  function showWorkflowSection(id: string) {
+    setWorkflowOpen(true);
+    window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start' }));
   }
 
   async function uploadSource() {
@@ -503,15 +688,71 @@ export function ProteinInMembraneWorkspace() {
   }
 
   async function exportStage(stageId: string) {
-    if (!await command('exportStage', { stageId })) return;
-    // Let the browser stream the verified bundle instead of copying it into JavaScript memory.
-    const link = document.createElement('a');
-    link.href = `/api/export/${encodeURIComponent(stageId)}`;
-    link.download = `protein-membrane-${stageId}.zip`;
-    link.click();
+    const current = latestState.current;
+    if (exportBusy || !current || current.inspection?.subjectId !== stageId ||
+        action(current, 'exportStage', stageId)?.enabled !== true) return;
+    setExportBusy(true);
+    setLocalExportNotice(null);
+    try {
+      if (!await command('exportStage', { stageId }, reason =>
+          setLocalExportFault({ stageId, reason }))) return;
+      const selected = latestState.current?.stages.find(stage => stage.stageId === stageId);
+      const delivery = selected?.export;
+      if (delivery?.stageId !== stageId || delivery.status !== 'verified' ||
+          !selected?.assessment?.currentlyApplicable ||
+          delivery.assessmentId !== selected.assessment.id ||
+          !delivery.sha256 || !/^[0-9a-f]{64}$/.test(delivery.sha256) ||
+          typeof delivery.byteLength !== 'number' ||
+          !Number.isSafeInteger(delivery.byteLength) || delivery.byteLength <= 0)
+        throw new Error('The host did not identify a verified bundle for this completed stage.');
+
+      const response = await fetch(`/api/export/${encodeURIComponent(stageId)}`, {
+        cache: 'no-store', headers: { 'If-Match': `"${delivery.sha256}"` },
+      });
+      if (!response.ok) {
+        let reason = `The verified bundle could not be transferred (${response.status}).`;
+        try {
+          const body: unknown = await response.json();
+          if (typeof body === 'object' && body !== null && 'reason' in body &&
+              typeof body.reason === 'string' && body.reason.trim()) reason = body.reason;
+        } catch { /* Preserve the HTTP status when no JSON reason is available. */ }
+        throw new Error(reason);
+      }
+      if (!response.headers.get('content-type')?.toLowerCase().includes('application/zip') ||
+          response.headers.get('etag') !== `"${delivery.sha256}"` ||
+          response.headers.get('x-content-sha256') !== delivery.sha256)
+        throw new Error('The downloaded bundle identity was not confirmed by the local host.');
+      const bytes = await response.arrayBuffer();
+      if (bytes.byteLength !== delivery.byteLength)
+        throw new Error('The downloaded bytes did not match the verified bundle length.');
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+        value => value.toString(16).padStart(2, '0')).join('');
+      if (digest !== delivery.sha256)
+        throw new Error('The downloaded bytes did not match the verified bundle digest.');
+
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+      try {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `protein-membrane-${stageId}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+      setLocalExportFault(null);
+      setLocalExportNotice({ stageId, message: 'Verified bundle received; browser download requested.' });
+    } catch (cause) {
+      setLocalExportFault({ stageId, reason: cause instanceof Error
+        ? cause.message : 'The verified bundle could not be transferred.' });
+      await refresh();
+    } finally {
+      setExportBusy(false);
+    }
   }
 
-  if (!state) return <main className="workspace"><header className="workspace-header"><div className="brand-lockup"><div className="brand-mark">PM</div><div><div className="brand-name">Protein–Membrane Workspace</div><div className="brand-subtitle">Local scientific preparation</div></div></div></header><div className="scene-empty" role="status"><strong>Connecting to the local workspace</strong><span>{communication ?? 'Reading the current scientific account…'}</span></div></main>;
+  if (!state) return <main className="workspace"><header className="workspace-header"><div className="brand-lockup"><div className="brand-mark">PM</div><div><div className="brand-name">Protein–Membrane Workspace</div><div className="brand-subtitle">Local scientific preparation</div></div></div></header><div className="scene-empty" role="status"><strong>Connecting to the local workspace</strong><span>{communication ?? (streamInterrupted ? 'The live connection is interrupted. Reading established local standing…' : 'Reading the current scientific account…')}</span></div></main>;
 
   const model = selectedSourceModel(state, modelChoice);
   const assembly = selectedAssembly(model, assemblyChoice);
@@ -531,14 +772,95 @@ export function ProteinInMembraneWorkspace() {
   const correctionReady = state.placement !== null && placementRationale.trim().length > 0
     && correctionValues.every(Number.isFinite) && correctionValues.some(value => value !== 0);
   const selectedStage = state.stages.find(stage => stage.stageId === state.inspection?.subjectId);
+  const selectedExportFault = selectedStage ? (localExportFault?.stageId === selectedStage.stageId
+    ? localExportFault.reason : selectedStage.export?.status === 'failed'
+      ? selectedStage.export.reason ?? 'The verified bundle could not be delivered.' : null) : null;
+  const selectedExportNotice = selectedStage && localExportNotice?.stageId === selectedStage.stageId
+    ? localExportNotice.message : null;
+  const selectedSourceStage = selectedStage?.kind === 'Equilibration' && selectedStage.sourceStageId
+    ? state.stages.find(stage => stage.stageId === selectedStage.sourceStageId &&
+      stage.attemptId === selectedStage.attemptId && stage.kind === 'Minimization') : undefined;
+  const pairedMinimizedStage = selectedStage?.kind === 'Minimization'
+    ? selectedStage : selectedSourceStage;
+  const equilibratedDescendants = selectedStage?.kind === 'Minimization'
+    ? state.stages.filter(stage => stage.kind === 'Equilibration' &&
+      stage.sourceStageId === selectedStage.stageId &&
+      stage.attemptId === selectedStage.attemptId) : [];
+  const pairedEquilibratedStage = selectedStage?.kind === 'Equilibration'
+    ? selectedStage : equilibratedDescendants.length === 1 ? equilibratedDescendants[0] : undefined;
+  const completedStageSummary = selectedStage
+    ? (['Minimization', 'Equilibration'] as const)
+      .filter(kind => state.stages.some(stage => stage.attemptId === selectedStage.attemptId &&
+        stage.kind === kind && stage.status.toLowerCase() === 'completed'))
+      .map(kind => kind === 'Minimization' ? 'Minimized' : 'Equilibrated').join(' · ')
+    : state.stages.length === 0 ? 'None' : String(state.stages.length);
+  const stageViewTab = selectedStage && selectedExportFault &&
+    requestedStageTab?.stageId === selectedStage.stageId
+    ? requestedStageTab.tab : selectedExportFault ? 'export' : 'stage';
   const selectedChange = state.protein?.changes.find(change => change.id === state.inspection?.subjectId);
+  const selectedMembrane = state.membrane?.modelId === state.inspection?.subjectId ? state.membrane : null;
+  const selectedPlacement = state.placement?.proposalId === state.inspection?.subjectId ? state.placement : null;
+  const selectedPlacementAdopted = selectedPlacement !== null &&
+    state.study?.adoptedPlacementProposalId === selectedPlacement.proposalId;
+  const activeAttempt = !!state.attempt && ['pending', 'running'].includes(state.attempt.status.toLowerCase());
+  const minimizationRunning = activeAttempt && state.attempt?.stageKind === 'Minimization';
+  const awaitingMinimization = state.attempt?.status.toLowerCase() === 'readyforminimization';
+  const selectedConstructed = !!state.attempt?.constructed &&
+    state.inspection?.subjectId === state.attempt.constructed.subjectId;
+  const reviewAttempt = !selectedStage && !!state.attempt &&
+    (attemptReviewRequested || selectedConstructed || (activeAttempt && !state.inspection));
+  const executionReview = reviewAttempt || !!selectedStage;
+  const currentAttemptStage = state.stages.find(stage => stage.attemptId === state.attempt?.attemptId);
+  const activeContext = state.placement ? 'placement' : state.membrane ? 'membrane' : 'protein';
 
-  return <main className={`workspace ${workflowOpen ? 'workflow-open' : 'workflow-closed'}`}>
+  return <main className={`workspace ${workflowOpen ? 'workflow-open' : 'workflow-closed'}${selectedMembrane ? ' membrane-review' : ''}${selectedPlacement && !executionReview ? ' placement-review' : ''}${executionReview ? ' execution-review' : ''}`}>
     <header className="workspace-header">
       <div className="brand-lockup"><div className="brand-mark">PM</div><div><div className="brand-name">Protein–Membrane Workspace</div><div className="brand-subtitle">Local scientific preparation · one planar bilayer</div></div></div>
+      <nav className="workspace-context-tabs" aria-label="Jump to researcher workflow">
+        {executionReview ? <>
+          <button type="button" onClick={() => showWorkflowSection('protein-workflow')}>Study revision</button>
+          {selectedStage && selectedExportFault && <button type="button"
+            className={stageViewTab === 'export' ? 'active' : ''}
+            aria-current={stageViewTab === 'export' ? 'page' : undefined}
+            onClick={() => {
+              setWorkflowOpen(false);
+              setRequestedStageTab({ stageId: selectedStage.stageId, tab: 'export' });
+              document.querySelector('.export-validation')?.scrollIntoView({ block: 'start' });
+            }}>Export validation</button>}
+          {pairedMinimizedStage && pairedEquilibratedStage ? <>
+            <button type="button" className={selectedStage?.stageId === pairedMinimizedStage.stageId && stageViewTab === 'stage' ? 'active' : ''}
+              aria-current={selectedStage?.stageId === pairedMinimizedStage.stageId && stageViewTab === 'stage' ? 'page' : undefined}
+              onClick={() => { setWorkflowOpen(false); void inspectSubject(pairedMinimizedStage.stageId); }}>
+              Minimized stage review</button>
+            <button type="button" className={selectedStage?.stageId === pairedEquilibratedStage.stageId && stageViewTab === 'stage' ? 'active' : ''}
+              aria-current={selectedStage?.stageId === pairedEquilibratedStage.stageId && stageViewTab === 'stage' ? 'page' : undefined}
+              onClick={() => { setWorkflowOpen(false); void inspectSubject(pairedEquilibratedStage.stageId); }}>
+              Equilibrated stage review</button>
+          </> : <button type="button" className={stageViewTab === 'stage' ? 'active' : ''}
+            aria-current={stageViewTab === 'stage' ? 'page' : undefined}
+            onClick={() => {
+              setWorkflowOpen(false);
+              if (selectedStage) {
+                setRequestedStageTab({ stageId: selectedStage.stageId, tab: 'stage' });
+                document.querySelector('.execution-assessment-account')?.scrollIntoView({ block: 'start' });
+              } else if (state.attempt) setAttemptReviewRequested(true);
+            }}>
+            {selectedStage ? `${selectedStage.kind === 'Minimization' ? 'Minimized' : 'Equilibrated'} stage review` : minimizationRunning ? 'Minimization running' : awaitingMinimization ? 'Construction review' : activeAttempt ? 'Preparation running' : 'Preparation attempt review'}
+          </button>}
+        </> : <>
+        <button type="button" className={activeContext === 'protein' ? 'active' : ''} aria-current={activeContext === 'protein' ? 'page' : undefined} onClick={() => showWorkflowSection('protein-workflow')}>Protein preparation</button>
+        <button type="button" className={activeContext === 'membrane' ? 'active' : ''} aria-current={activeContext === 'membrane' ? 'page' : undefined} onClick={() => showWorkflowSection('membrane-workflow')}>Study revision</button>
+        {state.attempt && <button type="button" onClick={() => { setAttemptReviewRequested(true); setWorkflowOpen(false); }}>
+          {state.attempt.stageKind === 'Minimization' && activeAttempt ? 'Minimization running' : 'Current preparation attempt'}
+        </button>}
+        <button type="button" className={activeContext === 'placement' ? 'active' : ''} aria-current={activeContext === 'placement' ? 'page' : undefined} onClick={() => showWorkflowSection('placement-workflow')}>Placement review</button>
+        </>}
+      </nav>
       <div className="header-context">
         <button className="button workflow-toggle" type="button" aria-expanded={workflowOpen} aria-controls="researcher-workflow"
-          onClick={() => setWorkflowOpen(value => !value)}>{workflowOpen ? 'Hide workflow' : 'Show workflow'}</button>
+          aria-label={workflowOpen ? 'Hide workflow' : 'Show workflow'}
+          title={workflowOpen ? 'Hide researcher workflow' : 'Show researcher workflow'}
+          onClick={() => setWorkflowOpen(value => !value)}>Workspace <span aria-hidden="true">⌄</span></button>
         <span className="context-chip">Study <strong className="id">{state.study?.id ?? 'Not established'}</strong></span>
         <span className="context-chip">Study revision <strong className="id">{state.study?.number ?? 'Not established'}</strong></span>
         {state.study?.selectedSourceId && <span className="context-chip" title={state.study.selectedSourceId}>Source <strong className="id">{state.study.selectedSourceId}</strong></span>}
@@ -554,13 +876,12 @@ export function ProteinInMembraneWorkspace() {
       <aside id="researcher-workflow" className="rail" aria-label="Researcher choices and available actions" hidden={!workflowOpen}>
         <p className="eyebrow">Researcher workflow</p>
         <h2 className="panel-heading">Prepare the system</h2>
-        {communication && <div className="notice warning" role="alert">{communication}<div className="button-row"><button className="button compact" type="button" onClick={() => void refresh()}>Refresh account</button></div></div>}
         {feedback && <div className="notice warning" role="alert">{feedback}</div>}
         {state.notices.length > 0 && <div className="notice-list" aria-label="Scientific and workflow notices">
           {state.notices.map(notice => <div key={notice.id} className={`notice ${notice.severity.toLowerCase()}`}><strong>{readable(notice.severity)}</strong> · {notice.message}{notice.subjectId && <small className="tabular">Subject {notice.subjectId}</small>}</div>)}
         </div>}
 
-        <section className="rail-section">
+        <section className="rail-section" id="protein-workflow">
           <h3 className="section-title">1 · Structural source</h3>
           <label className="field-label" htmlFor="source-query">Discover structural sources</label>
           <input id="source-query" className="text-input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Protein name or accession" />
@@ -702,22 +1023,22 @@ export function ProteinInMembraneWorkspace() {
           </div>)}
         </section>
 
-        <section className="rail-section">
+        <section className="rail-section" id="membrane-workflow">
           <h3 className="section-title">3 · Planar membrane</h3>
           <p className="help-text">Specify each leaflet. Percentages express the intended model, not achieved molecule counts.</p>
-          {state.availableLipids.length === 0 && <div className="hint-box">No lipid catalogue is currently qualified for selection.</div>}
+          {state.availableLipids.length === 0 && <div className="hint-box">No lipid catalogue is currently qualified for selection. Enter an exact species ID below to have its support assessed without substitution.</div>}
           <FractionEditor label="Upper" rows={upper} onChange={setUpper} options={state.availableLipids} />
           <FractionEditor label="Lower" rows={lower} onChange={setLower} options={state.availableLipids} />
           <label className="field-label" htmlFor="scientific-purpose">Scientific purpose</label>
           <input id="scientific-purpose" className="text-input" value={membranePurpose} onChange={event => setMembranePurpose(event.target.value)} placeholder="Why this membrane model?" />
           <div className="button-row"><ActionButton state={state} kind="proposeMembrane" busy={busy || !membraneReady} onClick={() => void command('proposeMembrane', { upper: toFractions(upper), lower: toFractions(lower), scientificPurpose: membranePurpose.trim() })}>Propose membrane model</ActionButton></div>
           {action(state, 'proposeMembrane')?.reason && <p className="action-reason">{action(state, 'proposeMembrane')?.reason}</p>}
-          {!membraneReady && <p className="help-text">Each leaflet needs distinct qualified lipids totaling 100%, plus a study purpose.</p>}
+          {!membraneReady && <p className="help-text">Each leaflet needs distinct identified positive-fraction species totaling 100%, plus a study purpose. Zero-percent rows are absent from the proposed model; support is assessed after adoption.</p>}
           {state.membrane && <><div className="hint-box"><strong>{readable(state.membrane.status)}</strong><br /><span className="tabular">{state.membrane.modelId}</span><br />Purpose: {state.membrane.scientificPurpose}{state.membrane.limitations.length > 0 && <><br />{state.membrane.limitations.join('; ')}</>}</div><div className="button-row"><ActionButton state={state} kind="selectInspectionSubject" busy={busy} onClick={() => void inspectSubject(state.membrane!.modelId)}>Inspect membrane</ActionButton><ActionButton state={state} kind="adoptMembrane" busy={busy} onClick={() => void command('adoptMembrane', { modelId: state.membrane!.modelId })}>Adopt and assess model</ActionButton></div></>}
           {state.study && <p className="help-text tabular">Fixed conditions: pH {state.study.conditions.nominalPh}; NaCl {state.study.conditions.targetNaClMolar} M; temperature {state.study.conditions.optionalTemperatureKelvin} K.</p>}
         </section>
 
-        <section className="rail-section">
+        <section className="rail-section" id="placement-workflow">
           <h3 className="section-title">4 · Protein placement</h3>
           <label className="field-label" htmlFor="topology-kind">Membrane relationship</label>
           <select id="topology-kind" className="select-input" value={topologyKind} onChange={event => {
@@ -771,28 +1092,39 @@ export function ProteinInMembraneWorkspace() {
 
         <section className="rail-section">
           <h3 className="section-title">5 · Prepare and inspect</h3>
-          <div className="button-row"><ActionButton state={state} kind="startPreparation" busy={busy} variant="primary" onClick={() => void command('startPreparation', {})}>Construct &amp; minimize</ActionButton></div>
+          <div className="button-row"><ActionButton state={state} kind="startPreparation" busy={busy} variant="primary" onClick={() => void startPreparation()}>Construct system</ActionButton></div>
           {action(state, 'startPreparation')?.reason && <p className="action-reason">{action(state, 'startPreparation')?.reason}</p>}
           {state.attempt && <div className="attempt-account">
             <strong className="tabular">Attempt {state.attempt.attemptId}</strong>
             <span>{readable(state.attempt.status)}{state.attempt.stageKind && ` · ${readable(state.attempt.stageKind)}`}</span>
             <p>{state.attempt.message}</p>
             {state.attempt.progress !== null && <progress max="1" value={state.attempt.progress} aria-label="Observed attempt progress" />}
-            <div className="button-row"><ActionButton state={state} kind="stopAttempt" busy={busy} variant="danger" onClick={() => void command('stopAttempt', { attemptId: state.attempt!.attemptId })}>Stop unfinished work</ActionButton></div>
+            <div className="button-row">
+              <button className="button" type="button" onClick={() => { setAttemptReviewRequested(true); setWorkflowOpen(false); }}>Review attempt</button>
+              {awaitingMinimization && state.attempt.constructed && <ActionButton state={state} kind="continueMinimization" subjectId={state.attempt.attemptId}
+                busy={busy} variant="primary" onClick={() => void continueMinimization(state.attempt!)}>Continue minimization</ActionButton>}
+              <ActionButton state={state} kind="stopAttempt" busy={busy} variant="danger" onClick={() => void command('stopAttempt', { attemptId: state.attempt!.attemptId })}>{awaitingMinimization ? 'Decline candidate' : 'Stop unfinished work'}</ActionButton>
+            </div>
           </div>}
           {selectedStage && <div className="stage-export">
             <strong>{readable(selectedStage.kind)} · {readable(selectedStage.status)}</strong>
             <p className="tabular">Attempt {selectedStage.attemptId} · study {selectedStage.studyRevisionId}</p>
             <p>{selectedStage.assessment ? `${selectedStage.assessment.currentlyApplicable ? readable(selectedStage.assessment.qualification) : `Historical ${readable(selectedStage.assessment.qualification)}; assessment not current`} — ${selectedStage.assessment.reason}` : 'No scientific assessment established for this stage.'}</p>
-            <div className="button-row"><ActionButton state={state} kind="exportStage" subjectId={selectedStage.stageId} busy={busy} onClick={() => void exportStage(selectedStage.stageId)}>Export this completed stage</ActionButton></div>
+            <div className="button-row"><ActionButton state={state} kind="exportStage" subjectId={selectedStage.stageId} busy={busy || exportBusy} onClick={() => void exportStage(selectedStage.stageId)}>Export this completed stage</ActionButton></div>
             {action(state, 'exportStage', selectedStage.stageId)?.reason && <p className="action-reason">{action(state, 'exportStage', selectedStage.stageId)?.reason}</p>}
+            {selectedExportFault && <p className="action-reason">Export not delivered: {selectedExportFault}</p>}
+            {selectedExportNotice && <p className="help-text" role="status">{selectedExportNotice}</p>}
             {selectedStage.kind === 'Minimization' && <><div className="button-row"><ActionButton state={state} kind="requestEquilibration" subjectId={selectedStage.stageId} busy={busy} onClick={() => void command('requestEquilibration', { stageId: selectedStage.stageId })}>Request optional equilibration from this stage</ActionButton></div>{action(state, 'requestEquilibration', selectedStage.stageId)?.reason && <p className="action-reason">{action(state, 'requestEquilibration', selectedStage.stageId)?.reason}</p>}</>}
           </div>}
         </section>
       </aside>
 
-      <ConnectedStructuralInspection state={state} onSelectFocus={annotationId => void command('setInspectionFocus', { annotationId })}
-        proposalDecision={selectedChange && <div className="proposal-decision" aria-label="Preparation change decision">
+      <ConnectedStructuralInspection state={state} reviewAttempt={reviewAttempt} onSelectFocus={annotationId => void command('setInspectionFocus', { annotationId })}
+        onInspectSubject={subjectId => { void inspectSubject(subjectId); }}
+        exportFault={selectedExportFault}
+        connectionMessage={communication ?? (streamInterrupted ? 'The live connection is interrupted. Showing the last account read from the host; progress may change until reconnection.' : null)}
+        onRefreshAccount={() => void refresh()}
+        proposalDecision={selectedChange && !executionReview ? <div className="proposal-decision" aria-label="Preparation change decision">
           <div className="decision-standing">
             <strong>{state.protein?.status === 'declined' ? 'Change declined' : selectedChange.approvalRequired ? 'Approval required' : 'Proposal under review'}</strong>
             <span>{state.protein?.status === 'assessed' ? 'Assessed prepared protein' : 'Prepared protein not established'}</span>
@@ -812,12 +1144,94 @@ export function ProteinInMembraneWorkspace() {
               onClick={() => void command('approvePreparationChange', { proposalId: selectedChange.id, approve: false, rationale: (decisionRationales[selectedChange.id] ?? '').trim() })}>Decline</ActionButton>
           </div>}
           {action(state, 'approvePreparationChange', selectedChange.id)?.reason && <p className="action-reason">{action(state, 'approvePreparationChange', selectedChange.id)?.reason}</p>}
-        </div>} />
+        </div> : executionReview && !workflowOpen ? <div className="proposal-decision execution-decision" aria-label={selectedStage ? 'Completed stage next steps' : 'Attempt decision'}>
+          {selectedStage ? <>
+            {selectedExportFault ? <>
+              <strong className="export-next-title">Next steps</strong>
+              <div className="button-row decision-actions export-decision-actions">
+                <button className="button" type="button" onClick={() =>
+                  document.querySelector('.export-validation')?.scrollIntoView({ block: 'start' })}>Inspect export issue</button>
+                <button className="button primary" type="button" disabled={busy || exportBusy ||
+                  action(state, 'exportStage', selectedStage.stageId)?.enabled !== true}
+                  onClick={() => void exportStage(selectedStage.stageId)}>Retry export</button>
+              </div>
+            </> : <>
+            <div className="decision-standing"><strong>{selectedStage.kind === 'Minimization' ? 'Completed minimized stage' : 'Completed equilibrated stage'}</strong>
+              <span>{selectedStage.assessment ? `${selectedStage.assessment.currentlyApplicable ? '' : 'Historical '}${readable(selectedStage.assessment.qualification)}` : 'Scientific assessment unavailable'}</span></div>
+            {selectedStage.assessment && <p className="decision-reason">{selectedStage.assessment.reason}</p>}
+            <div className="button-row decision-actions">
+              {selectedSourceStage ? <button className="button" type="button"
+                disabled={busy || action(state, 'selectInspectionSubject')?.enabled !== true}
+                onClick={() => void inspectSubject(selectedSourceStage.stageId)}>Select minimized stage</button> :
+                <button className="button" type="button" onClick={() => document.querySelector('.execution-findings-account, .execution-assessment-account')?.scrollIntoView({ block: 'start' })}>Inspect findings</button>}
+              {action(state, 'exportStage', selectedStage.stageId)?.enabled && <button className="button primary" type="button" disabled={busy || exportBusy} onClick={() => void exportStage(selectedStage.stageId)}>Export with status</button>}
+            </div>
+            {selectedExportNotice && <p className="export-transfer-notice" role="status">{selectedExportNotice}</p>}
+            {selectedStage.assessment?.qualification.toLowerCase() === 'indeterminate' && <div className="execution-decision-alert" role="status">
+              <strong>{selectedStage.assessment.currentlyApplicable ? 'Assessment is indeterminate.' : 'Historical assessment was indeterminate.'}</strong>
+              <span>{selectedStage.assessment.reason}</span>
+            </div>}
+            {selectedStage.assessment?.qualification.toLowerCase() === 'notqualified' && <div className="execution-decision-alert danger" role="status">
+              <strong>{selectedStage.assessment.currentlyApplicable ? 'Stage is not qualified.' : 'Historical stage assessment was not qualified.'}</strong>
+              <span>{selectedStage.assessment.reason}</span>
+            </div>}
+            </>}
+          </> : <>
+            <div className="decision-standing"><strong>{minimizationRunning ? 'Minimization in progress' : awaitingMinimization ? 'Constructed candidate ready' : activeAttempt ? 'Construction in progress' : 'Preparation attempt'}</strong>
+              <span>{currentAttemptStage ? 'Completed stage available for inspection' : awaitingMinimization ? 'Review the actual system before required minimization' : activeAttempt ? 'No completed stage yet' : 'No completed stage from this attempt'}</span></div>
+            {awaitingMinimization && state.attempt?.constructed && <div className="execution-candidate-brief" aria-label="Actual constructed system before minimization">
+              <span>Upper / lower: {(['upper', 'lower'] as const).map(side =>
+                state.attempt!.constructed!.achievedComposition.filter(item => item.physicalSide === side)
+                  .map(item => `${item.speciesId} ${item.count.toLocaleString()}`).join(', ') || 'None').join(' / ')}</span>
+              <span>Cell: {state.attempt.constructed.cellAngstrom.length === 3
+                ? `${state.attempt.constructed.cellAngstrom.map(value => value.toFixed(1)).join(' × ')} Å` : 'Not established'}</span>
+              <span>Water {state.attempt.constructed.waterCount.toLocaleString()} · Na⁺ {state.attempt.constructed.sodiumCount.toLocaleString()} · Cl⁻ {state.attempt.constructed.chlorideCount.toLocaleString()}</span>
+            </div>}
+            <div className="button-row decision-actions">
+              <button className="button" type="button" onClick={() => document.querySelector(awaitingMinimization ? '.execution-basis-account' : '.execution-progress-account, .execution-identity-account')?.scrollIntoView({ block: 'start' })}>{awaitingMinimization ? 'Inspect counts and evidence' : 'Inspect'}</button>
+              {awaitingMinimization && state.attempt?.constructed && <ActionButton state={state} kind="continueMinimization"
+                subjectId={state.attempt.attemptId} busy={busy} variant="primary"
+                onClick={() => void continueMinimization(state.attempt!)}>Continue minimization</ActionButton>}
+              {currentAttemptStage && <button className="button primary" type="button" disabled={busy} onClick={() => void inspectSubject(currentAttemptStage.stageId)}>Inspect completed stage</button>}
+              {state.attempt && action(state, 'stopAttempt')?.enabled && <button className="button danger" type="button" disabled={busy}
+                onClick={() => void command('stopAttempt', { attemptId: state.attempt!.attemptId })}>{awaitingMinimization ? 'Decline candidate' : 'Stop unfinished work'}</button>}
+            </div>
+            {awaitingMinimization && state.attempt && action(state, 'continueMinimization', state.attempt.attemptId)?.reason &&
+              <p className="action-reason">{action(state, 'continueMinimization', state.attempt.attemptId)?.reason}</p>}
+          </>}
+        </div> : selectedMembrane && !workflowOpen ? <div className="proposal-decision membrane-decision" aria-label="Membrane model decision">
+          <div className="decision-standing">
+            <strong>{selectedMembrane.status === 'proposed' ? 'Choice awaits adoption' : selectedMembrane.status === 'assessed' ? 'Assessed membrane model' : 'Membrane model not established'}</strong>
+            <span>{selectedMembrane.status === 'proposed' ? 'Proposed intention only' : selectedMembrane.status === 'assessed' ? 'Membrane-local support established' : 'Support not established'}</span>
+          </div>
+          {selectedMembrane.reason && <p className="decision-reason">{selectedMembrane.reason}</p>}
+          <div className="button-row decision-actions">
+            {selectedMembrane.status === 'proposed' && <ActionButton state={state} kind="adoptMembrane" busy={busy} variant="primary" onClick={() => void command('adoptMembrane', { modelId: selectedMembrane.modelId })}>Adopt and assess model</ActionButton>}
+            <button className="button" type="button" onClick={() => setWorkflowOpen(true)}>{selectedMembrane.status === 'proposed' ? 'Revise proposal' : 'Revise membrane choice'}</button>
+          </div>
+        </div> : selectedPlacement && !workflowOpen ? <div className="proposal-decision placement-decision" aria-label="Placement decision">
+          <div className="decision-standing">
+            <strong>{selectedPlacementAdopted ? 'Adopted placement' : selectedPlacement.status === 'supported' ? 'Supported placement' :
+              selectedPlacement.status === 'unsupported' ? 'Unsupported placement' : 'Support not established'}</strong>
+            <span>{selectedPlacementAdopted ? 'Current study revision' :
+              selectedPlacement.status === 'supported' ? 'Adoption available for this exact proposal' : 'Placement cannot be adopted'}</span>
+          </div>
+          <p className="decision-reason">{selectedPlacement.reason}</p>
+          <div className="button-row decision-actions">
+            {selectedPlacement.status === 'supported' && !selectedPlacementAdopted && <ActionButton state={state} kind="adoptPlacement" busy={busy} variant="primary"
+              onClick={() => void command('adoptPlacement', { proposalId: selectedPlacement.proposalId })}>Adopt supported placement</ActionButton>}
+            <button className="button" type="button" onClick={() =>
+              document.querySelector('.placement-support-account')?.scrollIntoView({ block: 'start' })}>Inspect evidence</button>
+            <button className="button" type="button" onClick={() => showWorkflowSection('placement-workflow')}>Revise proposal</button>
+          </div>
+        </div> : undefined} />
     </div>
 
     <nav className="stage-strip" aria-label="Completed and attempted stages">
       <div className="stage-summary">
-        <div><span className="stage-strip-heading">Completed stages</span><strong>{state.stages.length === 0 ? 'None' : state.stages.length}</strong>{state.stages.length === 0 && <small>No completed stage is currently established.</small>}</div>
+        <div><span className="stage-strip-heading">Completed stages</span><strong>{completedStageSummary}</strong>{state.stages.length === 0 && <small>No completed stage is currently established.</small>}
+          {state.attempt && <small className="tabular">Attempt {state.attempt.attemptId} · {readable(state.attempt.stageKind ?? 'preparation')} {readable(state.attempt.status)} · origin {state.attempt.studyRevisionId ?? 'pending'}</small>}
+        </div>
         <div><span className="stage-strip-heading">Stage assessment</span><strong>{selectedStage?.assessment ? `${selectedStage.assessment.currentlyApplicable ? '' : 'Historical '}${readable(selectedStage.assessment.qualification)}` : selectedStage ? 'Not established' : 'Not applicable'}</strong></div>
       </div>
       {state.stages.map(stage => <button type="button" className={`stage-card ${state.inspection?.subjectId === stage.stageId ? 'selected' : ''}`} key={stage.stageId} disabled={busy || action(state, 'selectInspectionSubject')?.enabled !== true} onClick={() => void inspectSubject(stage.stageId)}>
