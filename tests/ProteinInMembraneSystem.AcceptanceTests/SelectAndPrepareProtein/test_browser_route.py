@@ -29,25 +29,29 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tests" / "ProteinInMembraneSystem.IntegrationTests" / "ProteinPreparation"))
 from test_worker_exchange import two_alanines  # noqa: E402
 
-HOST = ROOT / "out" / "host" / "ProteinInMembrane.Host.dll"
+HOST = Path(os.environ.get("PIM_BROWSER_HOST", str(ROOT / "out" / "host" / "ProteinInMembrane.Host.dll")))
 WORKER = ROOT / "out" / "python" / "bin" / "python"
 POLICY = ROOT / "config" / "policies" / "protein-slice1.json"
 ARTIFACTS = ROOT / "out" / "browser-acceptance"
 
 
 @contextmanager
-def running_host(workspace: Path):
+def running_host(workspace: Path, policy: Path = POLICY, ppm: Path | None = None,
+                 worker: Path | None = None):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     environment = dict(os.environ,
                        ASPNETCORE_URLS=base,
-                       PIM_WORKER_PYTHON=str(WORKER),
+                       PIM_WORKER_PYTHON=str(worker or WORKER),
                        PIM_OWNER_SOURCE_ROOT=str(ROOT / "src" / "ProteinInMembrane.Host"),
                        PIM_WORKSPACE_ROOT=str(workspace),
-                       PIM_POLICY_CATALOGUE=str(POLICY))
-    environment.pop("PIM_PPM_EXECUTABLE", None)
+                       PIM_POLICY_CATALOGUE=str(policy))
+    if ppm is None:
+        environment.pop("PIM_PPM_EXECUTABLE", None)
+    else:
+        environment["PIM_PPM_EXECUTABLE"] = str(ppm)
     log_path = workspace.parent / "host.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(["dotnet", str(HOST)], cwd=ROOT,
@@ -90,11 +94,10 @@ def chromium(playwright):
 def upload_and_choose(page, source: Path):
     page.locator("#source-upload").set_input_files(str(source))
     page.locator("#upload-provenance").select_option("experimental")
-    page.get_by_role("button", name="Inspect uploaded source").click()
-    expect(page.locator(".source-context")).to_contain_text("Selected structural source", timeout=120000)
-    expect(page.locator("#model-index")).to_be_visible()
-    page.locator("#model-index").select_option("0")
-    page.get_by_label("A · copy A").check()
+    page.get_by_role("button", name="Upload source").click()
+    expect(page.locator(".source-context")).to_contain_text("Structure displayed", timeout=120000)
+    expect(page.locator(".sole-model")).to_contain_text("selected for this draft")
+    page.get_by_label("Chain A").check()
     page.get_by_role("button", name="Assess selected protein").click()
 
 
@@ -129,7 +132,7 @@ def wait_for_selected_structure(page):
 class BrowserRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        for path in (HOST, WORKER, POLICY, ROOT / "out" / "host" / "wwwroot" / "index.html"):
+        for path in (HOST, WORKER, POLICY, HOST.parent / "wwwroot" / "index.html"):
             if not path.is_file():
                 raise unittest.SkipTest(f"Local build prerequisite is missing: {path}")
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -145,37 +148,35 @@ class BrowserRouteTests(unittest.TestCase):
                     page = browser.new_page(viewport={"width": 1440, "height": 900})
                     page.goto(base, wait_until="domcontentloaded")
                     expect(page.locator("#exact-identifier")).to_be_visible()
-                    expect(page.get_by_role("button", name="Inspect exact source")).to_be_disabled()
+                    expect(page.get_by_role("button", name="Load source", exact=True)).to_be_disabled()
                     upload_and_choose(page, source)
-                    expect(page.locator(".protein-standing")).to_contain_text(
-                        "Assessed prepared protein", timeout=120000)
+                    expect(page.get_by_role("region", name="Protein task outcome"))\
+                        .to_contain_text("Protein prepared", timeout=120000)
                     state = page.evaluate("async () => (await fetch('/api/state')).json()")
                     self.assertEqual(state["protein"]["status"], "assessed")
                     self.assertEqual(state["study"]["modelIndex"], 0)
                     self.assertEqual(state["study"]["chainIds"], ["A"])
                     self.assertIsNone(state["placement"])
                     self.assertEqual(state["stages"], [])
-                    self.assertIn(state["study"]["selectedSourceId"],
-                                  page.locator(".source-context").inner_text())
-                    page.get_by_role("button", name="Inspect protein", exact=True).click()
-                    expect(page.locator(".workspace")).to_have_class("workspace workflow-closed")
-                    expect(page.locator(".scene-subtitle")).to_contain_text(
-                        state["protein"]["subjectId"])
-                    expect(page.locator(".evidence-panel")).to_contain_text(
-                        state["protein"]["subjectId"])
-                    expect(page.locator(".evidence-panel")).to_contain_text("Protein preparation")
-                    expect(page.locator(".stage-strip")).to_contain_text(
-                        "No completed stage is currently established")
-                    expect(page.locator(".stage-strip")).to_contain_text("Stage assessment")
-                    expect(page.locator(".source-account")).to_contain_text(
-                        state["study"]["selectedSourceId"])
+                    self.assertIn(source.name, page.locator(".source-context").inner_text())
+                    expect(page.get_by_role("heading", name=f"Protein before preparation · {source.name}"))\
+                        .to_be_visible()
+                    page.get_by_role("button", name="View prepared protein").click()
+                    expect(page.locator(".workspace")).to_have_class("workspace workflow-open")
+                    expect(page.get_by_role("heading", name=f"Prepared protein · {source.name}"))\
+                        .to_be_visible()
+                    expect(page.locator(".evidence-panel")).to_contain_text("Preparation complete")
+                    expect(page.locator(".stage-strip")).to_contain_text("No minimized or equilibrated")
+                    self.assertEqual(page.evaluate("async () => (await fetch('/api/state')).json()")
+                                     ["inspection"]["subjectId"], state["protein"]["subjectId"])
                     wait_for_selected_structure(page)
                     self.assertEqual(horizontally_overflowing_regions(page), [])
                     page.screenshot(path=str(ARTIFACTS / "assessed-1440.png"), full_page=True,
                                     animations="disabled")
-                    page.get_by_role("button", name="Show workflow").click()
+                    page.get_by_role("navigation", name="Research work areas")\
+                        .get_by_role("button", name="Membrane").click()
                     expect(page.locator("#researcher-workflow")).to_be_visible()
-                    expect(page.locator("#researcher-workflow")).to_contain_text("3 · Planar membrane")
+                    expect(page.locator("#membrane-workflow")).to_be_visible()
                     print("PASS: browser upload, exact model/chain, assessed protein and linked inspection")
                 finally:
                     browser.close()
@@ -191,33 +192,27 @@ class BrowserRouteTests(unittest.TestCase):
                     page = browser.new_page(viewport={"width": 1440, "height": 900})
                     page.goto(base, wait_until="domcontentloaded")
                     upload_and_choose(page, source)
-                    proposal = page.locator(".change-card")
-                    expect(proposal).to_have_count(1, timeout=120000)
-                    expect(proposal).to_contain_text("Heavy atom · A2 · copy A")
+                    expect(page.locator(".review-progress")).to_contain_text("0 site choices", timeout=120000)
+                    expect(page.locator(".review-other .review-site")).to_have_count(1)
+                    page.locator(".review-other .review-site").click()
+                    expect(page.locator(".review-site-scope")).to_contain_text("Missing-atom repair")
                     before_review = page.evaluate("async () => (await fetch('/api/state')).json()")
                     pending_id = before_review["protein"]["changes"][0]["id"]
-                    self.assertFalse(next(item["enabled"] for item in before_review["actions"]
+                    self.assertTrue(next(item["enabled"] for item in before_review["actions"]
                                           if item["kind"] == "approvePreparationChange"
                                           and item["subjectId"] == pending_id))
-                    proposal.get_by_role("button", name="Inspect change and evidence").click()
-                    expect(proposal).to_have_class("change-card selected")
-                    expect(page.locator(".workspace")).to_have_class("workspace workflow-closed")
-                    decision = page.locator(".proposal-decision")
-                    approve = decision.get_by_role("button", name="Approve change")
-                    expect(page.locator(".evidence-panel")).to_contain_text("Proposed change")
-                    expect(page.locator(".evidence-panel")).to_contain_text("Affected region")
-                    expect(page.locator(".evidence-panel")).to_contain_text("Source and assembly")
-                    expect(page.locator(".evidence-panel")).to_contain_text("Located evidence and findings")
+                    page.locator(".review-option input").check()
+                    approve = page.get_by_role("button", name="Approve repair")
                     expect(approve).to_be_enabled()
+                    expect(page.locator(".review-evidence-current")).to_be_visible()
+                    page.locator(".review-option.picked").get_by_role("button", name="Focus on this residue").click()
                     wait_for_selected_structure(page)
                     proposal_id = page.evaluate("async () => (await fetch('/api/state')).json()")\
                         ["protein"]["changes"][0]["id"]
-                    page.locator(".evidence-content").evaluate("element => element.scrollTop = 0")
                     page.screenshot(path=str(ARTIFACTS / "proposal-1440.png"), full_page=True,
                                     animations="disabled")
 
                     page.set_viewport_size({"width": 820, "height": 760})
-                    page.wait_for_function("() => document.querySelector('.evidence-content')?.scrollTop > 100")
                     scene_box = page.locator(".scene-panel").bounding_box()
                     evidence_box = page.locator(".evidence-panel").bounding_box()
                     self.assertIsNotNone(scene_box)
@@ -227,40 +222,36 @@ class BrowserRouteTests(unittest.TestCase):
                     self.assertGreater(evidence_box["x"], scene_box["x"])
                     self.assertAlmostEqual(evidence_box["y"], scene_box["y"], delta=2)
                     self.assertEqual(horizontally_overflowing_regions(page), [])
-                    expect(decision.get_by_role("button", name="Decline")).to_be_visible()
+                    expect(page.get_by_role("button", name="Reject required repair")).to_be_visible()
                     expect(page.locator(".scene-surface")).to_be_visible()
                     expect(page.locator(".compact-model-context")).to_be_visible()
-                    self.assertTrue(page.evaluate("""() => {
-                        const item = document.querySelector('.annotation-item').getBoundingClientRect();
-                        const pane = document.querySelector('.evidence-content').getBoundingClientRect();
-                        return item.top < pane.bottom && item.bottom > pane.top;
-                    }"""))
+                    approve.scroll_into_view_if_needed()
+                    expect(approve).to_be_in_viewport()
+                    page.screenshot(path=str(ARTIFACTS / "proposal-actions-820.png"), full_page=True,
+                                    animations="disabled")
+                    page.locator(".rail").evaluate("element => element.scrollTop = 0")
+                    page.locator(".evidence-content").evaluate("element => element.scrollTop = 0")
                     page.screenshot(path=str(ARTIFACTS / "proposal-820.png"), full_page=True,
                                     animations="disabled")
 
-                    page.get_by_role("button", name="Focus affected region in structure").click()
-                    expect(page.locator(".annotation-item.selected")).to_have_count(1)
-                    page.get_by_role("button", name="Clear selected part").click()
-                    expect(page.locator(".annotation-item.selected")).to_have_count(0)
-
-                    decision.get_by_role("button", name="Decline").click()
-                    expect(decision).to_contain_text(
-                        "Prepared protein not established", timeout=120000)
-                    expect(decision).to_contain_text(proposal_id)
+                    page.get_by_role("button", name="Reject required repair").click()
+                    expect(page.locator(".review-blocker-inline")).to_contain_text(
+                        "required missing-atom repair was declined", timeout=120000)
                     state = page.evaluate("async () => (await fetch('/api/state')).json()")
                     self.assertEqual(state["protein"]["status"], "declined")
+                    self.assertEqual(state["preparationReview"]["decisions"][0]["options"][0]["disposition"], "declined")
+                    self.assertEqual(state["preparationReview"]["decisions"][0]["options"][0]["proposalId"], proposal_id)
                     self.assertIsNone(state["placement"])
                     self.assertEqual(state["stages"], [])
-                    expect(approve).to_be_disabled()
+                    expect(approve).to_have_count(0)
                     expect(page.locator(".stage-strip")).to_contain_text(
-                        "No completed stage is currently established")
+                        "No minimized or equilibrated")
                     page.screenshot(path=str(ARTIFACTS / "declined-820.png"), full_page=True,
                                     animations="disabled")
-                    page.get_by_role("button", name="Show workflow").click()
                     expect(page.locator("#researcher-workflow")).to_be_visible()
-                    expect(page.locator(".protein-standing")).to_contain_text(
-                        "Prepared protein not established")
-                    print("PASS: browser proposal inspection, required decline and reduced desktop standing")
+                    expect(page.get_by_role("region", name="Protein task outcome"))\
+                        .to_contain_text("Protein preparation blocked")
+                    print("PASS: browser exact repair evidence, required decline and reduced desktop standing")
                 finally:
                     browser.close()
 
@@ -276,15 +267,16 @@ class BrowserRouteTests(unittest.TestCase):
                     page.goto(base, wait_until="domcontentloaded")
                     page.locator("#exact-source-kind").select_option("rcsb")
                     page.locator("#exact-identifier").fill("1CRN")
-                    page.get_by_role("button", name="Inspect exact source").click()
+                    page.get_by_role("button", name="Load source", exact=True).click()
                     expect(page.locator(".source-context")).to_contain_text(
                         "rcsb:1CRN", timeout=120000)
                     state = page.evaluate("async () => (await fetch('/api/state')).json()")
                     self.assertEqual(state["study"]["selectedSourceId"], "rcsb:1CRN")
                     self.assertGreater(state["sourceModels"][0]["atomCount"], 300)
                     self.assertIsNone(state["protein"])
-                    page.get_by_role("button", name="Inspect source structure").click()
-                    expect(page.locator(".scene-subtitle")).to_contain_text("rcsb:1CRN")
+                    expect(page.locator(".source-context")).to_contain_text("Structure displayed", timeout=120000)
+                    expect(page.get_by_role("button", name="Inspect source structure")).to_have_count(0)
+                    expect(page.locator(".scene-heading h1")).to_have_text("Source structure · 1CRN")
                     expect(page.locator(".evidence-panel")).to_contain_text("rcsb:1CRN")
                     wait_for_selected_structure(page)
                     self.assertEqual(horizontally_overflowing_regions(page), [])

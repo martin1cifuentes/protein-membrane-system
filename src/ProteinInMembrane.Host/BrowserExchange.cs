@@ -20,6 +20,16 @@ public static class BrowserExchange
     {
         app.MapGet("/api/state", () => Results.Json(system.Snapshot(), WireJson));
 
+        app.MapGet("/api/source-preview", async (string? sourceId, int? modelIndex, string? assemblyId,
+            CancellationToken cancellationToken) =>
+        {
+            if (string.IsNullOrWhiteSpace(sourceId) || sourceId.Length > 200 || modelIndex is null or < 0 ||
+                assemblyId?.Length > 100)
+                return Refused("Choose a current source, coordinate model and assembly for inspection.", 400);
+            var outcome = await system.PreviewSourceModelAsync(sourceId, modelIndex.Value, assemblyId, cancellationToken);
+            return outcome.Value is { } account ? Results.Json(account, WireJson) : Refused(outcome.Reason, 422);
+        });
+
         app.MapPost("/api/commands", async (HttpContext context, CancellationToken cancellationToken) =>
         {
             if (!HasSameOrigin(context.Request, origin)) return Refused("The command must come from this local workspace.", 403);

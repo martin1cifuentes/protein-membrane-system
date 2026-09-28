@@ -49,9 +49,524 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Empty(selected.Value!.SourceCandidates);
         Assert.Equal("rcsb:1ABC", selected.Value.Study?.SelectedSourceId);
         Assert.Equal(SourceRouteKind.Rcsb, selected.Value.Study?.SelectedSourceKind);
+        Assert.Equal("rcsb:1ABC", selected.Value.Inspection?.SubjectId);
+        Assert.Equal(selected.Value.Study?.Id, selected.Value.Inspection?.StudyRevisionId);
+        Assert.NotNull(selected.Value.Inspection?.StructureUrl);
         Assert.Single(selected.Value.SourceModels);
         Assert.Single(requested);
         Assert.Equal("https://files.rcsb.org/download/1ABC.cif", requested[0].AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Explicit_partner_disposition_needs_no_prose_but_each_partner_must_be_decided(bool retain)
+    {
+        using var directory = new TemporaryDirectory();
+        using var http = new HttpClient(new RespondingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(Encoding.ASCII.GetBytes("data_exact_source\n#\n"))
+        }));
+        var model = Model() with
+        {
+            Partners = ImmutableArray.Create(new SourcePartnerObservation("partner-1", "Bound cofactor",
+                "heterogen", 4, "A", 1))
+        };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("mmcif", ImmutableArray.Create(model), null))
+        };
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            string.Empty, string.Empty, () => null);
+        Assert.True((await Command(product, ActorActionKind.SelectSource,
+            new { sourceKind = "rcsb", exactIdentifier = "1ABC" })).Established);
+        var undecided = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<PartnerSelection>(), alternateLocations = Array.Empty<AlternateLocationChoice>() });
+        Assert.False(undecided.Established);
+        var missingChains = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, chains = Array.Empty<ChainSelection>(),
+                partners = new[] { new { sourceId = "partner-1", retain } },
+                alternateLocations = Array.Empty<AlternateLocationChoice>() });
+        Assert.False(missingChains.Established);
+        var selected = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, chains = new[] { new ChainSelection("A", "A") },
+                partners = new[] { new { sourceId = "partner-1", retain } },
+                alternateLocations = Array.Empty<AlternateLocationChoice>() });
+        Assert.True(selected.Established, selected.Reason);
+        Assert.Equal(retain, Assert.Single(selected.Value!.Study!.Partners).Retain);
+        Assert.Null(Assert.Single(selected.Value.Study.Partners).Reason);
+    }
+
+    [Fact]
+    public async Task Reviewed_histidine_variant_needs_no_written_reason_or_inspection_click()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path);
+        var histidineModel = Model() with
+        {
+            Residues = ImmutableArray.Create(Model().Residues[0] with { Name = "HIS" })
+        };
+        ProteinPreparationPayload? submitted = null;
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(histidineModel), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(
+                        ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 4,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A")),
+                        ObservedGeometry()), ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            },
+            PrepareResponse = request =>
+            {
+                submitted = request.Payload;
+                return new WorkerResult<ProteinPreparationObservations>(request.RequestId,
+                    request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Failed,
+                    ImmutableArray<WorkerArtifact>.Empty, null, null,
+                    "controlled-provider-failure", "The controlled provider made no candidate.");
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var uploadToken = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "histidine.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        var proposal = Assert.Single(modeled.Value!.Protein!.Changes);
+        Assert.Equal(PreparationChangeKind.ResidueState, proposal.Kind);
+
+        Assert.Contains(modeled.Value.Actions, available => available.Kind == ActorActionKind.ApprovePreparationChange &&
+            available.SubjectId == proposal.Id && available.Enabled);
+        Assert.NotEqual(proposal.Id, modeled.Value.Inspection?.SubjectId);
+        var approved = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = proposal.Id, approve = true });
+        Assert.True(approved.Established, approved.Reason);
+        Assert.Equal(1, worker.PrepareProteinCalls);
+        var variant = Assert.Single(submitted!.ResidueVariants);
+        Assert.Equal("HID", variant.Variant);
+        Assert.Equal(proposal.Residue, variant.Residue);
+        Assert.NotEqual("assessed", approved.Value!.Protein?.Status);
+        Assert.Equal("failed", approved.Value.PreparationReview?.PreparationStanding);
+        Assert.Equal("failed", approved.Value.ProteinTask?.Standing);
+        Assert.True(approved.Value.ProteinTask?.RetryAvailable);
+        Assert.Equal(1, approved.Value.PreparationReview?.ConfirmedCount);
+        Assert.Contains("controlled provider made no candidate", approved.Value.PreparationReview?.PreparationMessage,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(approved.Value.Actions, available => available.Kind == ActorActionKind.RetryProteinPreparation &&
+            available.Enabled);
+        var duplicate = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = proposal.Id, approve = true });
+        Assert.False(duplicate.Established);
+        Assert.Equal(1, worker.PrepareProteinCalls);
+        var retried = await Command(product, ActorActionKind.RetryProteinPreparation, new { });
+        Assert.True(retried.Established, retried.Reason);
+        Assert.Equal(2, worker.PrepareProteinCalls);
+        Assert.Equal(1, retried.Value!.PreparationReview?.ConfirmedCount);
+    }
+
+    [Fact]
+    public async Task Missing_exact_chain_copy_mapping_refuses_the_proposal_report_before_review()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path, "HID", "HIE", "HIP");
+        var first = Model().Residues[0] with { Name = "HIS" };
+        var second = first with { Address = SourceResidue with { Chain = "B" } };
+        var model = Model() with
+        {
+            Chains = ImmutableArray.Create(new SourceChainObservation("A", 1, 4),
+                new SourceChainObservation("B", 1, 4)),
+            Residues = ImmutableArray.Create(first, second), AtomCount = 8
+        };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 8,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A")),
+                        ObservedGeometry()), ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "two-site.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken = token })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A"), new ChainSelection("B", "B") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        Assert.Null(modeled.Value!.PreparationReview);
+        Assert.Contains(modeled.Value.Notices, notice =>
+            notice.Message.Contains("exact selected chain copies", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(modeled.Value.Actions, action =>
+            action.Kind == ActorActionKind.ApprovePreparationChange && action.Enabled);
+        Assert.Equal(0, worker.PrepareProteinCalls);
+    }
+
+    [Fact]
+    public async Task Review_groups_exact_histidine_sites_and_keeps_independent_repair_separate()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path, "HID", "HIE", "HIP");
+        var first = Model().Residues[0] with { Name = "HIS" };
+        var second = first with { Address = SourceResidue with { Chain = "B" } };
+        var model = Model() with
+        {
+            Chains = ImmutableArray.Create(new SourceChainObservation("A", 1, 4),
+                new SourceChainObservation("B", 1, 4)),
+            Residues = ImmutableArray.Create(first, second), AtomCount = 8
+        };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(
+                        ImmutableArray.Create(new AtomAddress(SelectedResidue, "CB")),
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 8,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A"),
+                            new PreviewChainCorrespondence("B", "B", "B")), ObservedGeometry()),
+                    ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var uploadToken = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "two-histidines.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A"), new ChainSelection("B", "B") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        var review = modeled.Value!.PreparationReview!;
+        Assert.Equal(7, modeled.Value.Protein!.Changes.Length);
+        Assert.Equal(3, review.Decisions.Length);
+        Assert.Equal(3, review.RemainingCount);
+        var siteA = Assert.Single(review.Decisions.Where(item => item.Kind == PreparationChangeKind.ResidueState &&
+            item.Residue.Chain == "A"));
+        var siteB = Assert.Single(review.Decisions.Where(item => item.Kind == PreparationChangeKind.ResidueState &&
+            item.Residue.Chain == "B"));
+        Assert.Equal(3, siteA.Options.Length);
+        Assert.Equal(3, siteB.Options.Length);
+        Assert.NotEqual(siteA.Id, siteB.Id);
+        Assert.Single(review.Decisions.Where(item => item.Kind == PreparationChangeKind.HeavyAtom));
+
+        var chosen = siteA.Options.Single(item => item.ProposedChange == "HIE");
+        var confirmed = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = chosen.ProposalId, approve = true });
+        Assert.True(confirmed.Established, confirmed.Reason);
+        Assert.Equal(modeled.Value.Inspection?.SubjectId, confirmed.Value?.Inspection?.SubjectId);
+        var competing = siteA.Options.Single(item => item.ProposedChange == "HID");
+        var competingConfirmation = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = competing.ProposalId, approve = true });
+        Assert.False(competingConfirmation.Established);
+        Assert.Contains("alternative", competingConfirmation.Reason, StringComparison.OrdinalIgnoreCase);
+        review = confirmed.Value!.PreparationReview!;
+        Assert.Equal(1, review.ConfirmedCount);
+        Assert.Equal(2, review.RemainingCount);
+        siteA = review.Decisions.Single(item => item.Id == siteA.Id);
+        siteB = review.Decisions.Single(item => item.Id == siteB.Id);
+        Assert.Equal("confirmed", siteA.Standing);
+        Assert.Equal(chosen.ProposalId, siteA.ChosenProposalId);
+        Assert.Equal(2, siteA.Options.Count(item => item.Disposition == "notChosen"));
+        Assert.Equal("pending", siteB.Standing);
+        Assert.Equal(0, worker.PrepareProteinCalls);
+
+        var rejected = siteB.Options.Single(item => item.ProposedChange == "HIE");
+        var declined = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = rejected.ProposalId, approve = false });
+        Assert.False(declined.Established);
+        Assert.Contains("cannot be declined", declined.Reason, StringComparison.OrdinalIgnoreCase);
+        siteB = product.Snapshot().PreparationReview!.Decisions.Single(item => item.Id == siteB.Id);
+        Assert.Equal("pending", siteB.Standing);
+        Assert.Equal(3, siteB.Options.Count(item => item.Disposition == "available"));
+
+        var repair = product.Snapshot().PreparationReview!.Decisions.Single(item => item.Kind == PreparationChangeKind.HeavyAtom);
+        var blocked = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = repair.Options[0].ProposalId, approve = false });
+        Assert.True(blocked.Established, blocked.Reason);
+        Assert.Equal("blocked", blocked.Value!.PreparationReview?.PreparationStanding);
+        Assert.Equal("blocked", blocked.Value.PreparationReview?.Decisions.Single(item => item.Id == repair.Id).Standing);
+        Assert.Equal(0, worker.PrepareProteinCalls);
+    }
+
+    [Fact]
+    public async Task Last_confirmation_exposes_real_preparation_activity_then_retains_failure_and_choice()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path);
+        var histidine = Model() with
+        {
+            Residues = ImmutableArray.Create(Model().Residues[0] with { Name = "HIS" })
+        };
+        var entered = new TaskCompletionSource<ScientificWorkRequest<ProteinPreparationPayload>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource<WorkerResult<ProteinPreparationObservations>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(histidine), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 4,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A")),
+                        ObservedGeometry()), ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            },
+            PrepareResponseAsync = (request, _) =>
+            {
+                entered.TrySetResult(request);
+                return released.Task;
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "histidine.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken = token })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        var option = Assert.Single(Assert.Single(modeled.Value!.PreparationReview!.Decisions).Options);
+        Assert.True(product.Snapshot().PreparationReview!.Decisions[0].Options[0].StartsPreparationOnConfirmation);
+        var confirmation = Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = option.ProposalId, approve = true });
+        var request = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("HID", Assert.Single(request.Payload.ResidueVariants).Variant);
+        var preparing = product.Snapshot().PreparationReview!;
+        Assert.Equal("preparing", preparing.PreparationStanding);
+        Assert.Equal("preparing", product.Snapshot().ProteinTask?.Standing);
+        Assert.Equal(1, preparing.ConfirmedCount);
+        Assert.Equal(0, preparing.RemainingCount);
+        Assert.Null(product.Snapshot().Protein?.AtomCount);
+        released.SetResult(new WorkerResult<ProteinPreparationObservations>(request.RequestId,
+            request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Failed,
+            ImmutableArray<WorkerArtifact>.Empty, null, null,
+            "controlled-provider-failure", "The controlled provider made no candidate."));
+        var failed = await confirmation;
+        Assert.True(failed.Established, failed.Reason);
+        Assert.Equal("failed", failed.Value!.PreparationReview?.PreparationStanding);
+        Assert.Equal("failed", failed.Value.ProteinTask?.Standing);
+        Assert.True(failed.Value.ProteinTask?.RetryAvailable);
+        Assert.Equal(option.ProposalId, failed.Value.PreparationReview?.Decisions[0].ChosenProposalId);
+        Assert.Contains("controlled provider made no candidate", failed.Value.PreparationReview?.PreparationMessage,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, worker.PrepareProteinCalls);
+    }
+
+    [Fact]
+    public async Task Review_scope_keeps_model_copy_and_insertion_code_distinct()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path, "HID", "HIE", "HIP");
+        var site = Model().Residues[0] with { Name = "HIS" };
+        var model0 = Model() with
+        {
+            Assemblies = ImmutableArray.Create(new SourceAssemblyObservation("dimer",
+                ImmutableArray.Create(new ChainSelection("A", "A1"), new ChainSelection("A", "A2")))),
+            Residues = ImmutableArray.Create(site,
+                site with { Address = SourceResidue with { InsertionCode = "X" } }),
+            Chains = ImmutableArray.Create(new SourceChainObservation("A", 2, 8)), AtomCount = 8
+        };
+        var model1 = Model() with
+        {
+            Index = 1,
+            Residues = ImmutableArray.Create(site with { Address = SourceResidue with { Model = 1 } })
+        };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model0, model1), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 8,
+                        request.Payload.ChainSelections.Select((chain, index) =>
+                            new PreviewChainCorrespondence(chain.SourceChain, chain.CopyId,
+                                ((char)('A' + index)).ToString())).ToImmutableArray(),
+                        ObservedGeometry()),
+                    ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "two-models.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken = token })).Established);
+        var first = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = "dimer",
+                chains = new[] { new ChainSelection("A", "A1"), new ChainSelection("A", "A2") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(first.Established, first.Reason);
+        var firstReview = first.Value!.PreparationReview!;
+        Assert.Equal(4, firstReview.Decisions.Length);
+        Assert.Equal(12, first.Value.Protein!.Changes.Length);
+        Assert.Equal(4, firstReview.Decisions.Select(item =>
+            (item.Residue.Model, item.Residue.Chain, item.Residue.CopyId,
+                item.Residue.Residue, item.Residue.InsertionCode)).Distinct().Count());
+        Assert.Equal(new[] { "A1", "A2" }, firstReview.Decisions.Select(item => item.Residue.CopyId)
+            .Distinct().OrderBy(item => item));
+        Assert.Equal(new[] { "", "X" }, firstReview.Decisions.Select(item => item.Residue.InsertionCode)
+            .Distinct().OrderBy(item => item));
+
+        var second = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 1, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(second.Established, second.Reason);
+        Assert.NotEqual(first.Value.Study!.Id, second.Value!.Study!.Id);
+        Assert.Equal(1, Assert.Single(second.Value.PreparationReview!.Decisions).Residue.Model);
+        Assert.Equal(3, second.Value.Protein!.Changes.Length);
+    }
+
+    [Fact]
+    public async Task Duplicate_exact_site_alternatives_block_decision_and_preparation()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path, "HID", "HIE", "HIP");
+        var site = Model().Residues[0] with { Name = "HIS" };
+        var model = Model() with { Residues = ImmutableArray.Create(site, site), AtomCount = 8 };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 8,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A")),
+                        ObservedGeometry()), ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            }
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "duplicate-histidine.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken = token })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        var review = modeled.Value!.PreparationReview!;
+        var decision = Assert.Single(review.Decisions);
+        Assert.Equal(6, decision.Options.Length);
+        Assert.Equal("blocked", decision.Standing);
+        Assert.Equal("blocked", review.PreparationStanding);
+        Assert.Contains("duplicate alternatives", decision.Blocker);
+        var option = decision.Options[0];
+        var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
+            new { subjectId = option.ProposalId });
+        Assert.True(inspected.Established);
+        Assert.Contains(inspected.Value!.Actions, action => action.Kind == ActorActionKind.ApprovePreparationChange &&
+            action.SubjectId == option.ProposalId && !action.Enabled);
+        var refused = await Command(product, ActorActionKind.ApprovePreparationChange,
+            new { proposalId = option.ProposalId, approve = true });
+        Assert.False(refused.Established);
+        Assert.Contains("duplicate alternatives", refused.Reason);
+        Assert.Equal(0, worker.PrepareProteinCalls);
+    }
+
+    [Fact]
+    public async Task Failed_preparation_without_review_choices_retains_retry_route()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path);
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(Model()), null)),
+            InspectChangesResponse = request =>
+            {
+                var preview = System.IO.Path.Combine(request.WorkingDirectory, "selected-preview.pdb");
+                File.WriteAllText(preview, "selected coordinates");
+                return Observed(request.RequestId, request.Payload.StudyRevisionId,
+                    new PreparationChangeObservations(ImmutableArray<AtomAddress>.Empty,
+                        ImmutableArray<PossibleDisulfideObservation>.Empty,
+                        ObservationStanding.Observed, ImmutableArray<string>.Empty, 4,
+                        ImmutableArray.Create(new PreviewChainCorrespondence("A", "A", "A")),
+                        ObservedGeometry()), ImmutableArray.Create(Artifact(preview, "selectedProteinPreview")));
+            },
+            PrepareResponse = request => new WorkerResult<ProteinPreparationObservations>(request.RequestId,
+                request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Failed,
+                ImmutableArray<WorkerArtifact>.Empty, null, null,
+                "controlled-provider-failure", "The controlled provider made no candidate.")
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "no-choice.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource, new { uploadToken = token })).Established);
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, biologicalAssemblyId = (string?)null,
+                chains = new[] { new ChainSelection("A", "A") },
+                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+        Assert.True(modeled.Established, modeled.Reason);
+        Assert.Empty(modeled.Value!.PreparationReview!.Decisions);
+        Assert.Equal("ready", modeled.Value.PreparationReview.PreparationStanding);
+        Assert.Equal("ready", modeled.Value.ProteinTask?.Standing);
+        Assert.Equal(0, worker.PrepareProteinCalls);
+        Assert.Contains(modeled.Value.Actions, action => action.Kind == ActorActionKind.StartProteinPreparation &&
+            action.Enabled);
+        var started = await Command(product, ActorActionKind.StartProteinPreparation, new { });
+        Assert.True(started.Established, started.Reason);
+        Assert.Equal("failed", started.Value!.ProteinTask?.Standing);
+        Assert.True(started.Value.ProteinTask?.RetryAvailable);
+        Assert.Contains(started.Value.Actions, action => action.Kind == ActorActionKind.RetryProteinPreparation &&
+            action.Enabled);
+        var retried = await Command(product, ActorActionKind.RetryProteinPreparation, new { });
+        Assert.True(retried.Established, retried.Reason);
+        Assert.Equal(2, worker.PrepareProteinCalls);
+        Assert.Equal("failed", retried.Value!.PreparationReview?.PreparationStanding);
     }
 
     [Fact]
@@ -143,21 +658,12 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal(PreparationChangeKind.HeavyAtom, proposal.Kind);
         var revisionId = modeled.Value.Study!.Id;
 
-        var prematureApproval = await Command(product, ActorActionKind.ApprovePreparationChange,
-            new { proposalId = proposal.Id, approve = true, rationale = "Approve exact CB" });
-        Assert.False(prematureApproval.Established);
-        Assert.Contains("not been selected for inspection", prematureApproval.Reason);
-        Assert.Equal(0, worker.PrepareProteinCalls);
-        var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
-            new { subjectId = proposal.Id });
-        Assert.True(inspected.Established);
-        Assert.Equal(proposal.Id, inspected.Value!.Inspection?.SubjectId);
-        Assert.Contains(inspected.Value.Actions, action =>
+        Assert.Contains(modeled.Value.Actions, action =>
             action.Kind == ActorActionKind.ApprovePreparationChange &&
             action.SubjectId == proposal.Id && action.Enabled);
 
         var declined = await Command(product, ActorActionKind.ApprovePreparationChange,
-            new { proposalId = proposal.Id, approve = false, rationale = "Do not add this atom" });
+            new { proposalId = proposal.Id, approve = false });
         Assert.True(declined.Established);
         Assert.Equal("declined", declined.Value!.Protein!.Status);
         Assert.Contains(proposal.Id, declined.Value.Protein.Summary);
@@ -181,14 +687,15 @@ public sealed partial class ProteinPreparationRouteTests
             new { uploadToken = replacementToken });
         Assert.True(replaced.Established);
         Assert.NotEqual(revisionId, replaced.Value!.Study!.Id);
-        Assert.Null(replaced.Value.Inspection);
+        Assert.Equal(replaced.Value.Study.SelectedSourceId, replaced.Value.Inspection?.SubjectId);
+        Assert.Equal(replaced.Value.Study.Id, replaced.Value.Inspection?.StudyRevisionId);
         Assert.Null(replaced.Value.Protein);
         var oldFocus = await Command(product, ActorActionKind.SelectInspectionSubject,
             new { subjectId = proposal.Id });
         Assert.False(oldFocus.Established);
         Assert.Contains("exact inspection subject is unavailable", oldFocus.Reason);
         var oldDecision = await Command(product, ActorActionKind.ApprovePreparationChange,
-            new { proposalId = proposal.Id, approve = true, rationale = "Stale evidence" });
+            new { proposalId = proposal.Id, approve = true });
         Assert.False(oldDecision.Established);
         Assert.Contains("absent or stale", oldDecision.Reason);
         Assert.Equal(0, worker.PrepareProteinCalls);
@@ -364,14 +871,16 @@ public sealed partial class ProteinPreparationRouteTests
         ImmutableArray.Create(new ProteinGeometryCriterion("covalentBond", 1.0, 2.0, false)),
         ImmutableArray<string>.Empty);
 
-    private static string WritePolicyCatalogue(string directory)
+    private static string WritePolicyCatalogue(string directory, params string[] variants)
     {
         var asset = System.IO.Path.Combine(directory, "forcefield.xml");
         File.WriteAllText(asset, "<ForceField/>");
         var chemical = new ProteinChemicalStatePolicy("chemical", "1", "canonical-amino-acid-assembly",
             2.5, ImmutableArray.Create("policy evidence"),
             ImmutableArray.Create(new ForceFieldAsset("ff", "1", "Amber19", asset, Hash(asset))),
-            ImmutableDictionary<string, string>.Empty, ImmutableArray.Create("HID"), ImmutableArray<string>.Empty);
+            ImmutableDictionary<string, string>.Empty,
+            variants.Length == 0 ? ImmutableArray.Create("HID") : variants.ToImmutableArray(),
+            ImmutableArray<string>.Empty);
         var catalogue = System.IO.Path.Combine(directory, "catalogue.json");
         File.WriteAllText(catalogue, JsonSerializer.Serialize(new
         {
@@ -409,12 +918,20 @@ public sealed partial class ProteinPreparationRouteTests
 
     private sealed class PreparationWorkerStub : IScientificWorkerExchange
     {
+        public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+            ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<ManualPlacementObservations>>(new NotSupportedException());
+        public Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+            ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<SourcePreviewObservations>>(new NotSupportedException());
         public Func<ScientificWorkRequest<SourceInspectionPayload>, WorkerResult<SourceInspectionObservations>>?
             InspectSourceResponse { get; init; }
         public Func<ScientificWorkRequest<PreparationChangeInspectionPayload>, WorkerResult<PreparationChangeObservations>>?
             InspectChangesResponse { get; init; }
         public Func<ScientificWorkRequest<ProteinPreparationPayload>, WorkerResult<ProteinPreparationObservations>>?
             PrepareResponse { get; init; }
+        public Func<ScientificWorkRequest<ProteinPreparationPayload>, CancellationToken,
+            Task<WorkerResult<ProteinPreparationObservations>>>? PrepareResponseAsync { get; init; }
         public int PrepareProteinCalls { get; private set; }
         public int InspectChangesCalls { get; private set; }
 
@@ -431,7 +948,9 @@ public sealed partial class ProteinPreparationRouteTests
             ScientificWorkRequest<ProteinPreparationPayload> request, CancellationToken cancellationToken)
         {
             PrepareProteinCalls++;
-            return Task.FromResult(PrepareResponse!(request));
+            return PrepareResponseAsync is not null
+                ? PrepareResponseAsync(request, cancellationToken)
+                : Task.FromResult(PrepareResponse!(request));
         }
         public Task<WorkerResult<MembraneAssessmentObservations>> AssessMembraneAsync(
             ScientificWorkRequest<MembraneAssessmentPayload> request, CancellationToken cancellationToken) => NotUsed<MembraneAssessmentObservations>();

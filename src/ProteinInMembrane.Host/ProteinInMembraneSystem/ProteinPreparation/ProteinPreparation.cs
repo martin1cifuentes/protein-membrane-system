@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace ProteinInMembrane.Host.ProteinInMembraneSystem.ProteinPreparation;
@@ -54,6 +55,35 @@ public sealed class ProteinPreparation
         return BoundaryOutcome<SourceInspectionReport>.Success(new SourceInspectionReport(
             source, observation.SourceFormat, observation.Models, ImmutableArray<string>.Empty,
             observation.Prediction));
+    }
+
+    public async Task<BoundaryOutcome<WorkerArtifact>> PreviewSourceModelAsync(
+        SourceInspectionReport inspection, int modelIndex, string? assemblyId,
+        string workingDirectory, int maxAtoms, CancellationToken cancellationToken)
+    {
+        var model = inspection.Models.FirstOrDefault(item => item.Index == modelIndex);
+        var expectedChains = assemblyId is null ? model?.Chains.Select(chain => chain.Name).ToArray() :
+            model?.Assemblies.FirstOrDefault(item => item.Name == assemblyId)?.ChainCopies
+                .Select(copy => copy.CopyId).ToArray();
+        if (model is null || expectedChains is null || expectedChains.Length == 0 ||
+            expectedChains.Distinct(StringComparer.Ordinal).Count() != expectedChains.Length || maxAtoms <= 0)
+            return BoundaryOutcome<WorkerArtifact>.Unavailable("Choose an observed coordinate model and assembly for inspection.");
+        var source = inspection.Source;
+        var request = new ScientificWorkRequest<SourcePreviewPayload>(Guid.NewGuid().ToString("N"),
+            workingDirectory, new SourcePreviewPayload(source.CoordinatePath, source.Sha256,
+                modelIndex, assemblyId, maxAtoms));
+        var result = await _worker.PreviewSourceModelAsync(request, cancellationToken);
+        if (result.RequestId != request.RequestId || result.Standing != WorkerResultStanding.Observed ||
+            result.Observations is null)
+            return BoundaryOutcome<WorkerArtifact>.Unavailable(result.FailureMessage ?? "The selected model could not be displayed.");
+        var observed = result.Observations;
+        var preview = result.Artifacts.FirstOrDefault(item => item.Role == "sourcePreviewCif");
+        if (observed.ModelIndex != modelIndex || observed.AssemblyId != assemblyId ||
+            observed.AtomCount <= 0 || observed.AtomCount > maxAtoms ||
+            !observed.ChainIds.SequenceEqual(expectedChains) || preview is null ||
+            !File.Exists(preview.Path))
+            return BoundaryOutcome<WorkerArtifact>.Unavailable("The displayed model or chain copies differ from the selected source account.");
+        return BoundaryOutcome<WorkerArtifact>.Success(preview);
     }
 
     public async Task<BoundaryOutcome<PreparationProposalReport>> ProposeChangesAsync(
@@ -149,10 +179,19 @@ public sealed class ProteinPreparation
                     residue.Limitations, true));
             }
 
-            if (residue.Name == "HIS")
-                foreach (var variant in new[] { "HID", "HIE", "HIP" }.Where(policy.PermittedVariants.Contains))
+            var alternatives = residue.Name switch
+            {
+                "HIS" => new[] { "HID", "HIE", "HIP" },
+                "ASP" => new[] { "ASP", "ASH" },
+                "GLU" => new[] { "GLU", "GLH" },
+                "LYS" => new[] { "LYS", "LYN" },
+                _ => Array.Empty<string>()
+            };
+            if (alternatives.Length > 1)
+                foreach (var variant in alternatives.Where(policy.PermittedVariants.Contains))
                     changes.Add(new PreparationChangeProposal(Guid.NewGuid().ToString("N"), revision.Id, intended.Id,
-                        residue.Address, PreparationChangeKind.ResidueState, variant, "Choose a site-specific histidine state at the fixed study pH.",
+                        residue.Address, PreparationChangeKind.ResidueState, variant,
+                        "Choose the exact modeled side-chain state at the fixed study pH.",
                         residue.Limitations, true));
         }
         if (observed.AssessmentStanding == ObservationStanding.Observed)
@@ -187,9 +226,11 @@ public sealed class ProteinPreparation
             change.Kind == PreparationChangeKind.HeavyAtom ? "Selected-residue missing-atom assessment" :
                 change.Kind == PreparationChangeKind.AlternateLocation ? "Observed coordinate alternative" :
                 change.Kind == PreparationChangeKind.Disulfide ? "Observed cysteine proximity" : "Fixed-pH chemical-state proposal",
-            $"{change.Kind}: {change.ProposedChange} at {change.Residue.Chain}:{change.Residue.Residue}{change.Residue.InsertionCode}",
+            change.Kind == PreparationChangeKind.ResidueState
+                ? $"{change.ProposedChange} is an available modeled state at this site; no site-specific optimal-state measurement was made."
+                : $"{change.Kind}: {change.ProposedChange} at {change.Residue.Chain}:{change.Residue.Residue}{change.Residue.InsertionCode}",
             $"Study revision {revision.Id}; model {intended.ModelIndex}; policy {policy.Id}",
-            change.Kind == PreparationChangeKind.ResidueState ? "Site-specific histidine state is a researcher-reviewed model assumption, not an automated optimal-protonation result." :
+            change.Kind == PreparationChangeKind.ResidueState ? "This chemical-state option is a model assumption, not a measured optimal protonation state." :
                 change.Kind == PreparationChangeKind.Disulfide ? "Proximity suggests a possible link but does not establish a covalent bond; actual prepared bonds must match the decision." :
                 "Selected-source observation; a proposal is not a prepared protein or placement.",
             change.Kind is PreparationChangeKind.ResidueState or PreparationChangeKind.Disulfide ? EvidenceBearing.Unknown : EvidenceBearing.Supports)).ToImmutableArray();
@@ -247,6 +288,162 @@ public sealed class ProteinPreparation
             ? matches[0].PreviewChain : null;
     }
 
+    public async Task<BoundaryOutcome<RecommendedPreparationPlan>> RecommendAsync(
+        StudyRevision revision,
+        IntendedProteinModel intended,
+        SourceInspectionReport inspection,
+        ProteinChemicalStatePolicy policy,
+        ProteinStructuralAssessmentPolicy structuralPolicy,
+        PreparationProposalReport proposals,
+        ImmutableArray<ResearcherDecision> decisions,
+        ImmutableArray<ResidueVariantChoice> overrides,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (revision.IntendedProtein?.Id != intended.Id || inspection.Source.Id != intended.Source.Id ||
+            inspection.Source.Sha256 != intended.Source.Sha256 ||
+            proposals.StudyRevisionId != revision.Id || proposals.IntendedProteinId != intended.Id ||
+            !proposals.UnresolvedQuestions.IsDefaultOrEmpty)
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "The exact selected protein or its structural questions changed before recommendations could be calculated.");
+        if (policy.Recommendation is not { NormalizeProteinHydrogens: true } method ||
+            string.IsNullOrWhiteSpace(method.Id) || string.IsNullOrWhiteSpace(method.Version) ||
+            method.Seed < 0 || policy.ForceFieldFiles.IsDefaultOrEmpty ||
+            !ValidStructuralPolicy(structuralPolicy))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "No identified starting-state method and compatible preparation assets are available.");
+        if (intended.Partners.Any(partner => partner.Retain))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "This starting-state method cannot normalize retained partner chemistry. Review the protein manually.");
+        if (decisions.Any(decision => decision.StudyRevisionId != revision.Id ||
+                decision.Kind != ResearcherDecisionKind.ApprovePreparationChange ||
+                !proposals.Changes.Any(change => change.Id == decision.SubjectId)) ||
+            decisions.Select(decision => decision.Id).Distinct(StringComparer.Ordinal).Count() != decisions.Length ||
+            decisions.Select(decision => decision.SubjectId).Distinct(StringComparer.Ordinal).Count() != decisions.Length)
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "A recorded preparation choice no longer matches this exact proposal report.");
+        var approved = proposals.Changes.Select(change => (Change: change,
+            Decision: decisions.FirstOrDefault(decision => decision.SubjectId == change.Id &&
+                decision.ChosenValue == ResearcherDecisionValue.Approved)))
+            .Where(item => item.Decision is not null).ToArray();
+        foreach (var group in proposals.Changes.Where(change => change.Kind == PreparationChangeKind.AlternateLocation)
+                     .GroupBy(change => change.Residue))
+        {
+            var selected = approved.Where(item => group.Any(change => change.Id == item.Change.Id)).ToArray();
+            if (selected.Length != 1 || !intended.AlternateLocations.Any(choice =>
+                    choice.Residue.Model == group.Key.Model && choice.Residue.Chain == group.Key.Chain &&
+                    choice.Residue.Residue == group.Key.Residue &&
+                    choice.Residue.InsertionCode == group.Key.InsertionCode &&
+                    choice.Altloc == selected[0].Change.ProposedChange))
+                return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                    "The exact selected conformer needs one corresponding approved decision.");
+        }
+        var bondProposals = proposals.Changes.Where(change => change.Kind == PreparationChangeKind.Disulfide).ToArray();
+        if (bondProposals.Any(change => change.PartnerResidue is null ||
+                decisions.Count(decision => decision.SubjectId == change.Id) != 1) ||
+            approved.Where(item => item.Change.Kind == PreparationChangeKind.Disulfide)
+                .SelectMany(item => new[] { item.Change.Residue, item.Change.PartnerResidue! })
+                .Distinct().Count() != 2 * approved.Count(item => item.Change.Kind == PreparationChangeKind.Disulfide))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "Each possible cysteine bond needs one coherent exact disposition.");
+        if (proposals.Changes.Any(change => change.Kind == PreparationChangeKind.HeavyAtom &&
+                decisions.Any(decision => decision.SubjectId == change.Id &&
+                    decision.ChosenValue == ResearcherDecisionValue.Declined)))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "A required side-chain repair was declined; revise the selected protein to prepare it.");
+        var availableStates = proposals.Changes.Where(change => change.Kind == PreparationChangeKind.ResidueState)
+            .Select(change => (change.Residue, change.ProposedChange)).ToHashSet();
+        var manualStates = approved.Where(item => item.Change.Kind == PreparationChangeKind.ResidueState)
+            .Select(item => new ResidueVariantChoice(item.Change.Residue, item.Change.ProposedChange,
+                item.Decision!.Id)).ToArray();
+        var effectiveOverrides = overrides.Concat(manualStates).ToImmutableArray();
+        if (effectiveOverrides.Any(choice => !availableStates.Contains((choice.Residue, choice.Variant))) ||
+            effectiveOverrides.Select(choice => choice.Residue).Distinct().Count() != effectiveOverrides.Length)
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "A state override does not identify one available option at its exact residue.");
+        var heavy = proposals.Changes.Where(change => change.Kind == PreparationChangeKind.HeavyAtom)
+            .Select(change => new AtomAddress(change.Residue, change.ProposedChange)).ToImmutableArray();
+        var request = new ScientificWorkRequest<PreparationRecommendationPayload>(Guid.NewGuid().ToString("N"),
+            workingDirectory, new PreparationRecommendationPayload(revision.Id, revision.Conditions.NominalPh,
+                policy.DisulfideCandidateMaxSgDistanceAngstrom, intended.Source.CoordinatePath,
+                intended.Source.Sha256, intended.ModelIndex, intended.BiologicalAssemblyId,
+                intended.Chains,
+                approved.Where(item => item.Change.Kind == PreparationChangeKind.AlternateLocation)
+                    .Select(item => new AlternateLocationChoice(item.Change.Residue,
+                        item.Change.ProposedChange, item.Decision!.Id)).ToImmutableArray(),
+                approved.Where(item => item.Change.Kind == PreparationChangeKind.Disulfide)
+                    .Select(item => new DisulfideChoice(item.Change.Residue,
+                        item.Change.PartnerResidue!, item.Decision!.Id)).ToImmutableArray(),
+                ImmutableArray<SourcePartnerObservation>.Empty, heavy, effectiveOverrides,
+                policy.ForceFieldFiles.DistinctBy(asset => asset.Sha256,
+                    StringComparer.OrdinalIgnoreCase).ToImmutableArray(),
+                policy.PermittedVariants, structuralPolicy.Measurement, method.Seed));
+        var result = await _worker.RecommendPreparationAsync(request, cancellationToken);
+        if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id ||
+            result.Standing != WorkerResultStanding.Observed || result.Observations is null)
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                result.FailureMessage ?? "The current starting-state plan was not observed.");
+        var observed = result.Observations;
+        var candidate = result.Artifacts.FirstOrDefault(item => item.Role == "preparedPdb");
+        var bondGraph = result.Artifacts.FirstOrDefault(item => item.Role == "preparedBondGraph");
+        var correspondence = result.Artifacts.FirstOrDefault(item => item.Role == "correspondenceJson");
+        if (candidate is null || !File.Exists(candidate.Path) ||
+            bondGraph is null || correspondence is null ||
+            result.Artifacts.Any(item => !File.Exists(item.Path) ||
+                !Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(item.Path)))
+                    .Equals(item.Sha256, StringComparison.OrdinalIgnoreCase)) ||
+            !Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(candidate.Path)))
+                .Equals(candidate.Sha256, StringComparison.OrdinalIgnoreCase) ||
+            observed.CandidateSha256 != candidate.Sha256 ||
+            observed.PlanSha256.Length != 64 ||
+            !observed.PlanSha256.All(Uri.IsHexDigit) ||
+            !observed.JointParameterizationObserved ||
+            observed.NominalPh != revision.Conditions.NominalPh || observed.Seed != method.Seed ||
+            observed.MethodVersion != method.Version ||
+            string.IsNullOrWhiteSpace(observed.Method) ||
+            observed.CandidateObservations is null ||
+            observed.CandidateAtomCount != observed.CandidateObservations.PreparedAtomCount ||
+            observed.CandidateAtomCount <= 0 ||
+            !observed.CandidateObservations.GeometryWarnings.IsDefaultOrEmpty ||
+            !GeometrySupports(observed.CandidateObservations.Geometry, structuralPolicy))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "The proposed starting-state plan lacks a corresponding, jointly checked candidate.");
+        if (observed.ProposedHeavyAtoms.Length != heavy.Length ||
+            observed.ProposedHeavyAtoms.ToHashSet().Count != heavy.Length ||
+            observed.ProposedHeavyAtoms.Any(atom => !heavy.Contains(atom)) ||
+            observed.CandidateObservations.AddedHeavyAtoms.Length != heavy.Length ||
+            observed.CandidateObservations.AddedHeavyAtoms.Any(atom => !heavy.Contains(atom)) ||
+            observed.RemovedSourceHydrogens.Distinct().Count() != observed.RemovedSourceHydrogens.Length ||
+            observed.CandidateObservations.RemovedSourceHydrogens.Length != observed.RemovedSourceHydrogens.Length ||
+            observed.CandidateObservations.RemovedSourceHydrogens.Any(atom =>
+                !observed.RemovedSourceHydrogens.Contains(atom)))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "The candidate atom changes differ from the exact proposed repair and hydrogen normalization.");
+        var choiceSet = observed.Choices.Select(choice => (choice.Residue, choice.Variant)).ToHashSet();
+        if (observed.Choices.IsDefault || choiceSet.Count != observed.Choices.Length ||
+            observed.Choices.Select(choice => choice.Residue).Distinct().Count() != observed.Choices.Length ||
+            observed.Choices.Any(choice => !policy.PermittedVariants.Contains(choice.Variant) ||
+                (choice.Variant != "CYS" && choice.Variant != "CYX" &&
+                 !availableStates.Contains((choice.Residue, choice.Variant)))) ||
+            proposals.Changes.Where(change => change.Kind == PreparationChangeKind.ResidueState)
+                .Select(change => change.Residue).Distinct().Any(address =>
+                    observed.Choices.Count(choice => choice.Residue == address) != 1) ||
+            effectiveOverrides.Any(choice => !observed.Choices.Any(actual => actual.Residue == choice.Residue &&
+                actual.Variant == choice.Variant && actual.Overridden)) ||
+            observed.CandidateObservations.ActualResidueVariants.Length != observed.Choices.Length ||
+            observed.CandidateObservations.ActualResidueVariants.Any(actual =>
+                !choiceSet.Contains((actual.Residue, actual.Variant))))
+            return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
+                "The proposed chemical-state choices differ from the exact site options or checked candidate.");
+        return BoundaryOutcome<RecommendedPreparationPlan>.Success(new RecommendedPreparationPlan(
+            $"plan:{observed.PlanSha256}", revision.Id, intended.Id, policy.Id, policy.Version,
+            intended.Source.Sha256, observed.PlanSha256, candidate, observed.Choices,
+            observed.ProposedHeavyAtoms, observed.RemovedSourceHydrogens, observed.Method,
+            observed.MethodVersion, observed.NominalPh, observed.Seed, observed.CandidateAtomCount,
+            decisions.Select(decision => decision.Id).Order(StringComparer.Ordinal).ToImmutableArray(),
+            result.Artifacts, observed.CandidateObservations, result.Provider));
+    }
+
     public async Task<BoundaryOutcome<AssessedPreparedProtein>> PrepareAsync(
         StudyRevision revision,
         IntendedProteinModel intended,
@@ -256,7 +453,9 @@ public sealed class ProteinPreparation
         PreparationProposalReport proposals,
         ImmutableArray<ResearcherDecision> decisions,
         string workingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool normalizeProteinHydrogens = false,
+        RecommendedPreparationPlan? checkedPlan = null)
     {
         ArgumentNullException.ThrowIfNull(revision);
         ArgumentNullException.ThrowIfNull(intended);
@@ -267,6 +466,12 @@ public sealed class ProteinPreparation
         if (revision.IntendedProtein?.Id != intended.Id || sourceInspection.Source.Id != intended.Source.Id ||
             sourceInspection.Source.Sha256 != intended.Source.Sha256)
             return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("The selected structure no longer corresponds to this study revision and inspected source.");
+        if (checkedPlan is not null && (!normalizeProteinHydrogens ||
+            checkedPlan.StudyRevisionId != revision.Id || checkedPlan.IntendedProteinId != intended.Id ||
+            checkedPlan.SourceSha256 != intended.Source.Sha256 ||
+            checkedPlan.ChemicalPolicyId != policy.Id || checkedPlan.ChemicalPolicyVersion != policy.Version))
+            return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(
+                "The authorized plan no longer corresponds to this exact protein, policy or revision.");
         if (proposals.StudyRevisionId != revision.Id || proposals.IntendedProteinId != intended.Id ||
             !proposals.UnresolvedQuestions.IsDefaultOrEmpty)
             return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("The exact preparation proposals are stale or contain unresolved structural questions.");
@@ -311,9 +516,6 @@ public sealed class ProteinPreparation
             if (matching.Length > 1 || matching.Any(decision => decision.Kind != ResearcherDecisionKind.ApprovePreparationChange ||
                     decision.ChosenValue is not (ResearcherDecisionValue.Approved or ResearcherDecisionValue.Declined)))
                 return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("A preparation change has conflicting or invalid decisions.");
-            if ((proposal.Kind is PreparationChangeKind.ResidueState or PreparationChangeKind.Disulfide) && matching.Any(decision =>
-                    decision.ChosenValue == ResearcherDecisionValue.Approved && string.IsNullOrWhiteSpace(decision.Rationale)))
-                return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("A site-specific chemical-state or disulfide choice requires the researcher's recorded rationale.");
             if (proposal.Kind == PreparationChangeKind.Disulfide && matching.Length != 1)
                 return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("Each possible disulfide must be explicitly approved or declined before preparation.");
             if (matching.Length == 1 && matching[0].ChosenValue == ResearcherDecisionValue.Approved)
@@ -389,11 +591,43 @@ public sealed class ProteinPreparation
                 intended.Partners.Where(partner => partner.Retain).Select(partner =>
                     model.Partners.Single(source => source.SourceId == partner.SourceId)).ToImmutableArray(),
                 heavyAtomApprovals, approvedDisulfides, effectiveVariants.ToImmutable(), forceFieldFiles,
-                structuralPolicy.Measurement));
-        var result = await _worker.PrepareProteinAsync(request, cancellationToken);
-        if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id ||
-            result.Standing != WorkerResultStanding.Observed || result.Observations is null)
-            return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(result.FailureMessage ?? "Protein preparation was not observed.");
+                structuralPolicy.Measurement, normalizeProteinHydrogens, checkedPlan?.Seed));
+        WorkerResult<ProteinPreparationObservations> result;
+        if (checkedPlan is null)
+            result = await _worker.PrepareProteinAsync(request, cancellationToken);
+        else
+        {
+            // Recommendation already produced an isolated, jointly checked candidate.
+            // Recheck every byte before promoting that exact candidate; a fresh
+            // stochastic provider invocation could produce different coordinates.
+            var sourceMatches = File.Exists(intended.Source.CoordinatePath) &&
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(intended.Source.CoordinatePath)))
+                    .Equals(intended.Source.Sha256, StringComparison.OrdinalIgnoreCase);
+            var assetsMatch = forceFieldFiles.All(asset => File.Exists(asset.Path) &&
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(asset.Path)))
+                    .Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase));
+            var artifactsMatch = !checkedPlan.CandidateArtifacts.IsDefaultOrEmpty &&
+                checkedPlan.CandidateArtifacts.All(item => File.Exists(item.Path) &&
+                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(item.Path)))
+                        .Equals(item.Sha256, StringComparison.OrdinalIgnoreCase));
+            if (!sourceMatches || !assetsMatch || !artifactsMatch)
+                return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(
+                    "The selected source, preparation asset, or checked plan artifact changed. Restore its exact checked bytes before retrying preparation.",
+                    diagnostic: new ProteinPreparationInputIntegrityDiagnostic());
+            result = new WorkerResult<ProteinPreparationObservations>(request.RequestId, revision.Id,
+                null, null, WorkerResultStanding.Observed, checkedPlan.CandidateArtifacts,
+                checkedPlan.CandidateObservations, checkedPlan.CandidateProvider, null, null);
+        }
+        if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id)
+            return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(
+                "Protein preparation did not return an answer for this exact request.",
+                diagnostic: new ProteinPreparationExchangeDiagnostic(WorkerResultStanding.Unobserved));
+        if (result.Standing != WorkerResultStanding.Observed || result.Observations is null)
+            return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(
+                result.FailureMessage ?? "Protein preparation was not observed.",
+                diagnostic: new ProteinPreparationExchangeDiagnostic(
+                    result.Standing == WorkerResultStanding.Observed
+                        ? WorkerResultStanding.Unobserved : result.Standing));
 
         var observed = result.Observations;
         if (!observed.MissingBackboneResidues.IsDefaultOrEmpty || !observed.NoncanonicalResidues.IsDefaultOrEmpty ||
@@ -427,6 +661,12 @@ public sealed class ProteinPreparation
         if (prepared is null || bondGraph is null || correspondenceArtifact is null ||
             !File.Exists(bondGraph.Path) || !File.Exists(correspondenceArtifact.Path))
             return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("The corresponding prepared structure, explicit bonds, or atom mapping was not observed.");
+        if (checkedPlan is not null && (prepared.Sha256 != checkedPlan.Candidate.Sha256 ||
+            observed.PreparedAtomCount != checkedPlan.CandidateAtomCount ||
+            observed.RemovedSourceHydrogens.Length != checkedPlan.RemovedSourceHydrogens.Length ||
+            observed.RemovedSourceHydrogens.Any(atom => !checkedPlan.RemovedSourceHydrogens.Contains(atom))))
+            return BoundaryOutcome<AssessedPreparedProtein>.Unavailable(
+                "The actual prepared coordinates differ from the exact checked candidate authorized by this plan.");
 
         SourceToResultCorrespondence? correspondence;
         try
@@ -511,7 +751,11 @@ public sealed class ProteinPreparation
             evidence, ImmutableArray<ScientificFinding>.Empty,
             ImmutableArray.Create("Protein-local assessment does not establish membrane placement."),
             sourceInspection.Prediction, observed.Geometry,
-            policy.Version, structuralPolicy.Id, structuralPolicy.Version));
+            policy.Version, structuralPolicy.Id, structuralPolicy.Version,
+            checkedPlan is null ? null : new PreparationPlanProvenance(checkedPlan.PlanSha256,
+                checkedPlan.Method, checkedPlan.MethodVersion, checkedPlan.NominalPh, checkedPlan.Seed,
+                checkedPlan.Candidate.Sha256, checkedPlan.Choices, checkedPlan.ProposedHeavyAtoms,
+                checkedPlan.RemovedSourceHydrogens)));
     }
 
     private static bool ValidStructuralPolicy(ProteinStructuralAssessmentPolicy? policy)

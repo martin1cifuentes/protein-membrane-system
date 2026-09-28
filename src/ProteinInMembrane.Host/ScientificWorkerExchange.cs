@@ -32,6 +32,10 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
         ScientificWorkRequest<SourceInspectionPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<SourceInspectionPayload, SourceInspectionObservations>("inspect_source", request, cancellationToken);
 
+    public Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+        ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken)
+        => InvokeAsync<SourcePreviewPayload, SourcePreviewObservations>("preview_source_model", request, cancellationToken);
+
     public Task<WorkerResult<PredictionRegionSummaryObservations>> SummarizePredictionEvidenceAsync(
         ScientificWorkRequest<PredictionRegionSummaryPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<PredictionRegionSummaryPayload, PredictionRegionSummaryObservations>(
@@ -40,6 +44,11 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     public Task<WorkerResult<PreparationChangeObservations>> InspectPreparationChangesAsync(
         ScientificWorkRequest<PreparationChangeInspectionPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<PreparationChangeInspectionPayload, PreparationChangeObservations>("inspect_preparation_changes", request, cancellationToken);
+
+    public Task<WorkerResult<PreparationRecommendationObservations>> RecommendPreparationAsync(
+        ScientificWorkRequest<PreparationRecommendationPayload> request, CancellationToken cancellationToken)
+        => InvokeAsync<PreparationRecommendationPayload, PreparationRecommendationObservations>(
+            "recommend_preparation", request, cancellationToken);
 
     public Task<WorkerResult<MembraneAssessmentObservations>> AssessMembraneAsync(
         ScientificWorkRequest<MembraneAssessmentPayload> request, CancellationToken cancellationToken)
@@ -52,6 +61,10 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     public Task<WorkerResult<PlacementObservations>> PlacePpmAsync(
         ScientificWorkRequest<PlacementPayload> request, CancellationToken cancellationToken)
         => InvokeAsync<PlacementPayload, PlacementObservations>("place_ppm", request, cancellationToken);
+
+    public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+        ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken)
+        => InvokeAsync<ManualPlacementPayload, ManualPlacementObservations>("place_manual", request, cancellationToken);
 
     public Task<WorkerResult<PlacementAdjustmentObservations>> AdjustPlacementAsync(
         ScientificWorkRequest<PlacementAdjustmentPayload> request, CancellationToken cancellationToken)
@@ -277,7 +290,9 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
         }
         if (node is not JsonObject objectNode) return;
 
-        if (objectNode["nativePatchMode"]?.GetValue<string>() == "popc-62-109-deletion")
+        var patchMode = objectNode["nativePatchMode"]?.GetValue<string>();
+        if (patchMode is "popc-62-109-deletion" or "balanced-defect-deletion" or
+            "mapped-lipid21-zenodo-popc")
         {
             var derived = objectNode["nativePatchPath"]?.GetValue<string>();
             var derivedHash = objectNode["nativePatchSha256"]?.GetValue<string>();
@@ -290,6 +305,9 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                 throw new InvalidDataException("The custom membrane patch lacks distinct, identified source and derived bytes.");
             objectNode["nativePatchPath"] = await StageFileAsync(derived, derivedHash,
                 inputDirectory, cancellationToken);
+            if (patchMode == "mapped-lipid21-zenodo-popc")
+                objectNode["nativeSourcePatchPath"] = await StageFileAsync(installedSource,
+                    installedSourceHash, inputDirectory, cancellationToken);
         }
 
         foreach (var entry in objectNode.ToArray())

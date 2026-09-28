@@ -107,7 +107,7 @@ public sealed partial class ProteinPreparationRouteTests
     }
 
     [Fact]
-    public async Task Histidine_needs_one_current_reviewed_variant_with_a_recorded_rationale()
+    public async Task Histidine_needs_one_current_reviewed_variant_without_routine_prose()
     {
         using var directory = new TemporaryDirectory();
         var context = OwnerContext(directory.Path, "HIS", ["N", "CA", "C", "O", "CB", "CG"]);
@@ -127,20 +127,14 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Contains("Exactly one reviewed", absent.Reason);
         Assert.Equal(0, worker.PrepareProteinCalls);
 
-        var noRationale = ImmutableArray.Create(new ResearcherDecision("choose-hid", context.Revision.Id,
+        var reviewed = ImmutableArray.Create(new ResearcherDecision("choose-hid", context.Revision.Id,
             hid.Id, ResearcherDecisionKind.ApprovePreparationChange, ResearcherDecisionValue.Approved,
-            DateTimeOffset.UtcNow, string.Empty));
-        var unreasoned = await owner.PrepareAsync(context.Revision, context.Intended, context.Inspection,
-            policy, StructuralPolicy(), proposals, noRationale,
-            directory.Path, TestContext.Current.CancellationToken);
-        Assert.False(unreasoned.Established);
-        Assert.Contains("recorded rationale", unreasoned.Reason);
-        Assert.Equal(0, worker.PrepareProteinCalls);
+            DateTimeOffset.UtcNow, null));
 
-        var conflicting = noRationale.SetItem(0, noRationale[0] with { Rationale = "At this site" })
+        var conflicting = reviewed
             .Add(new ResearcherDecision("choose-hie", context.Revision.Id, hie.Id,
                 ResearcherDecisionKind.ApprovePreparationChange, ResearcherDecisionValue.Approved,
-                DateTimeOffset.UtcNow, "Competing assignment"));
+                DateTimeOffset.UtcNow, null));
         var conflict = await owner.PrepareAsync(context.Revision, context.Intended, context.Inspection,
             policy, StructuralPolicy(), proposals, conflicting,
             directory.Path, TestContext.Current.CancellationToken);
@@ -157,10 +151,10 @@ public sealed partial class ProteinPreparationRouteTests
                 return ControlledFailure(request);
             }
         };
-        var reasoned = await new ProteinPreparationOwner(observedWorker).PrepareAsync(context.Revision,
+        var selected = await new ProteinPreparationOwner(observedWorker).PrepareAsync(context.Revision,
             context.Intended, context.Inspection, policy, StructuralPolicy(), proposals,
-            ImmutableArray.Create(conflicting[0]), directory.Path, TestContext.Current.CancellationToken);
-        Assert.False(reasoned.Established);
+            reviewed, directory.Path, TestContext.Current.CancellationToken);
+        Assert.False(selected.Established);
         Assert.Equal(1, observedWorker.PrepareProteinCalls);
         var variant = Assert.Single(submitted!.ResidueVariants);
         Assert.Equal("HID", variant.Variant);
@@ -199,21 +193,14 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Contains("explicitly approved or declined", absent.Reason);
         Assert.Equal(0, worker.PrepareProteinCalls);
 
-        var withoutRationale = ImmutableArray.Create(new ResearcherDecision("approve-bond",
+        var reviewed = ImmutableArray.Create(new ResearcherDecision("approve-bond",
             context.Revision.Id, bond.Id, ResearcherDecisionKind.ApprovePreparationChange,
-            ResearcherDecisionValue.Approved, DateTimeOffset.UtcNow, string.Empty));
-        var unreasoned = await owner.PrepareAsync(context.Revision, context.Intended, inspection,
-            policy, StructuralPolicy(), proposals, withoutRationale,
-            directory.Path, TestContext.Current.CancellationToken);
-        Assert.False(unreasoned.Established);
-        Assert.Contains("recorded rationale", unreasoned.Reason);
-        Assert.Equal(0, worker.PrepareProteinCalls);
+            ResearcherDecisionValue.Approved, DateTimeOffset.UtcNow, null));
 
-        var conflicting = withoutRationale.SetItem(0,
-            withoutRationale[0] with { Rationale = "Site evidence supports a bond" })
+        var conflicting = reviewed
             .Add(new ResearcherDecision("decline-bond", context.Revision.Id, bond.Id,
                 ResearcherDecisionKind.ApprovePreparationChange, ResearcherDecisionValue.Declined,
-                DateTimeOffset.UtcNow, "Keep these cysteines separate"));
+                DateTimeOffset.UtcNow, null));
         var conflict = await owner.PrepareAsync(context.Revision, context.Intended, inspection,
             policy, StructuralPolicy(), proposals, conflicting,
             directory.Path, TestContext.Current.CancellationToken);
@@ -232,7 +219,7 @@ public sealed partial class ProteinPreparationRouteTests
         };
         var approved = await new ProteinPreparationOwner(observedWorker).PrepareAsync(context.Revision,
             context.Intended, inspection, policy, StructuralPolicy(), proposals,
-            ImmutableArray.Create(withoutRationale[0] with { Rationale = "Site evidence supports a bond" }),
+            reviewed,
             directory.Path, TestContext.Current.CancellationToken);
         Assert.False(approved.Established);
         Assert.Equal(1, observedWorker.PrepareProteinCalls);
@@ -256,7 +243,7 @@ public sealed partial class ProteinPreparationRouteTests
         };
         var bondMismatch = await new ProteinPreparationOwner(mismatchedWorker).PrepareAsync(
             context.Revision, context.Intended, inspection, policy, StructuralPolicy(), proposals,
-            ImmutableArray.Create(withoutRationale[0] with { Rationale = "Site evidence supports a bond" }),
+            reviewed,
             directory.Path, TestContext.Current.CancellationToken);
         Assert.False(bondMismatch.Established);
         Assert.Contains("disulfide bonds do not match", bondMismatch.Reason);

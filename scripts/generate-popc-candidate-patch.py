@@ -203,7 +203,14 @@ def main() -> None:
     modeller.delete(remove)
     buffer = io.StringIO()
     PDBFile.writeFile(modeller.topology, modeller.positions, buffer, keepIds=True)
-    derived_bytes = buffer.getvalue().encode("utf-8")
+    # PDBFile.writeFile inserts today's date into its non-molecular REMARK.
+    # Keep the original candidate's identified creation header so the exact
+    # molecule bytes remain reproducible on subsequent verification dates.
+    generated = buffer.getvalue()
+    header, separator, rest = generated.partition("\n")
+    require(header.startswith("REMARK   1 CREATED WITH OPENMM 8.6, ") and separator,
+            "OpenMM PDB header format changed")
+    derived_bytes = ("REMARK   1 CREATED WITH OPENMM 8.6, 2026-09-26\n" + rest).encode("utf-8")
     require(digest(derived_bytes) == DERIVED_SHA256,
             "Derived candidate bytes differ from the pinned recipe")
 

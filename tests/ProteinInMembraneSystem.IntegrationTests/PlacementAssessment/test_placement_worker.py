@@ -387,7 +387,7 @@ class PlacementGeometryCrossing(unittest.TestCase):
                 "orientedPdbPath": str(input_pdb), "orientedPdbSha256": digest(input_pdb),
                 "depthShiftAngstrom": 1,
                 "tiltAboutXDegrees": 0, "tiltAboutYDegrees": 0,
-                "rotationAboutNormalDegrees": 0, "rationale": "Independently check a 1 Å shift",
+                "rotationAboutNormalDegrees": 0,
             })
             self.assertEqual(0, adjusted.returncode, adjusted.stdout)
             adjusted_pdb = Path(terminal(adjust_events)["artifacts"][0]["path"])
@@ -419,7 +419,7 @@ class PlacementGeometryCrossing(unittest.TestCase):
                 "orientedPdbPath": str(rotated_source), "orientedPdbSha256": digest(rotated_source),
                 "depthShiftAngstrom": 0.25,
                 "tiltAboutXDegrees": 90, "tiltAboutYDegrees": 0,
-                "rotationAboutNormalDegrees": 90, "rationale": "Check finite orthogonal rotations",
+                "rotationAboutNormalDegrees": 90,
             })
             self.assertEqual(0, rotated.returncode, rotated.stdout)
             rotated_pdb = Path(terminal(rotate_events)["artifacts"][0]["path"])
@@ -485,7 +485,6 @@ class PlacementGeometryCrossing(unittest.TestCase):
                 "orientedPdbPath": str(input_pdb), "orientedPdbSha256": digest(input_pdb),
                 "depthShiftAngstrom": 0, "tiltAboutXDegrees": 0,
                 "tiltAboutYDegrees": 0, "rotationAboutNormalDegrees": 0,
-                "rationale": "Check the exact oriented artifact",
             }
             base_measure = {
                 "studyRevisionId": "geometry-revision", "proposalId": "exact-proposal",
@@ -507,7 +506,6 @@ class PlacementGeometryCrossing(unittest.TestCase):
                         self.assertNotEqual(0, completed.returncode)
                         self.assertEqual(code, terminal(events, "error")["failureCode"])
             for name, changes, code in (
-                ("no-rationale", {"rationale": ""}, "invalidRequest"),
                 ("nonfinite-depth", {"depthShiftAngstrom": float("nan")}, "invalidRequest"),
                 ("unrepresentable-depth", {"depthShiftAngstrom": -1001}, "unsupportedRepresentation"),
             ):

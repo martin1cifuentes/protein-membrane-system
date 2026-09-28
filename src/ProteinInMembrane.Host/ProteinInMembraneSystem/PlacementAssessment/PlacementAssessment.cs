@@ -196,6 +196,85 @@ public sealed class PlacementAssessment
             evidence, observed.InterpretationWarnings));
     }
 
+    public async Task<BoundaryOutcome<PlacementProposal>> ProposeManualAsync(
+        StudyRevision revision, AssessedPreparedProtein protein, AssessedMembraneModel membrane,
+        PlacementStartingPosition startingPosition,
+        double offsetXAngstrom, double offsetYAngstrom, double offsetZAngstrom,
+        double rotationXDegrees, double rotationYDegrees, double rotationZDegrees,
+        int maximumAtomCount, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (revision.Id != protein.StudyRevisionId || revision.Id != membrane.StudyRevisionId ||
+            revision.IntendedProtein?.Id != protein.Intended.Id ||
+            revision.Membrane?.Id != membrane.Intended.Id || !Enum.IsDefined(startingPosition) ||
+            !new[] { offsetXAngstrom, offsetYAngstrom, offsetZAngstrom,
+                rotationXDegrees, rotationYDegrees, rotationZDegrees }.All(double.IsFinite) ||
+            maximumAtomCount <= 0 || protein.Molecule.AtomCount > maximumAtomCount)
+            return BoundaryOutcome<PlacementProposal>.Unavailable(
+                "Choose a current prepared protein, membrane and finite starting transform within the atom limit.");
+        var speciesIds = membrane.Intended.Upper.Fractions.Concat(membrane.Intended.Lower.Fractions)
+            .Where(fraction => fraction.Fraction > 0).Select(fraction => fraction.SpeciesId)
+            .Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+        var species = membrane.SpeciesRepresentations.Where(item => speciesIds.Contains(item.SpeciesId)).ToImmutableArray();
+        if (species.Length != speciesIds.Count || species.Any(item =>
+                !ArtifactMatches(new WorkerArtifact("lipidCoordinateTemplate", item.CoordinateTemplatePath,
+                    item.CoordinateTemplateSha256))) ||
+            !ArtifactMatches(new WorkerArtifact("preparedPdb", protein.Molecule.CoordinatePath,
+                protein.Molecule.CoordinateSha256)))
+            return BoundaryOutcome<PlacementProposal>.Unavailable(
+                "The exact prepared coordinates or chosen membrane starting templates are missing or changed.");
+        var request = new ScientificWorkRequest<ManualPlacementPayload>(Guid.NewGuid().ToString("N"),
+            workingDirectory, new ManualPlacementPayload(revision.Id, protein.Id,
+                protein.Molecule.CoordinatePath, protein.Molecule.CoordinateSha256,
+                protein.Molecule.AtomCount, species, startingPosition,
+                offsetXAngstrom, offsetYAngstrom, offsetZAngstrom,
+                rotationXDegrees, rotationYDegrees, rotationZDegrees, maximumAtomCount));
+        var result = await _worker.PlaceManualAsync(request, cancellationToken);
+        if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id ||
+            result.Standing != WorkerResultStanding.Observed || result.Observations is null)
+            return BoundaryOutcome<PlacementProposal>.Unavailable(result.FailureMessage ??
+                "The user-defined position was not observed.");
+        var observed = result.Observations;
+        var oriented = result.Artifacts.FirstOrDefault(item => item.Role == "orientedPdb");
+        if (oriented is null || !ArtifactMatches(oriented) ||
+            observed.SourceAtomCount != protein.Molecule.AtomCount ||
+            observed.OrientedAtomCount != protein.Molecule.AtomCount ||
+            !new[] { observed.AppliedTranslationXAngstrom, observed.AppliedTranslationYAngstrom,
+                observed.AppliedTranslationZAngstrom, observed.HeadgroupBoundaryAngstrom,
+                observed.MaximumRigidDeviationAngstrom }.All(double.IsFinite) ||
+            observed.HeadgroupBoundaryAngstrom is < 5 or > 80 ||
+            observed.MaximumRigidDeviationAngstrom is < 0 or > 0.001 ||
+            !observed.GeometryWarnings.IsDefaultOrEmpty)
+            return BoundaryOutcome<PlacementProposal>.Unavailable(
+                "The positioned artifact did not preserve the complete exact construct and declared rigid transform.");
+        var id = Guid.NewGuid().ToString("N");
+        var transform = new PlacementTransform(startingPosition, offsetXAngstrom, offsetYAngstrom,
+            offsetZAngstrom, rotationXDegrees, rotationYDegrees, rotationZDegrees,
+            observed.AppliedTranslationXAngstrom, observed.AppliedTranslationYAngstrom,
+            observed.AppliedTranslationZAngstrom, observed.HeadgroupBoundaryAngstrom);
+        var evidence = ImmutableArray.Create(new ScientificEvidence(Guid.NewGuid().ToString("N"), id,
+            result.Provider?.Name ?? "local rigid transform", "User-defined starting position",
+            $"{startingPosition}; translation ({transform.AppliedTranslationXAngstrom:G6}, " +
+            $"{transform.AppliedTranslationYAngstrom:G6}, {transform.AppliedTranslationZAngstrom:G6}) Å; " +
+            $"rotation X/Y/Z ({rotationXDegrees:G6}, {rotationYDegrees:G6}, {rotationZDegrees:G6})°; " +
+            $"maximum written-coordinate deviation {observed.MaximumRigidDeviationAngstrom:G6} Å",
+            $"Prepared protein {protein.Id}; intended membrane {membrane.Intended.Id}; " +
+            $"frame from verified {string.Join(", ", species.Select(item => item.SpeciesId))} coordinate templates",
+            "This is an adjustable geometric starting position for construction.", EvidenceBearing.Context));
+        var molecule = new MolecularArtifact(id, oriented.Path, oriented.Sha256,
+            protein.Molecule.TopologyPath, null, null, protein.Molecule.AtomCount,
+            null, protein.Molecule.TopologySha256);
+        var side = startingPosition switch
+        {
+            PlacementStartingPosition.Upper => PlacementPhysicalSide.Upper,
+            PlacementStartingPosition.Lower => PlacementPhysicalSide.Lower,
+            _ => PlacementPhysicalSide.Both
+        };
+        return BoundaryOutcome<PlacementProposal>.Success(new PlacementProposal(id, protein.Id,
+            membrane.Intended.Id, ProteinTopologyKind.Unclassified, molecule, 0,
+            2 * observed.HeadgroupBoundaryAngstrom, null, side, null,
+            ImmutableArray<string>.Empty, evidence, ImmutableArray<string>.Empty, transform));
+    }
+
     public BoundaryOutcome<PlacementProposal> ReframePpmProposalWithPolicy(
         StudyRevision revision,
         AssessedPreparedProtein protein,
@@ -297,21 +376,23 @@ public sealed class PlacementAssessment
         double tiltAboutXDegrees,
         double tiltAboutYDegrees,
         double rotationAboutNormalDegrees,
-        string rationale,
         string workingDirectory,
         CancellationToken cancellationToken)
     {
-        if (revision.Membrane?.Id != source.MembraneModelId ||
-            !new[] { depthShiftAngstrom, tiltAboutXDegrees, tiltAboutYDegrees, rotationAboutNormalDegrees }.All(double.IsFinite) ||
-            string.IsNullOrWhiteSpace(rationale) ||
-            !ArtifactMatches(new WorkerArtifact("orientedPdb", source.OrientedProtein.CoordinatePath,
+        var adjustment = new[] { depthShiftAngstrom, tiltAboutXDegrees, tiltAboutYDegrees,
+            rotationAboutNormalDegrees };
+        if (revision.Membrane?.Id != source.MembraneModelId)
+            return BoundaryOutcome<PlacementProposal>.Unavailable("The placement correction needs the corresponding current membrane.");
+        if (!adjustment.All(double.IsFinite) || !adjustment.Any(value => value != 0))
+            return BoundaryOutcome<PlacementProposal>.Unavailable("Change at least one finite depth, tilt, or rotation value.");
+        if (!ArtifactMatches(new WorkerArtifact("orientedPdb", source.OrientedProtein.CoordinatePath,
                 source.OrientedProtein.CoordinateSha256)))
-            return BoundaryOutcome<PlacementProposal>.Unavailable("A finite adjustment, its rationale, and the corresponding current membrane are required.");
+            return BoundaryOutcome<PlacementProposal>.Unavailable("The identified source placement structure is missing or changed.");
         var request = new ScientificWorkRequest<PlacementAdjustmentPayload>(
             Guid.NewGuid().ToString("N"), workingDirectory,
             new PlacementAdjustmentPayload(revision.Id, source.Id, source.OrientedProtein.CoordinatePath,
                 depthShiftAngstrom, tiltAboutXDegrees, tiltAboutYDegrees,
-                rotationAboutNormalDegrees, rationale, source.OrientedProtein.CoordinateSha256));
+                rotationAboutNormalDegrees, source.OrientedProtein.CoordinateSha256));
         var result = await _worker.AdjustPlacementAsync(request, cancellationToken);
         if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id ||
             result.Standing != WorkerResultStanding.Observed || result.Observations is null)
@@ -328,9 +409,12 @@ public sealed class PlacementAssessment
         var artifact = new MolecularArtifact(proposalId, adjusted.Path, adjusted.Sha256,
             source.OrientedProtein.TopologyPath, null, null, observed.AdjustedAtomCount,
             null, source.OrientedProtein.TopologySha256);
+        var adjustmentSummary = $"Depth {observed.AppliedDepthShiftAngstrom:G6} Å; " +
+            $"tilt X {observed.AppliedTiltAboutXDegrees:G6}°, tilt Y {observed.AppliedTiltAboutYDegrees:G6}°; " +
+            $"normal rotation {observed.AppliedRotationAboutNormalDegrees:G6}°.";
         var evidence = ImmutableArray.Create(new ScientificEvidence(
             Guid.NewGuid().ToString("N"), proposalId, "researcher adjustment",
-            "Observed rigid-body placement adjustment", rationale,
+            "Observed rigid-body placement adjustment", adjustmentSummary,
             $"Derived from proposal {source.Id}",
             "The adjustment requires fresh assessment; earlier orientation energies and support do not transfer.",
             EvidenceBearing.Context));
@@ -435,39 +519,16 @@ public sealed class PlacementAssessment
             new MeasuredValue("proteinSpan", observed.ProteinZMaxAngstrom - observed.ProteinZMinAngstrom, "Å", "oriented protein"),
             new MeasuredValue("coreOccupancyFraction", (double)observed.AtomsWithinCore / observed.AtomCount, "fraction", "oriented protein"),
             new MeasuredValue("chargedResiduesWithCoreAtoms", chargedCore, "residues", "oriented protein"));
-        var reportForWitness = new PlacementMeasurementReport(proposal.Id, measurements,
-            observed.Residues, ImmutableArray<ScientificEvidence>.Empty, observed.Limitations);
-        var witnessed = WitnessMatches(protein, membrane, proposal, policy, witness, reportForWitness);
-        var contradicted = !witnessed && observed.Limitations.IsDefaultOrEmpty &&
-            HasAttributableWitnessContradiction(protein, membrane, proposal, policy, witness, reportForWitness);
         var prediction = await SummarizePredictionForPlacementAsync(revision, protein, proposal,
             observed.Residues, witness, policy, workingDirectory, cancellationToken);
-        var predictionAdequate = PredictionAdequate(protein, observed.Residues, witness,
-            policy?.PredictionCriterion, prediction, witnessed);
-        var applicable = policy is not null && !string.IsNullOrWhiteSpace(policy.Version) &&
-            !policy.GeometryCriteria.IsDefaultOrEmpty && witnessed && predictionAdequate &&
-            !policy.EvidenceReferences.IsDefaultOrEmpty &&
-            policy.CoveredTopologyKinds.Contains(proposal.TopologyKind) &&
-            membrane.Intended.Upper.Fractions.Concat(membrane.Intended.Lower.Fractions)
-                .Where(fraction => fraction.Fraction > 0)
-                .All(fraction => policy.CoveredSpeciesIds.Contains(fraction.SpeciesId)) &&
-            observed.Limitations.IsDefaultOrEmpty &&
-            policy.GeometryCriteria.All(criterion =>
-                measurements.Any(measurement => measurement.Name == criterion.MeasurementName &&
-                    measurement.Unit == criterion.Unit &&
-                    (criterion.Minimum is null || measurement.Value >= criterion.Minimum) &&
-                    (criterion.Maximum is null || measurement.Value <= criterion.Maximum)));
         var evidence = ImmutableArray.Create(new ScientificEvidence(Guid.NewGuid().ToString("N"),
             proposal.Id, result.Provider?.Name ?? "local structural measurement",
-            applicable ? "Independently witnessed placement relationship" :
-                contradicted ? "Contradictory measured placement relationship" : "Oriented-protein placement geometry",
+            "Measured placement geometry",
             string.Join("; ", measurements.Select(value => $"{value.Name}={value.Value:G6} {value.Unit}")),
-            $"Prepared protein {protein.Id}; membrane {membrane.Id}; proposal {proposal.Id}; policy {policy?.Id ?? "unavailable"}; witness {witness?.Id ?? "unavailable"} version {witness?.Version ?? "unavailable"}",
-            contradicted ? "An exact independent witness and measured region identify a material opposite-side or absent-contact relationship." :
-                applicable ? "Support is bounded to the policy's evidenced topology, membrane class and predicted-model uncertainty gate; explicit packing may still fail." :
-                "Raw geometry, prediction uncertainty or unmet policy criteria do not establish support for the chosen membrane.",
-            contradicted ? EvidenceBearing.Contradicts :
-                applicable ? EvidenceBearing.Supports : EvidenceBearing.Context));
+            $"Prepared protein {protein.Id}; membrane {membrane.Id}; proposal {proposal.Id}; " +
+            $"observed residue count {observed.Residues.Length}",
+            "Atom positions relative to the intended slab were measured; no biological topology judgment was made.",
+            EvidenceBearing.Context));
         return BoundaryOutcome<PlacementMeasurementReport>.Success(new PlacementMeasurementReport(
             proposal.Id, measurements, observed.Residues, evidence, observed.Limitations, prediction));
     }
@@ -662,7 +723,7 @@ public sealed class PlacementAssessment
         var reviewedEvidence = additionalEvidence.IsDefault
             ? ImmutableArray<ScientificEvidence>.Empty : additionalEvidence;
         var allEvidence = proposal.Evidence.AddRange(reviewedEvidence);
-        var reason = "Placement support is not established for these corresponding inputs.";
+        var reason = "The exact position has not been checked.";
         var standing = AssessmentStanding.NotEstablished;
 
         if (proposal.PreparedProteinId != protein.Id || protein.StudyRevisionId != revision.Id ||
@@ -676,44 +737,24 @@ public sealed class PlacementAssessment
             standing = AssessmentStanding.Unsupported;
             reason = "A material, attributable finding contradicts the proposed relationship.";
         }
-        else if (policy is null || string.IsNullOrWhiteSpace(policy.Id) ||
-                 string.IsNullOrWhiteSpace(policy.Version) || policy.EvidenceReferences.IsDefaultOrEmpty ||
-                 policy.RequiredEvidenceMethods.IsDefaultOrEmpty)
-            reason = "No versioned, evidence-backed placement support policy is available.";
-        else if (protein.Intended.Partners.Any(item => item.Retain))
-            reason = "Retained partners lack an exact source-partner-to-prepared-residue map and independently witnessed physical-side relationship.";
         else if (measurement is null || measurement.ProposalId != proposal.Id ||
-                 !WitnessMatches(protein, membrane, proposal, policy, witness, measurement) ||
-                 !PredictionAdequate(protein, measurement.Residues, witness,
-                     policy.PredictionCriterion, measurement.Prediction, true) ||
-                 !reviewedEvidence.Any(evidence => evidence.SubjectId == proposal.Id &&
-                     evidence.Method == "Independently witnessed placement relationship" &&
-                     evidence.Bearing == EvidenceBearing.Supports))
-            reason = "Exact structural, topology, contact and sidedness witnesses were not observed and met for this placement.";
-        else if (!policy.CoveredTopologyKinds.Contains(proposal.TopologyKind) ||
-                 membrane.Intended.Upper.Fractions.Concat(membrane.Intended.Lower.Fractions)
-                     .Where(fraction => fraction.Fraction > 0).Any(fraction => !policy.CoveredSpeciesIds.Contains(fraction.SpeciesId)) ||
-                 !policy.AllowsMixtures && (membrane.Intended.Upper.Fractions.Count(f => f.Fraction > 0) > 1 ||
-                                            membrane.Intended.Lower.Fractions.Count(f => f.Fraction > 0) > 1) ||
-                 !policy.AllowsAsymmetry && !membrane.Intended.Upper.Fractions.SequenceEqual(membrane.Intended.Lower.Fractions))
-            reason = "The selected topology or explicit membrane is outside the declared placement-policy scope.";
-        else if (!policy.AllowsTransferFromPpmDopc && proposal.Evidence.Any(evidence =>
-                     evidence.Method == "PPM orientation candidate") &&
-                 !reviewedEvidence.Any(evidence => evidence.Bearing == EvidenceBearing.Supports &&
-                     evidence.Applicability.Contains(membrane.Id, StringComparison.Ordinal)))
-            reason = "The implicit-membrane orientation has not been shown applicable to this explicit bilayer.";
-        else if (allEvidence.Any(evidence => evidence.SubjectId != proposal.Id) ||
-                 policy.RequiredEvidenceMethods.Any(method => !allEvidence.Any(evidence =>
-                     evidence.Method == method && evidence.Bearing == EvidenceBearing.Supports &&
-                     evidence.Applicability.Contains(membrane.Id, StringComparison.Ordinal))))
-            reason = "Required subject-specific placement, contact or sidedness evidence is absent or inapplicable.";
+                 proposal.OrientedProtein.AtomCount != protein.Molecule.AtomCount ||
+                 proposal.OrientedProtein.TopologySha256 != protein.Molecule.TopologySha256 ||
+                 measurement.Residues.IsDefaultOrEmpty || !measurement.Limitations.IsDefaultOrEmpty ||
+                 !measurement.Evidence.Any(evidence => evidence.SubjectId == proposal.Id &&
+                     evidence.Method == "Measured placement geometry" && evidence.Bearing == EvidenceBearing.Context) ||
+                 !new[] { "atomsWithinCore", "atomsAboveCore", "atomsBelowCore", "proteinSpan" }
+                     .All(name => measurement.Measurements.Any(item => item.Name == name &&
+                         double.IsFinite(item.Value))) ||
+                 allEvidence.Any(evidence => evidence.SubjectId != proposal.Id))
+            reason = "The complete placed construct or its membrane-frame measurement could not be checked.";
         else if (findings.Any(finding => finding.Material && finding.SubjectId == proposal.Id &&
                      finding.Disposition == FindingDisposition.Challenges))
-            reason = "A later material finding requires reassessment of the placement premise.";
+            reason = "A later material finding requires rechecking this exact position.";
         else
         {
             standing = AssessmentStanding.Supported;
-            reason = "Applicable evidence meets the identified placement policy without a material contradiction.";
+            reason = "The exact construct and chosen membrane frame passed the technical position checks.";
         }
 
         return new AssessedProteinMembranePlacement(

@@ -77,6 +77,7 @@ def account() -> dict:
             "availableLipids": [], "protein": None, "membrane": None, "placement": None,
             "attempt": {"attemptId": "attempt-one", "status": "running",
                         "stageKind": "Minimization", "progress": 0.35,
+                        "stopRequested": False,
                         "message": "Observed minimization progress", "studyRevisionId": "revision-one",
                         "policyId": "policy-one", "policyVersion": "1", "currentStageId": None,
                         "derivation": None, "constructed": constructed},
@@ -113,6 +114,7 @@ class AccountServer(ThreadingHTTPServer):
         self.version = 0
         self.commands: list[str] = []
         self.atom_requests: list[tuple[str, str, int]] = []
+        self.structure_bytes = TINY_STRUCTURE
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), AccountHandler)
 
@@ -163,11 +165,12 @@ class AccountHandler(BaseHTTPRequestHandler):
                 pass
             return
         if path == "/api/structures/tiny":
+            structure_bytes = self.server.structure_bytes
             self.send_response(200)
             self.send_header("Content-Type", "chemical/x-pdb")
-            self.send_header("Content-Length", str(len(TINY_STRUCTURE)))
+            self.send_header("Content-Length", str(len(structure_bytes)))
             self.end_headers()
-            self.wfile.write(TINY_STRUCTURE)
+            self.wfile.write(structure_bytes)
             return
         if path.startswith("/api/inspection/atoms/"):
             parts = path.split("/")
@@ -247,13 +250,94 @@ def controlled_account_server():
 
 
 class BrowserPresentationTests(unittest.TestCase):
+    def test_checked_candidate_requires_explicit_same_attempt_minimization_authorization(self):
+        """Presentation fixture; owner composition tests establish command authority."""
+        self.assertTrue((DIST / "index.html").is_file(), "Build browser/ before this focused test")
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            ready = account()
+            ready["attempt"].update(status="readyForMinimization", stageKind="Construction",
+                                    progress=1.0,
+                                    message="Presentation fixture: construction checks passed for this exact candidate.")
+            ready["actions"].extend([
+                {"kind": "continueMinimization", "subjectId": "attempt-one",
+                 "enabled": True, "reason": None},
+                {"kind": "stopAttempt", "subjectId": None, "enabled": True, "reason": None},
+            ])
+            host.replace(ready)
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
+                                                 args=["--disable-dev-shm-usage", "--use-gl=angle",
+                                                       "--use-angle=swiftshader"])
+            try:
+                page = browser.new_page(viewport={"width": 1672, "height": 950})
+                page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Preparation", exact=True).click()
+                candidate = page.get_by_label("Checked constructed candidate")
+                expect(candidate).to_contain_text("1,000 atoms")
+                expect(candidate).to_contain_text("upper DMPC 2")
+                expect(candidate).to_contain_text("50.0 Å × 50.0 Å × 80.0 Å")
+                expect(candidate).to_contain_text("same identified candidate")
+                expect(page.locator(".rail").get_by_role(
+                    "button", name="Authorize minimization of this candidate")).to_be_enabled()
+                expect(page.locator(".stage-strip")).to_contain_text("No completed stage")
+                page.screenshot(path=str(ROOT / "out" / "actor-reconciliation" / "current" /
+                                         "fixture-candidate-ready-1672.png"), full_page=True)
+                page.set_viewport_size({"width": 820, "height": 720})
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth - innerWidth"), 0)
+                page.screenshot(path=str(ROOT / "out" / "actor-reconciliation" / "current" /
+                                         "fixture-candidate-ready-820.png"), full_page=True)
+                page.get_by_role("button", name="Collapse inputs").click()
+                expect(page.get_by_label("Actual constructed system before minimization"))\
+                    .to_contain_text("DMPC 2 / DMPC 2")
+                expect(page.locator(".stage-strip")).to_contain_text("No completed stage")
+            finally:
+                browser.close()
+
+    def test_requested_stop_is_not_presented_as_observed_termination(self):
+        self.assertTrue((DIST / "index.html").is_file(), "Build browser/ before this focused test")
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            pending = account()
+            pending["attempt"]["stopRequested"] = True
+            pending["notices"] = [{"id": "fixture-stop", "severity": "information", "subjectId": "attempt-one",
+                                   "message": "Presentation fixture: stop requested; worker outcome not yet observed."}]
+            host.replace(pending)
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
+                                                 args=["--disable-dev-shm-usage", "--use-gl=angle",
+                                                       "--use-angle=swiftshader"])
+            try:
+                page = browser.new_page(viewport={"width": 1672, "height": 950})
+                page.goto(base, wait_until="domcontentloaded")
+                expect(page.locator(".attempt-account")).to_contain_text("Stop requested · waiting for the worker’s observed outcome")
+                expect(page.locator(".attempt-account")).to_contain_text("running")
+                expect(page.locator(".stage-strip")).to_contain_text("No completed stage")
+                page.screenshot(path=str(ROOT / "out" / "actor-reconciliation" / "current" /
+                                         "fixture-stop-requested-1672.png"), full_page=True)
+                stopped = deepcopy(pending)
+                stopped["revision"] += 1
+                stopped["attempt"].update(status="stopped", stopRequested=False,
+                                          message="Worker cancellation observed; no stage completed.")
+                host.replace(stopped)
+                expect(page.locator(".attempt-account")).to_contain_text("Worker cancellation observed")
+                expect(page.locator(".attempt-account")).not_to_contain_text("Stop requested · waiting")
+                expect(page.locator(".stage-strip")).to_contain_text("No completed stage")
+                unknown = deepcopy(stopped)
+                unknown["revision"] += 1
+                unknown["attempt"].update(status="unobserved", message="Worker outcome unavailable")
+                host.replace(unknown)
+                expect(page.locator(".attempt-account")).to_contain_text("Worker outcome unavailable")
+                expect(page.locator(".attempt-account")).not_to_contain_text("Worker cancellation observed")
+                page.set_viewport_size({"width": 820, "height": 720})
+                page.screenshot(path=str(ROOT / "out" / "actor-reconciliation" / "current" /
+                                         "fixture-stop-unobserved-820.png"), full_page=True)
+            finally:
+                browser.close()
+
     def assert_stage_hierarchy(self, page, viewport_height: int):
         labels = page.locator(".evidence-content > .account-card").evaluate_all(
             "elements => elements.map(element => element.getAttribute('aria-label'))")
         self.assertEqual(labels[:2], ["Completed stage information",
                                       "Minimized stage review and distinct scientific assessment"])
         self.assertNotIn("Selected subject and study revision", labels)
-        expect(page.get_by_label("Selected atom correspondence")).to_have_count(0)
+        expect(page.get_by_label("Inspection selection")).to_have_count(0)
         stage_information = page.get_by_label("Completed stage information")
         stage_review = page.get_by_label("Minimized stage review and distinct scientific assessment")
         expect(stage_information).to_contain_text("Historical stage from study revision revision-one")
@@ -332,6 +416,7 @@ class BrowserPresentationTests(unittest.TestCase):
             try:
                 page = browser.new_page(viewport={"width": 820, "height": 760})
                 page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.locator(".viewer-mount canvas")).to_have_count(1, timeout=60000)
                 expect(page.locator(".scene-loading")).to_have_count(0, timeout=60000)
                 linked = page.get_by_label("Selected subject findings and evidence")
@@ -370,7 +455,8 @@ class BrowserPresentationTests(unittest.TestCase):
                 expect(page.locator(".stage-strip")).to_be_visible()
                 page.get_by_role("button", name="Models").click()
                 page.get_by_role("button", name="Notes").click()
-                page.locator(".placement-view-tools").get_by_role("button", name="Focus").click()
+                page.get_by_role("button", name="Inspect locally").click()
+                expect(page.locator(".scene-local-state")).to_contain_text("5 Å")
                 self.assertEqual(host.account["study"]["id"], "revision-one")
                 self.assertEqual(host.account["attempt"]["status"], "running")
                 self.assertEqual(host.account["stages"], [])
@@ -397,7 +483,7 @@ class BrowserPresentationTests(unittest.TestCase):
                 expect(page.locator(".viewer-mount canvas")).to_have_count(1, timeout=60000)
                 expect(page.locator(".scene-loading")).to_have_count(0, timeout=60000)
                 expect(page.locator(".scene-error")).to_have_count(0)
-                expect(page.get_by_label("Selected atom correspondence")).to_have_count(0)
+                expect(page.get_by_label("Inspection selection")).to_contain_text("No residue selected")
                 for row in (0, 1):
                     selected = page.evaluate("""row => {
                       const mount = document.querySelector('.viewer-mount');
@@ -420,9 +506,11 @@ class BrowserPresentationTests(unittest.TestCase):
                       return false;
                     }""", row)
                     self.assertTrue(selected, f"Mol* did not contain coordinate row {row}")
-                    expect(page.get_by_label("Selected atom correspondence")).to_contain_text(
+                    if row == 0:
+                        page.get_by_text("Exact coordinate correspondence").click()
+                    expect(page.get_by_label("Inspection selection")).to_contain_text(
                         f"lipid:[{row},DMP]")
-                    expect(page.get_by_label("Selected atom correspondence")).to_contain_text(
+                    expect(page.get_by_label("Inspection selection")).to_contain_text(
                         "DMPC")
                 self.assertEqual(host.atom_requests, [("constructed-one", "tiny", 0),
                                                       ("constructed-one", "tiny", 1)])
@@ -439,6 +527,9 @@ class BrowserPresentationTests(unittest.TestCase):
             try:
                 page = browser.new_page(viewport={"width": 1672, "height": 941})
                 page.goto(base, wait_until="domcontentloaded")
+                expect(page.locator(".workspace-context-tabs button.active"))\
+                    .to_have_text("Preparation")
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.locator(".workspace.workflow-closed")).to_have_count(1)
                 expect(page.locator(".execution-decision")).to_have_count(1)
                 expect(page.get_by_label("Current preparation attempt")).to_contain_text("attempt-one")
@@ -458,6 +549,9 @@ class BrowserPresentationTests(unittest.TestCase):
                 interrupted = browser.new_page(viewport={"width": 820, "height": 760})
                 interrupted.route("**/api/events", lambda route: route.abort("failed"))
                 interrupted.goto(base, wait_until="domcontentloaded")
+                expect(interrupted.locator(".workspace-context-tabs button.active"))\
+                    .to_have_text("Preparation")
+                interrupted.get_by_role("button", name="Collapse inputs").click()
                 expect(interrupted.locator(".workspace.workflow-closed")).to_have_count(1)
                 expect(interrupted.locator(".execution-decision")).to_have_count(1)
                 expect(interrupted.get_by_role("alert").filter(
@@ -477,6 +571,7 @@ class BrowserPresentationTests(unittest.TestCase):
                 expect(reconnected.locator(".stage-card")).to_have_count(1)
                 expect(reconnected.locator(".stage-card")).to_contain_text("stage-one")
                 reconnected.locator(".stage-card").click()
+                reconnected.get_by_role("button", name="Collapse inputs").click()
                 expect(reconnected.get_by_label("Completed stage information")).to_contain_text(
                     "Historical stage from study revision revision-one")
                 self.assert_stage_hierarchy(reconnected, 941)
@@ -486,6 +581,9 @@ class BrowserPresentationTests(unittest.TestCase):
 
                 reopened = browser.new_page(viewport={"width": 820, "height": 760})
                 reopened.goto(base, wait_until="domcontentloaded")
+                expect(reopened.locator(".workspace-context-tabs button.active"))\
+                    .to_have_text("Results")
+                reopened.get_by_role("button", name="Collapse inputs").click()
                 expect(reopened.locator(".workspace.workflow-closed")).to_have_count(1)
                 expect(reopened.locator(".execution-decision")).to_have_count(1)
                 expect(reopened.get_by_label("Completed stage information")).to_contain_text(

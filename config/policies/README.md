@@ -47,3 +47,35 @@ The class policy screens severe *heavy-atom* initial intermolecular overlap at 1
 The required OpenMM stage uses the selected PME/1 nm cutoff, HBonds constraints and rigid TIP3P water, a 20,000-iteration cap, and the 10 kJ mol⁻¹ nm⁻¹ final physical-force target. For the constrained system the worker observes the Euclidean force projected onto the exact final constraint-tangent space, with per-particle RMS and a checked relative constraint residual; raw State-force RMS is recorded separately because it includes constraint-normal reactions. The diagnostic saved 85,317-particle final State had tangent RMS `8.54095 kJ mol⁻¹ nm⁻¹` and maximum relative constraint error `5.44×10⁻⁸` at OpenMM tolerance `10⁻⁵`. The provider does not expose a reliable private optimizer stop reason or exact iteration count, so those are not inferred from the final force. A completed minimized stage still receives fresh local and protein-geometry observations and separate C# Preparation Assessment.
 
 The catalogue has **no positive completed-stage organization criteria**. Coarse stage geometry may reject a defect, but factual stage completion does not establish an equilibrated, production-ready, or positively qualified membrane. Slice 4 acceptance requires the corrected full product route, researcher review gate, focused and slice tests, and browser comparison with the product-vision views; the diagnostic probe alone is insufficient. Broader proteins, asymmetric mixtures, retained partners, other conditions and optional equilibration require their own applicable evidence and policy.
+
+## Current reconciliation: CHL1 starting metadata
+
+`protein-membrane-current.json` gives the exact `CHL1` template a **38.2 Å² initial packing footprint** for the bounded constrained-mixture recipe. [Surface X-ray scattering](https://pmc.ncbi.nlm.nih.gov/articles/PMC2880613/) reports a cholesterol cross section of 38.2 Å². As an independent template-scale check, project the non-hydrogen atom van der Waals disks (C 1.70 Å, O 1.52 Å) perpendicular to the vector from hydroxyl O3 to the mean terminal C25/C26/C27 position in the pinned `CHL1.cif`; their union covers approximately 37.22 Å² on a 0.02 Å grid. This agreement makes 38.2 Å² a transparent *starting count estimate*; it is not a partial area, equilibrium area or guarantee of packability at every fraction. The separately recorded approximate 630 Å³ molecular volume has a different meaning and is not used as that area.
+
+The catalogue's one-based `headAtomIndices: [28]` resolves to O3 in the exact 74-atom coordinate template. The template bonds O3 to C3 and H3′, identifying the cholesterol hydroxyl rather than an arbitrary index. The worker verifies that atom and those bonds after loading the hashed template. This metadata enables a bounded construction attempt only when a matching exact recipe and real Packmol/OpenMM evidence are established; it does not make a cholesterol-containing preparation policy available by itself.
+
+## Current reconciliation: intact POPC native starting patch
+
+`protein-membrane-current.json` includes a pure POPC native construction policy
+using the attributed, solvated periodic [Frankel Lipid21 dataset](https://doi.org/10.5281/zenodo.14776136).
+The original `POPC.gro` source and one-residue OpenMM adaptation are separately
+pinned by SHA-256 and staged into each request. Their source, CC BY 4.0 terms,
+atom permutation, exact hashes and adaptation are recorded in
+[`membrane-templates/README-POPC-Zenodo.md`](membrane-templates/README-POPC-Zenodo.md).
+Every source lipid's selected graph and stereochemistry, the force-field
+parameter mapping, periodic cell, leaflet populations, retained protein,
+contacts and combined System are checked. OpenMM supplies the actual candidate
+counts and cell from this patch in the same invocation; the researcher must
+then explicitly authorize minimization of that checked candidate. Completed
+stage observations and export name both the adapted patch and its source.
+
+The isolated, real two-alanine **software fixture** route yielded 63 POPC on
+each physical side, 5,078 waters, 14 Na⁺/14 Cl⁻ and 32,169 atoms in a
+62.036 × 62.3429 × 79.4475 Å cell. Same-candidate minimization met the
+unchanged 10 kJ mol⁻¹ nm⁻¹ force and 10⁻⁵ constraint-error targets, and
+independent export read-back matched. These observations establish a technical
+route for that construct; every new candidate is checked afresh. They do not
+establish protein-specific biological suitability, a membrane equilibrium
+state, or optional equilibration. DOPC and DPPC still have no production
+construction policy because no separately suitable, reusable intact patch has
+passed the required basis for those species.

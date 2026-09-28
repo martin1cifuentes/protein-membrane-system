@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Viewer } from 'molstar/lib/apps/viewer/app';
 import { PluginConfig } from 'molstar/lib/mol-plugin/config';
 import { DefaultTrackballBindings } from 'molstar/lib/mol-canvas3d/controls/trackball';
+import type { Camera } from 'molstar/lib/mol-canvas3d/camera';
 import { Mesh } from 'molstar/lib/mol-geo/geometry/mesh/mesh';
 import { MeshBuilder } from 'molstar/lib/mol-geo/geometry/mesh/mesh-builder';
 import { Box } from 'molstar/lib/mol-geo/primitive/box';
@@ -12,7 +13,9 @@ import { ShapeRepresentation } from 'molstar/lib/mol-repr/shape/representation';
 import { Color } from 'molstar/lib/mol-util/color';
 import { Binding } from 'molstar/lib/mol-util/binding';
 import { ButtonsType, ModifiersKeys } from 'molstar/lib/mol-util/input/input-observer';
-import { StructureElement, Unit } from 'molstar/lib/mol-model/structure';
+import { StructureElement, StructureProperties, Unit } from 'molstar/lib/mol-model/structure';
+import { StructureFocusRepresentation } from 'molstar/lib/mol-plugin/behavior/dynamic/selection/structure-focus-representation';
+import { clearStructureTransparency, setStructureTransparency } from 'molstar/lib/mol-plugin-state/helpers/structure-transparency';
 import type { PreparationAssessmentResult, ScientificEvidence, ScientificFinding, WorkspaceState } from './ProteinInMembraneWorkspace';
 import { AttemptReviewAccount, StageReviewAccount } from './ExecutionReviewAccount';
 
@@ -54,6 +57,26 @@ export interface InspectionAccount {
   focus: StructureFocus | null;
   annotations: InspectionAnnotation[];
   metrics: InspectionMetric[];
+}
+
+export interface StructureLoadStatus {
+  subjectId: string;
+  structureUrl: string;
+  phase: 'loading' | 'displayed' | 'failed';
+  reason?: string;
+}
+
+interface PickedLocation {
+  atomSiteIndex: number;
+  residueName: string | null;
+  chain: string;
+  residueNumber: number | null;
+  insertionCode: string;
+  modelNumber: number;
+  entityKind: string;
+  atomName: string;
+  element: string;
+  atomLevel: boolean;
 }
 
 interface AtomPickAccount {
@@ -168,9 +191,9 @@ async function emphasizeIons(viewer: Viewer) {
   viewer.plugin.managers.structure.hierarchy.toggleVisibility(original, 'hide');
 }
 
-async function emphasizeLipids(viewer: Viewer) {
+async function emphasizeLipids(viewer: Viewer): Promise<boolean> {
   const root = viewer.plugin.managers.structure.hierarchy.current.structures[0];
-  if (!root) return;
+  if (!root) return false;
   // OpenMM's DMPC patch writes residue DMP. Mol* 5.11 recognizes DMPC as a
   // lipid name but classifies DMP as a generic ligand, whose chain color is
   // orange. Replace that exact DMP-only preset component in the view.
@@ -178,18 +201,19 @@ async function emphasizeLipids(viewer: Viewer) {
     MS.struct.generator.atomGroups({
       'residue-test': MS.core.rel.eq([MS.struct.atomProperty.macromolecular.label_comp_id(), 'DMP']),
     }), 'explicit-dmp-lipids', { label: 'Displayed DMPC lipids' });
-  if (!lipids) return;
+  if (!lipids) return false;
   const count = lipids.cell?.obj?.data.elementCount;
   const preset = root.components.find(component =>
     (component.cell.transform.tags?.includes('structure-component-static-ligand') ||
       component.cell.transform.tags?.includes('structure-component-static-lipid')) &&
     component.cell.obj?.data.elementCount === count);
-  if (!preset) return;
+  if (!preset) return false;
   await viewer.plugin.builders.structure.representation.addRepresentation(lipids, {
     type: 'ball-and-stick', typeParams: { sizeFactor: 0.15, alpha: 0.78 },
     color: 'element-symbol', colorParams: { carbonColor: { name: 'element-symbol', params: {} } },
   });
   viewer.plugin.managers.structure.hierarchy.toggleVisibility([preset], 'hide');
+  return true;
 }
 
 interface BilayerPresentation { setVisible(visible: boolean): void; dispose(): void; }
@@ -241,13 +265,36 @@ async function addIntendedBilayer(viewer: Viewer, placement: PlacementAccount): 
   };
 }
 
-function MolecularScene({ inspection, placement, executionReview = false, constructed, onPickAtom, onPickUnavailable }: {
+type MolecularRepresentation = 'cartoon' | 'sticks' | 'surface' | 'spacefill';
+const rememberedCamera = new Map<string, Camera.Snapshot>();
+const rememberedDisplay = new Map<string, {
+  representation: MolecularRepresentation; protein: boolean; lipids: boolean; ligands: boolean;
+  water: 'sample' | 'all' | 'hidden'; ions: boolean;
+}>();
+const representationType: Record<MolecularRepresentation, 'cartoon' | 'ball-and-stick' | 'molecular-surface' | 'spacefill'> = {
+  cartoon: 'cartoon', sticks: 'ball-and-stick', surface: 'molecular-surface', spacefill: 'spacefill',
+};
+
+function MolecularScene({ inspection, structureLabel, placement, executionReview = false, constructed, onPickAtom, onPickUnavailable,
+  onStructureLoad, reloadToken, localInspection, hasSelection, onClearSelection, onShowWholeSystem, clearSelectionSerial,
+  wholeSystemSerial, onChainColors, chainFocus }: {
   inspection: InspectionAccount | null;
+  structureLabel: string;
   placement?: PlacementAccount | null;
   executionReview?: boolean;
   constructed: NonNullable<NonNullable<WorkspaceState['attempt']>['constructed']> | null;
-  onPickAtom: (atomSiteIndex: number) => void;
+  onPickAtom: (location: PickedLocation) => void;
   onPickUnavailable: (reason: string) => void;
+  onStructureLoad: (status: StructureLoadStatus) => void;
+  reloadToken: number;
+  localInspection: boolean;
+  hasSelection: boolean;
+  onClearSelection: () => void;
+  onShowWholeSystem: () => void;
+  clearSelectionSerial: number;
+  wholeSystemSerial: number;
+  onChainColors?: (subjectId: string, structureUrl: string, colors: Record<string, string>) => void;
+  chainFocus?: { chainId: string; serial: number } | null;
 }) {
   const mount = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<Viewer | null>(null);
@@ -256,18 +303,50 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
   const [toolMode, setToolMode] = useState<'select' | 'rotate' | 'pan' | 'zoom'>('select');
   const [showBilayer, setShowBilayer] = useState(true);
   const [displayOpen, setDisplayOpen] = useState(false);
+  const [representation, setRepresentation] = useState<MolecularRepresentation>('cartoon');
+  const [showProtein, setShowProtein] = useState(true);
+  const [showLipids, setShowLipids] = useState(true);
+  const [showLigands, setShowLigands] = useState(true);
   const [waterDisplay, setWaterDisplay] = useState<'sample' | 'all' | 'hidden'>('sample');
   const [showIons, setShowIons] = useState(true);
-  const [displayAvailable, setDisplayAvailable] = useState({ protein: false, lipids: false, water: false, sampledWater: false, ions: false });
+  const [showContacts, setShowContacts] = useState(false);
+  const [contextCartoon, setContextCartoon] = useState<'faded' | 'shown' | 'hidden'>('faded');
+  const [displayAvailable, setDisplayAvailable] = useState({ protein: false, chains: [] as string[], lipids: false,
+    ligands: false, water: false, sampledWater: false, ions: false });
+  const [displayError, setDisplayError] = useState<string | null>(null);
+  const [pickedLoci, setPickedLoci] = useState<StructureElement.Loci | null>(null);
+  const [annotationLoci, setAnnotationLoci] = useState<StructureElement.Loci | null>(null);
+  const representationGeneration = useRef(0);
   const bilayer = useRef<BilayerPresentation | null>(null);
   const structureUrl = inspection?.structureUrl ?? null;
+  const displayMemory = useRef({ representation, protein: showProtein, lipids: showLipids,
+    ligands: showLigands, water: waterDisplay, ions: showIons });
+  displayMemory.current = { representation, protein: showProtein, lipids: showLipids,
+    ligands: showLigands, water: waterDisplay, ions: showIons };
   const fullSystemReview = executionReview && (inspection?.representationKind === 'constructedSystem'
     || inspection?.representationKind === 'completedStage');
-  const hasSelectedFocus = useRef(false);
-  hasSelectedFocus.current = !!inspection?.focus;
+
+  useEffect(() => {
+    const saved = structureUrl ? rememberedDisplay.get(structureUrl) : undefined;
+    setRepresentation(saved?.representation ?? 'cartoon');
+    setShowProtein(saved?.protein ?? true);
+    setShowLipids(saved?.lipids ?? true);
+    setShowLigands(saved?.ligands ?? true);
+    setShowIons(saved?.ions ?? true);
+    setWaterDisplay(saved?.water ?? 'hidden');
+    setShowContacts(false);
+    setContextCartoon('faded');
+    setPickedLoci(null);
+    setAnnotationLoci(null);
+  }, [structureUrl]);
+
+  useEffect(() => () => {
+    if (structureUrl) rememberedDisplay.set(structureUrl, displayMemory.current);
+  }, [structureUrl]);
 
   useEffect(() => {
     if (!structureUrl || !mount.current) return;
+    const loadingUrl = structureUrl;
     let closed = false;
     const active = { viewer: null as Viewer | null };
     let releaseBilayer: BilayerPresentation | null = null;
@@ -275,7 +354,9 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
     setError(null);
     setViewer(null);
     setBilayerRegistered(false);
-    setDisplayAvailable({ protein: false, lipids: false, water: false, sampledWater: false, ions: false });
+    setDisplayAvailable({ protein: false, chains: [], lipids: false, ligands: false,
+      water: false, sampledWater: false, ions: false });
+    onStructureLoad({ subjectId: inspection!.subjectId, structureUrl, phase: 'loading' });
 
     async function load() {
       try {
@@ -297,22 +378,28 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
         });
         if (closed) { created.dispose(); return; }
         active.viewer = created;
+        created.plugin.selectionMode = true;
         // Keep the ordinary Mol* instance attached to its mount for local
         // inspection integrations; it confers no scientific authority.
         Object.defineProperty(target, Symbol.for('molstar.viewer'),
           { value: created, configurable: true });
-        if (executionReview) created.plugin.config.set(PluginConfig.Structure.DefaultRepresentationPreset,
+        // The automatic Mol* preset switches small proteins to an all-atom
+        // component, leaving no polymer component for the documented
+        // representation controls. Keep one explicit component structure.
+        created.plugin.config.set(PluginConfig.Structure.DefaultRepresentationPreset,
           'preset-structure-representation-polymer-and-ligand');
         const format = new URL(url).searchParams.get('format');
         if (format !== 'pdb' && format !== 'mmcif')
           throw new Error('The selected structure has no recognized PDB or mmCIF representation.');
-        await created.loadStructureFromUrl(url, format, false, { label: inspection?.subjectId });
+        await created.loadStructureFromUrl(url, format, false, { label: structureLabel });
         if (closed) return;
         // Mol* may report a failed URL load in its own log without rejecting
         // the promise. A renderer without an actual structure is unavailable.
         const loaded = created.plugin.managers.structure.hierarchy.current.structures[0]?.cell.obj?.data;
         if (!loaded || loaded.units.length === 0)
           throw new Error('The identified structure could not be loaded.');
+        let sampledWater = false;
+        let customLipids = false;
         if (fullSystemReview) {
           const components = created.plugin.managers.structure.hierarchy.current.structures[0]?.components ?? [];
           const hasComponent = (kind: string) => components.some(component =>
@@ -321,22 +408,44 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
           const fullWater = components.filter(component =>
             component.cell.transform.tags?.includes('structure-component-static-water'));
           created.plugin.managers.structure.hierarchy.toggleVisibility(fullWater, 'hide');
-          let sampledWater = false;
           if (hasWater) {
             try { sampledWater = await addSampledWater(created); }
             catch { /* The complete water renderer remains available. */ }
           }
-          try { await emphasizeLipids(created); }
+          try { customLipids = await emphasizeLipids(created); }
           catch { /* The native lipid representation remains visible. */ }
           try { await emphasizeIons(created); }
           catch { /* The native ion representation remains visible. */ }
           if (closed) return;
-          setWaterDisplay(sampledWater ? 'sample' : 'hidden');
-          setDisplayAvailable({ protein: hasComponent('polymer'),
-            lipids: hasComponent('lipid') || hasComponent('ligand'),
-            water: hasWater, sampledWater, ions: hasComponent('ion') });
+          setWaterDisplay(rememberedDisplay.get(structureUrl!)?.water ?? (sampledWater ? 'sample' : 'hidden'));
           focusExplicitSystem(created);
+        } else {
+          setWaterDisplay(rememberedDisplay.get(structureUrl!)?.water ?? 'hidden');
         }
+        const components = created.plugin.managers.structure.hierarchy.current.structures[0]?.components ?? [];
+        const hasComponent = (kind: string) => components.some(component =>
+          component.cell.transform.tags?.includes(`structure-component-static-${kind}`));
+        const polymer = components.find(component =>
+          component.cell.transform.tags?.includes('structure-component-static-polymer'));
+        const chains = [...new Set((polymer?.cell.obj?.data.units ?? []).filter(Unit.isAtomic).map(unit =>
+          StructureProperties.chain.auth_asym_id(StructureElement.Location.create(polymer!.cell.obj!.data, unit, unit.elements[0]))))];
+        const cartoon = polymer?.representations.find(item => item.cell.params?.values?.type?.name === 'cartoon');
+        const colorTheme = cartoon?.cell.obj?.data.repr.theme.color;
+        const displayedColors: Record<string, string> = {};
+        if (polymer?.cell.obj?.data && colorTheme && 'color' in colorTheme) {
+          for (const unit of polymer.cell.obj.data.units.filter(Unit.isAtomic)) {
+            const location = StructureElement.Location.create(polymer.cell.obj.data, unit, unit.elements[0]);
+            const chain = StructureProperties.chain.auth_asym_id(location);
+            const tint = Color.toHexString(colorTheme.color(location, false));
+            displayedColors[`${StructureProperties.unit.model_num(location)}:${chain}`] = tint;
+            if (loaded.models.length === 1) displayedColors[chain] = tint;
+          }
+        }
+        onChainColors?.(inspection!.subjectId, loadingUrl, displayedColors);
+        setDisplayAvailable({ protein: !!polymer, chains, lipids: customLipids || hasComponent('lipid'),
+          ligands: components.some(component => component.cell.transform.tags?.includes('structure-component-static-ligand') &&
+            !component.cell.state.isHidden), water: hasComponent('water'), sampledWater,
+          ions: hasComponent('ion') });
         if (placement) {
           const added = await addIntendedBilayer(created, placement);
           if (closed) { added?.dispose(); return; }
@@ -344,14 +453,19 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
           bilayer.current = releaseBilayer;
           setBilayerRegistered(releaseBilayer !== null);
         }
-        if (!closed) setViewer(created);
+        if (!closed) {
+          setViewer(created);
+          onStructureLoad({ subjectId: inspection!.subjectId, structureUrl: loadingUrl, phase: 'displayed' });
+        }
       } catch (cause) {
         if (!closed) {
           if (Reflect.get(target, Symbol.for('molstar.viewer')) === active.viewer)
             Reflect.deleteProperty(target, Symbol.for('molstar.viewer'));
           active.viewer?.dispose();
           active.viewer = null;
-          setError(cause instanceof Error ? cause.message : 'The structure could not be rendered.');
+          const reason = cause instanceof Error ? cause.message : 'The structure could not be rendered.';
+          setError(reason);
+          onStructureLoad({ subjectId: inspection!.subjectId, structureUrl: loadingUrl, phase: 'failed', reason });
         }
       }
     }
@@ -359,6 +473,8 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
     void load();
     return () => {
       closed = true;
+      if (active.viewer?.plugin.canvas3d && structureUrl)
+        rememberedCamera.set(structureUrl, active.viewer.plugin.canvas3d.camera.getSnapshot());
       releaseBilayer?.dispose();
       bilayer.current = null;
       if (Reflect.get(target, Symbol.for('molstar.viewer')) === active.viewer)
@@ -366,25 +482,89 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
       active.viewer?.dispose();
     };
   }, [structureUrl, placement?.proposalId, placement?.midplaneAngstrom, placement?.thicknessAngstrom,
-    executionReview, fullSystemReview]);
+    executionReview, fullSystemReview, reloadToken]);
+
+  useEffect(() => {
+    if (!viewer || !structureUrl) return;
+    const saved = rememberedCamera.get(structureUrl);
+    if (!saved) return;
+    let inner = 0;
+    const outer = window.requestAnimationFrame(() => {
+      inner = window.requestAnimationFrame(() => {
+        viewer.handleResize();
+        viewer.plugin.canvas3d?.camera.setState(saved, 0);
+      });
+    });
+    return () => { window.cancelAnimationFrame(outer); window.cancelAnimationFrame(inner); };
+  }, [viewer, structureUrl]);
+
+  useEffect(() => {
+    if (!viewer || !chainFocus) return;
+    const structure = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.cell.obj?.data;
+    if (!structure) return;
+    const loci = StructureElement.Loci.fromSchema(structure, { auth_asym_id: chainFocus.chainId });
+    if (StructureElement.Loci.isEmpty(loci)) return;
+    viewer.plugin.managers.interactivity.lociSelects.selectOnly({ loci }, false);
+    viewer.plugin.managers.camera.focusLoci(loci, { extraRadius: 8, durationMs: 0 });
+  }, [viewer, chainFocus?.serial]);
 
   useEffect(() => { bilayer.current?.setVisible(showBilayer); }, [showBilayer, viewer]);
 
   useEffect(() => {
-    if (!viewer || !fullSystemReview) return;
-    const components = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.components ?? [];
-    const setComponentVisibility = (tag: string, visible: boolean) => {
-      const matching = components.filter(component =>
-        component.cell.transform.tags?.includes(tag));
-      viewer.plugin.managers.structure.hierarchy.toggleVisibility(matching, visible ? 'show' : 'hide');
+    if (!viewer) return;
+    const generation = ++representationGeneration.current;
+    const apply = async () => {
+      const root = viewer.plugin.managers.structure.hierarchy.current.structures[0];
+      const polymer = root?.components.find(component =>
+        component.cell.transform.tags?.includes('structure-component-static-polymer'));
+      if (!polymer) return;
+      const type = representationType[representation];
+      let selected = polymer.representations.find(item => item.cell.params?.values?.type?.name === type);
+      try {
+        if (!selected) {
+          await viewer.plugin.builders.structure.representation.addRepresentation(polymer.cell, {
+            type, color: representation === 'sticks' || representation === 'spacefill' ? 'element-symbol' : 'chain-id',
+          });
+          selected = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.components.find(component =>
+            component.cell.transform.tags?.includes('structure-component-static-polymer'))?.representations
+            .find(item => item.cell.params?.values?.type?.name === type);
+        }
+        if (generation !== representationGeneration.current || !selected) return;
+        const all = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.components.find(component =>
+          component.cell.transform.tags?.includes('structure-component-static-polymer'))?.representations ?? [];
+        viewer.plugin.managers.structure.hierarchy.toggleVisibility(all.filter(item => item !== selected), 'hide');
+        viewer.plugin.managers.structure.hierarchy.toggleVisibility([selected], 'show');
+        setDisplayError(null);
+      } catch (cause) {
+        if (generation === representationGeneration.current)
+          setDisplayError(cause instanceof Error ? cause.message : 'The representation could not be changed.');
+      }
     };
-    setComponentVisibility('structure-component-static-water', waterDisplay === 'all');
-    setComponentVisibility(sampledWaterTag, waterDisplay === 'sample');
-    setComponentVisibility('structure-component-static-ion', showIons);
-  }, [viewer, fullSystemReview, waterDisplay, showIons]);
+    void apply();
+    return () => { representationGeneration.current += 1; };
+  }, [viewer, representation]);
 
   useEffect(() => {
-    if (!viewer || (!placement && !executionReview)) return;
+    if (!viewer) return;
+    const components = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.components ?? [];
+    const matching = (tag: string) => components.filter(component => component.cell.transform.tags?.includes(tag));
+    const dmp = matching('structure-component-explicit-dmp-lipids')[0];
+    const ligands = matching('structure-component-static-ligand').filter(component =>
+      !dmp || component.cell.obj?.data.elementCount !== dmp.cell.obj?.data.elementCount);
+    const setVisible = (items: typeof components, visible: boolean) => {
+      if (items.length) viewer.plugin.managers.structure.hierarchy.toggleVisibility(items, visible ? 'show' : 'hide');
+    };
+    setVisible(matching('structure-component-static-polymer'), showProtein &&
+      !(localInspection && contextCartoon === 'hidden'));
+    setVisible([...matching('structure-component-static-lipid'), ...matching('structure-component-explicit-dmp-lipids')], showLipids);
+    setVisible(ligands, showLigands);
+    setVisible(matching('structure-component-static-water'), waterDisplay === 'all');
+    setVisible(matching(sampledWaterTag), waterDisplay === 'sample');
+    setVisible(matching('structure-component-static-ion'), showIons);
+  }, [viewer, showProtein, showLipids, showLigands, waterDisplay, showIons, localInspection, contextCartoon]);
+
+  useEffect(() => {
+    if (!viewer) return;
     const canvas = viewer.plugin.canvas3d;
     if (!canvas) return;
     const primary = Binding([Binding.Trigger(ButtonsType.Flag.Primary, ModifiersKeys.create())]);
@@ -394,7 +574,7 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
       dragPan: toolMode === 'pan' ? primary : DefaultTrackballBindings.dragPan,
       dragZoom: toolMode === 'zoom' ? primary : DefaultTrackballBindings.dragZoom,
     } } });
-    viewer.plugin.selectionMode = toolMode === 'select';
+    viewer.plugin.selectionMode = true;
   }, [viewer, placement, executionReview, toolMode]);
 
   useEffect(() => {
@@ -405,13 +585,18 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
       // That value is not a researcher selection and must not create a card.
       if (loci.kind === 'empty-loci' ||
           StructureElement.Loci.is(loci) && StructureElement.Loci.isEmpty(loci)) return;
-      if (!StructureElement.Loci.is(loci) || StructureElement.Loci.size(loci) !== 1) {
-        onPickUnavailable('Select one visible atom to inspect its verified molecular identity.');
+      if (!StructureElement.Loci.is(loci)) {
+        onPickUnavailable('This displayed item has no mapped molecular identity.');
+        return;
+      }
+      const residueLoci = StructureElement.Loci.firstResidue(loci);
+      if (StructureElement.Loci.isEmpty(residueLoci) || !StructureElement.Loci.isSubset(residueLoci, loci)) {
+        onPickUnavailable('Choose one visible residue or molecule to identify it.');
         return;
       }
       const location = StructureElement.Loci.getFirstLocation(loci);
       if (!location || !Unit.isAtomic(location.unit)) {
-        onPickUnavailable('An atom-level identity is unavailable for this part of the view.');
+        onPickUnavailable('A mapped molecular identity is unavailable for this part of the view.');
         return;
       }
       const atomSiteIndex = location.unit.model.atomicHierarchy.atomSourceIndex.value(location.element);
@@ -419,28 +604,113 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
         onPickUnavailable('The selected atom has no verified coordinate-row identity.');
         return;
       }
-      onPickAtom(atomSiteIndex);
+      viewer.plugin.managers.structure.focus.clear();
+      viewer.plugin.managers.interactivity.lociSelects.selectOnly({ loci: residueLoci }, false);
+      setPickedLoci(residueLoci);
+      const residueNumber = StructureProperties.residue.auth_seq_id(location);
+      const insertionCode = StructureProperties.residue.pdbx_PDB_ins_code(location);
+      onPickAtom({ atomSiteIndex, residueName: StructureProperties.residue.auth_comp_id(location) || null,
+        chain: StructureProperties.chain.auth_asym_id(location) || StructureProperties.chain.label_asym_id(location),
+        residueNumber: Number.isFinite(residueNumber) && residueNumber > 0 ? residueNumber : null,
+        insertionCode: insertionCode === '.' || insertionCode === '?' ? '' : insertionCode,
+        modelNumber: StructureProperties.unit.model_num(location),
+        entityKind: StructureProperties.entity.type(location),
+        atomName: StructureProperties.atom.auth_atom_id(location),
+        element: StructureProperties.atom.type_symbol(location),
+        atomLevel: StructureElement.Loci.size(loci) === 1 &&
+          (representation === 'sticks' || representation === 'spacefill') });
     });
     return () => subscription.unsubscribe();
-  }, [viewer, toolMode, inspection?.structureUrl, onPickAtom, onPickUnavailable]);
+  }, [viewer, toolMode, inspection?.structureUrl, representation, onPickAtom, onPickUnavailable]);
 
   useEffect(() => {
     if (!viewer) return;
     const focus = inspection?.focus;
     if (!focus || !focus.authAsymId || !Number.isInteger(focus.authSeqId)) {
-      viewer.structureInteractivity({ action: 'select' });
+      setAnnotationLoci(null);
       return;
     }
-    viewer.structureInteractivity({
-      action: ['select', 'focus'],
-      elements: {
-        auth_asym_id: focus.authAsymId,
-        auth_seq_id: focus.authSeqId,
-        ...(focus.insertionCode ? { pdbx_PDB_ins_code: focus.insertionCode } : {}),
-        ...(focus.authAtomId !== null ? { atom_id: focus.authAtomId } : {}),
-      },
+    const structure = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.cell.obj?.data;
+    if (!structure) return;
+    const loci = StructureElement.Loci.fromSchema(structure, {
+      auth_asym_id: focus.authAsymId,
+      auth_seq_id: focus.authSeqId,
+      ...(focus.insertionCode ? { pdbx_PDB_ins_code: focus.insertionCode } : {}),
+      ...(focus.authAtomId !== null ? { atom_id: focus.authAtomId } : {}),
     });
+    if (StructureElement.Loci.isEmpty(loci)) { setAnnotationLoci(null); return; }
+    setPickedLoci(null);
+    setAnnotationLoci(StructureElement.Loci.firstResidue(loci));
+    viewer.plugin.managers.interactivity.lociSelects.selectOnly({ loci }, false);
   }, [viewer, inspection?.focusId, inspection?.focus?.authAsymId, inspection?.focus?.authSeqId, inspection?.focus?.insertionCode, inspection?.focus?.authAtomId]);
+
+  useEffect(() => {
+    if (!viewer) return;
+    const target = pickedLoci ?? annotationLoci;
+    if (localInspection && target) {
+      viewer.plugin.managers.structure.focus.setFromLoci(target);
+      viewer.plugin.managers.camera.focusLoci(target, { extraRadius: 5, durationMs: 0 });
+    } else {
+      viewer.plugin.managers.structure.focus.clear();
+    }
+  }, [viewer, localInspection, pickedLoci, annotationLoci]);
+
+  useEffect(() => {
+    if (!viewer) return;
+    let current = true;
+    void viewer.plugin.state.updateBehavior(StructureFocusRepresentation, params => {
+      params.expandRadius = 5;
+      params.components = localInspection && showContacts
+        ? ['target', 'surroundings', 'interactions'] : ['target', 'surroundings'];
+    }).then(() => {
+      // Mol* creates a newly enabled interaction representation when the
+      // focused loci are next applied; updating the option alone cannot add it.
+      const target = pickedLoci ?? annotationLoci;
+      if (current && localInspection && showContacts && target)
+        viewer.plugin.managers.structure.focus.setFromLoci(target);
+    }).catch(cause => { if (current) setDisplayError(cause instanceof Error
+      ? cause.message : 'Contact display is unavailable.'); });
+    return () => { current = false; };
+  }, [viewer, localInspection, showContacts, pickedLoci, annotationLoci]);
+
+  useEffect(() => {
+    if (!viewer) return;
+    const polymer = viewer.plugin.managers.structure.hierarchy.current.structures[0]?.components.filter(component =>
+      component.cell.transform.tags?.includes('structure-component-static-polymer')) ?? [];
+    if (!polymer.length) return;
+    let current = true;
+    const update = async () => {
+      await clearStructureTransparency(viewer.plugin, polymer);
+      if (current && localInspection && showProtein && contextCartoon === 'faded')
+        await setStructureTransparency(viewer.plugin, polymer, 0.78,
+          async structure => StructureElement.Loci.all(structure));
+    };
+    void update().catch(cause => { if (current) setDisplayError(cause instanceof Error
+      ? cause.message : 'Context transparency is unavailable.'); });
+    return () => { current = false; };
+  }, [viewer, localInspection, showProtein, contextCartoon, representation]);
+
+  useEffect(() => {
+    if (!viewer || clearSelectionSerial === 0) return;
+    setPickedLoci(null);
+    setAnnotationLoci(null);
+    setShowContacts(false);
+    viewer.plugin.managers.interactivity.lociSelects.deselectAll();
+    viewer.plugin.managers.structure.focus.clear();
+  }, [viewer, clearSelectionSerial]);
+
+  useEffect(() => {
+    if (!viewer || wholeSystemSerial === 0) return;
+    let frame = window.requestAnimationFrame(() => {
+      // The input pane may have changed the canvas width while the researcher
+      // was inspecting locally. Resize before either overview camera reads it.
+      viewer.plugin.canvas3d?.handleResize();
+      if (placement) focusPlacement(viewer, placement);
+      else if (fullSystemReview) focusExplicitSystem(viewer);
+      else viewer.plugin.canvas3d?.requestCameraReset({ durationMs: 0 });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [viewer, wholeSystemSerial, placement, fullSystemReview]);
 
   useEffect(() => {
     if (!viewer || !mount.current) return;
@@ -456,11 +726,6 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
       if (bounds && viewport &&
           Math.abs(viewport.width - bounds.width) <= 4 &&
           Math.abs(viewport.height - bounds.height) <= 4) {
-        if (!hasSelectedFocus.current) {
-          if (placement) focusPlacement(viewer, placement);
-          else if (fullSystemReview) focusExplicitSystem(viewer);
-          else viewer.plugin.canvas3d?.requestCameraReset({ durationMs: 0 });
-        }
         mount.current?.setAttribute('data-camera-viewport-width', String(viewport.width));
         mount.current?.setAttribute('data-camera-viewport-height', String(viewport.height));
         mount.current?.setAttribute('data-camera-ready', 'true');
@@ -485,7 +750,59 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
   }
 
   return <>
-    <div className="viewer-mount" ref={mount} aria-label={`3D structure for ${inspection?.subjectId ?? 'selected subject'}`} />
+    <div className="scene-inspection-toolbar" aria-label="Molecular inspection display controls">
+      <label className="scene-representation-label">Protein view
+        <select className="select-input" aria-label="Protein representation" value={representation}
+          disabled={!viewer || !displayAvailable.protein} onChange={event => setRepresentation(event.target.value as MolecularRepresentation)}>
+          <option value="cartoon">Cartoon</option>
+          <option value="sticks">Sticks</option>
+          <option value="surface">Surface</option>
+          <option value="spacefill">Space-filling</option>
+        </select>
+      </label>
+      <div className="scene-component-tool">
+        <button className="button compact" type="button" aria-expanded={displayOpen} aria-controls="scene-component-options"
+          onClick={() => setDisplayOpen(value => !value)}>Components <span aria-hidden="true">⌄</span></button>
+        {displayOpen && <div id="scene-component-options" className="scene-component-options" aria-label="Visible molecular components">
+          <strong>Visible components</strong>
+          <label><input type="checkbox" checked={showProtein} disabled={!displayAvailable.protein}
+            onChange={event => setShowProtein(event.target.checked)} />Protein chains{displayAvailable.chains.length > 0 && ` (${displayAvailable.chains.join(', ')})`}</label>
+          <label><input type="checkbox" checked={showLipids} disabled={!displayAvailable.lipids}
+            onChange={event => setShowLipids(event.target.checked)} />Lipids{!displayAvailable.lipids && ' · absent'}</label>
+          <label><input type="checkbox" checked={showLigands} disabled={!displayAvailable.ligands}
+            onChange={event => setShowLigands(event.target.checked)} />Ligands / retained partners{!displayAvailable.ligands && ' · absent'}</label>
+          <fieldset className="execution-water-options" disabled={!displayAvailable.water}>
+            <legend>Water molecules{!displayAvailable.water && ' · absent'}</legend>
+            {displayAvailable.sampledWater && <label><input type="radio" name="inspection-water" checked={waterDisplay === 'sample'}
+              onChange={() => setWaterDisplay('sample')} />Representative sample</label>}
+            <label><input type="radio" name="inspection-water" checked={waterDisplay === 'all'}
+              onChange={() => setWaterDisplay('all')} />All</label>
+            <label><input type="radio" name="inspection-water" checked={waterDisplay === 'hidden'}
+              onChange={() => setWaterDisplay('hidden')} />Hidden</label>
+          </fieldset>
+          <label><input type="checkbox" checked={showIons} disabled={!displayAvailable.ions}
+            onChange={event => setShowIons(event.target.checked)} />Ions{!displayAvailable.ions && ' · absent'}</label>
+          {placement && <label><input type="checkbox" checked={showBilayer}
+            onChange={event => setShowBilayer(event.target.checked)} />Membrane preview · not constructed lipids</label>}
+          {localInspection && <>
+            <label>Surrounding protein
+              <select value={contextCartoon} onChange={event => setContextCartoon(event.target.value as typeof contextCartoon)}>
+                <option value="faded">Faded</option><option value="shown">Shown</option><option value="hidden">Hidden</option>
+              </select>
+            </label>
+            <label><input type="checkbox" checked={showContacts} onChange={event => setShowContacts(event.target.checked)} />Geometric contact aids</label>
+            <small>When shown, Mol* draws computed noncovalent candidates as dashed lines by interaction type. These are display aids, not validated bonds or scientific assessment.</small>
+          </>}
+          {constructed && <small>Full model: {constructed.atomCount.toLocaleString()} atoms; {constructed.waterCount.toLocaleString()} waters; {constructed.sodiumCount.toLocaleString()} Na⁺ and {constructed.chlorideCount.toLocaleString()} Cl⁻.</small>}
+          {localInspection && <small>The 5 Å neighborhood uses the selected structure's nearby atoms, including waters or ions even when those categories are hidden in the whole-system view.</small>}
+          <small>Visibility and rendering never change coordinates, retained chemistry or qualification.</small>
+        </div>}
+      </div>
+      {hasSelection && <button className="button compact" type="button" onClick={onClearSelection}>Clear selection</button>}
+      <button className="button compact" type="button" disabled={!viewer} onClick={onShowWholeSystem}>Show whole system</button>
+      {localInspection && <span className="scene-local-state">Local inspection · surroundings 5 Å</span>}
+    </div>
+    <div className="viewer-mount" ref={mount} aria-label={`3D structure for ${structureLabel}`} />
     {(placement || executionReview) && <nav className="placement-view-tools" aria-label="Molecular view tools">
       {(['select', 'rotate', 'pan', 'zoom'] as const).map(mode =>
         <button type="button" key={mode} className={toolMode === mode ? 'active' : ''}
@@ -497,53 +814,21 @@ function MolecularScene({ inspection, placement, executionReview = false, constr
       <button type="button" disabled={!inspection?.metrics.length}
         onClick={() => document.querySelector('.placement-metrics, .execution-metrics')?.scrollIntoView({ block: 'start' })}
         title="Show measured and derived values"><span aria-hidden="true">⌁</span>Measure</button>
-      <button type="button" onClick={() => viewer && (placement ? focusPlacement(viewer, placement) : fullSystemReview ? focusExplicitSystem(viewer) : viewer.plugin.canvas3d?.requestCameraReset({ durationMs: 0 }))}
-        title={placement ? 'Focus the positioned protein and intended bilayer' : 'Fit the identified system in the molecular view'}><span aria-hidden="true">◎</span>Focus</button>
-      {placement && <button type="button" className={showBilayer ? 'active' : ''} aria-pressed={showBilayer}
-        onClick={() => setShowBilayer(value => !value)} title="Show or hide the intended bilayer bounds">
-        <span aria-hidden="true">◉</span>Display
-      </button>}
-      {fullSystemReview && <div className="execution-display-tool">
-        <button type="button" className={displayOpen ? 'active' : ''} aria-expanded={displayOpen}
-          aria-controls="execution-display-options" onClick={() => setDisplayOpen(value => !value)}
-          title="Choose which explicit molecule classes are rendered">
-          <span aria-hidden="true">◉</span>Display
-        </button>
-        {displayOpen && <div id="execution-display-options" className="execution-display-options"
-          aria-label="Rendered explicit molecule classes">
-          <strong>Displayed in the molecular view</strong>
-          <p>Protein: {viewer ? displayAvailable.protein ? 'shown' : 'renderer unavailable' : 'loading'} · lipids: {viewer ? displayAvailable.lipids ? 'shown' : 'renderer unavailable' : 'loading'}.</p>
-          <fieldset className="execution-water-options" disabled={!displayAvailable.water}>
-            <legend>Water molecules</legend>
-            <label><input type="radio" name="execution-water" checked={waterDisplay === 'sample'}
-              disabled={!displayAvailable.sampledWater}
-              onChange={() => setWaterDisplay('sample')} />Representative sample</label>
-            <label><input type="radio" name="execution-water" checked={waterDisplay === 'all'}
-              onChange={() => setWaterDisplay('all')} />All</label>
-            <label><input type="radio" name="execution-water" checked={waterDisplay === 'hidden'}
-              onChange={() => setWaterDisplay('hidden')} />Hidden</label>
-          </fieldset>
-          <label><input type="checkbox" checked={showIons} disabled={!displayAvailable.ions}
-            onChange={event => setShowIons(event.target.checked)} />Na⁺ / Cl⁻ ions</label>
-          {!displayAvailable.sampledWater && displayAvailable.water &&
-            <small>Representative water display is unavailable; all waters can still be shown.</small>}
-          {constructed && <small>Full model: {constructed.atomCount.toLocaleString()} atoms; {constructed.waterCount.toLocaleString()} waters; {constructed.sodiumCount.toLocaleString()} Na⁺ and {constructed.chlorideCount.toLocaleString()} Cl⁻.</small>}
-          {(!displayAvailable.protein || !displayAvailable.lipids ||
-            (!!constructed && constructed.waterCount > 0 && !displayAvailable.water) ||
-            (!!constructed && constructed.sodiumCount + constructed.chlorideCount > 0 && !displayAvailable.ions)) && viewer &&
-            <small>Any molecule class without a recognized renderer is unavailable in this view; its coordinates remain in the identified structure.</small>}
-        </div>}
-      </div>}
     </nav>}
+    {displayError && <div className="scene-display-error" role="alert">Display change unavailable: {displayError}</div>}
     {fullSystemReview && viewer &&
       <div className="execution-display-disclosure" role="status">
-        Protein {displayAvailable.protein ? 'shown' : 'not rendered'} · lipids {displayAvailable.lipids ? 'shown' : 'not rendered'} · water {constructed?.waterCount === 0 ? 'none' :
+        Protein {displayAvailable.protein ? showProtein ? 'shown' : 'hidden' : 'not rendered'} · lipids {displayAvailable.lipids ? showLipids ? 'shown' : 'hidden' : 'not rendered'} · water {constructed?.waterCount === 0 ? 'none' :
           !displayAvailable.water ? 'not rendered' : waterDisplay === 'sample' && displayAvailable.sampledWater
             ? 'sampled (residue IDs divisible by 32)' : waterDisplay === 'all' ? 'all shown' : 'hidden'} · ions {
               constructed && constructed.sodiumCount + constructed.chlorideCount === 0 ? 'none' :
                 !displayAvailable.ions ? 'not rendered' : showIons ? 'shown' : 'hidden'}.
         {' '}The identified all-atom coordinates and counts are unchanged.
       </div>}
+    {!fullSystemReview && !placement && viewer && <div className="scene-view-disclosure" role="status">
+      Protein {displayAvailable.protein ? showProtein ? 'shown' : 'hidden' : 'absent'} · ligands {displayAvailable.ligands ? showLigands ? 'shown' : 'hidden' : 'absent'} · water {displayAvailable.water ? waterDisplay === 'hidden' ? 'hidden in overview' : 'shown' : 'absent'} · ions {displayAvailable.ions ? showIons ? 'shown' : 'hidden' : 'absent'}.
+      {' '}{localInspection ? 'The local neighborhood may show components hidden in the overview.' : 'Cartoon and surface use chain colours; atomic views use element colours.'} Display only; coordinates are unchanged.
+    </div>}
     {placement && <div className="placement-scene-legend" role="img"
       aria-label={bilayerRegistered && placement.midplaneAngstrom !== null && placement.thicknessAngstrom !== null
         ? `Intended bilayer around positioned protein. Upper and lower physical leaflet planes registered to measured midplane ${placement.midplaneAngstrom.toFixed(2)} angstrom and thickness ${placement.thicknessAngstrom.toFixed(2)} angstrom. No packed lipid positions or achieved membrane are shown.`
@@ -576,6 +861,31 @@ function representationLabel(kind: string): string {
     case 'constructedSystem': return 'Verified constructed explicit system';
     case 'completedStage': return 'Completed molecular stage';
     default: return kind;
+  }
+}
+
+function rcsbEntryId(subjectId: string): string | null {
+  return /^rcsb:([a-z0-9]{4})$/i.exec(subjectId)?.[1].toUpperCase() ?? null;
+}
+
+export function viewerSubjectHeading(inspection: InspectionAccount | null,
+  stage: WorkspaceState['stages'][number] | undefined, sourceLabel?: string | null): string {
+  if (!inspection) return 'Molecular viewer';
+  const identifiedSource = sourceLabel?.trim() || rcsbEntryId(inspection.subjectId);
+  switch (inspection.representationKind) {
+    case 'structuralSource': {
+      return identifiedSource ? `Source structure · ${identifiedSource}` : 'Source structure';
+    }
+    case 'intendedProtein':
+    case 'selected-protein-before-repair': return `Protein before preparation${identifiedSource ? ` · ${identifiedSource}` : ''}`;
+    case 'unqualifiedProteinCandidate': return 'Unqualified protein candidate';
+    case 'preparedProtein': return `Prepared protein${identifiedSource ? ` · ${identifiedSource}` : ''}`;
+    case 'membraneModel': return 'Intended membrane model';
+    case 'oriented-protein-with-proposed-membrane-bounds': return 'Protein placement proposal';
+    case 'constructedSystem': return 'Protein–membrane system';
+    case 'completedStage': return stage?.kind === 'Minimization' ? 'Minimized system'
+      : stage?.kind === 'Equilibration' ? 'Equilibrated system' : 'Completed molecular stage';
+    default: return 'Molecular viewer';
   }
 }
 
@@ -630,6 +940,36 @@ function IntendedBilayerPreview({ membrane }: { membrane: MembraneAccount }) {
   </figure>;
 }
 
+function EditableBilayerPreview({ upper, lower, standing }: {
+  upper: LipidFraction[]; lower: LipidFraction[]; standing: 'draft' | 'proposal' | 'chosen';
+}) {
+  const species = [...new Set([...upper, ...lower].map(item => item.speciesId))];
+  const color = (id: string) => `hsl(${(206 + species.indexOf(id) * 137.5) % 360} 48% 60%)`;
+  const leaflet = (side: 'upper' | 'lower', fractions: LipidFraction[]) => {
+    const total = fractions.reduce((sum, item) => sum + item.fraction, 0);
+    return <div className={`bilayer-leaflet-band ${side} ${fractions.length === 0 ? 'unspecified' : ''}`}>
+      {fractions.map(item => <div className="bilayer-species-segment" key={item.speciesId}
+        style={{ width: `${item.fraction * 100}%`, backgroundColor: color(item.speciesId) }} title={`${item.speciesId} ${(item.fraction * 100).toFixed(1)}%`} />)}
+      {total < 0.9999 && <span className="bilayer-unassigned" style={{ width: `${Math.max(0, 100 - total * 100)}%` }}>
+        {fractions.length ? `${Math.max(0, 100 - total * 100).toFixed(1)}% unassigned` : 'Not specified'}
+      </span>}
+    </div>;
+  };
+  return <figure className="bilayer-preview membrane-area-preview">
+    <div className="bilayer-preview-title"><span>Physical leaflets</span><strong>{standing === 'draft' ? 'Composition draft' : standing === 'proposal' ? 'Membrane proposal' : 'Chosen membrane'}</strong></div>
+    <div className="bilayer-preview-graphic" role="img" aria-label={`Membrane ${standing}. Upper leaflet ${upper.length ? upper.map(item => `${item.speciesId} ${(item.fraction * 100).toFixed(1)} percent`).join(', ') : 'not specified'}. Lower leaflet ${lower.length ? lower.map(item => `${item.speciesId} ${(item.fraction * 100).toFixed(1)} percent`).join(', ') : 'not specified'}. No lipid coordinates are shown.`}>
+      <div className="bilayer-side-label">Upper aqueous side</div>
+      <div className="bilayer-physical-label">Upper physical leaflet</div>{leaflet('upper', upper)}
+      <div className="bilayer-core">Bilayer core · no molecule positions shown</div>
+      {leaflet('lower', lower)}<div className="bilayer-physical-label">Lower physical leaflet</div>
+      <div className="bilayer-side-label">Lower aqueous side</div>
+    </div>
+    {species.length > 0 && <div className="bilayer-preview-legend" aria-label="Selected lipid species">{species.map(id =>
+      <span className="bilayer-legend-item" key={id}><i className="bilayer-legend-swatch" style={{ backgroundColor: color(id) }} />{id}</span>)}</div>}
+    <figcaption>Composition preview — membrane not yet built.</figcaption>
+  </figure>;
+}
+
 function MembraneLeafletAccount({ side, fractions, state }: {
   side: 'Upper' | 'Lower';
   fractions: LipidFraction[];
@@ -659,13 +999,14 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
   onSelectFocus: (annotationId: string | null) => void;
 }) {
   const measured = placement.midplaneAngstrom !== null && placement.thicknessAngstrom !== null;
-  const standing = placement.status === 'supported' ? 'Supported placement' :
-    placement.status === 'unsupported' ? 'Unsupported placement' :
-      placement.status === 'proposed' ? 'Proposal under assessment' : 'Support not established';
+  const standing = placement.status === 'supported' ? 'Position ready to use' :
+    placement.status === 'unsupported' ? 'Position failed a technical check' :
+      placement.status === 'assessing' ? 'Checking position…' :
+      placement.status === 'proposed' ? 'Position under assessment' : 'Position check incomplete';
   const candidateBasis = [...placement.evidence].reverse().find(item =>
     /candidate|adjustment/i.test(item.method)) ?? placement.evidence[0];
   const selectedSource = state.sourceCandidates.find(candidate => candidate.id === state.study?.selectedSourceId);
-  const sourceLabel = selectedSource?.label ?? (state.study?.selectedSourceKind === 'upload'
+  const sourceLabel = state.study?.selectedSourceLabel ?? selectedSource?.label ?? (state.study?.selectedSourceKind === 'upload'
     ? 'Researcher-supplied structural source' : 'Selected structural source');
   const chainSummary = state.study?.chainIds.length ? state.study.chainIds.join(', ') : 'Not established';
   const upperTarget = state.membrane?.modelId === placement.membraneModelId
@@ -678,10 +1019,11 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
     <section className="account-card placement-identity-account" aria-label="Selected protein and membrane model">
       <h2>Selected protein / model</h2>
       <dl className="detail-grid">
-        <dt>Type</dt><dd>{placement.topologyKind === 'membrane-spanning' ? 'Membrane-spanning protein' : 'Surface-associated protein'}</dd>
+        <dt>Type</dt><dd>{placement.transform ? 'Complete prepared construct' :
+          placement.topologyKind === 'membrane-spanning' ? 'Membrane-spanning protein' : 'Surface-associated protein'}</dd>
         <dt>Source</dt><dd>{sourceLabel}</dd>
         <dt>Model</dt><dd>{state.study?.modelIndex !== null && state.study?.modelIndex !== undefined
-          ? `Source model ${state.study.modelIndex + 1} · chain ${chainSummary}` : `Chain ${chainSummary}`}</dd>
+          ? `Source model ${state.sourceModels.find(model => model.index === state.study?.modelIndex)?.sourceModelId ?? state.study.modelIndex + 1} · chain ${chainSummary}` : `Chain ${chainSummary}`}</dd>
         <dt>Representation</dt><dd>Positioned cartoon + intended bounds</dd>
         <dt>Environment</dt><dd>{upperTarget === lowerTarget ? `${upperTarget} planar bilayer target` : 'Intended planar bilayer target'}</dd>
       </dl>
@@ -699,10 +1041,12 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
     <section className="account-card placement-proposal-account" aria-label="Placement proposal">
       <h2>Placement proposal</h2>
       <dl className="detail-grid">
-        <dt>Relationship</dt><dd>{placement.topologyKind === 'membrane-spanning' ? 'Membrane-spanning' : 'One-surface associated'}</dd>
-        <dt>Physical contact side</dt><dd>{placement.physicalSide === 'both' ? 'Both physical leaflets' : `${placement.physicalSide} physical side`}</dd>
+        <dt>Starting position</dt><dd>{placement.transform ? `${placement.transform.startingPosition} in membrane frame` :
+          placement.topologyKind === 'membrane-spanning' ? 'Membrane-spanning method estimate' : 'Surface-associated method estimate'}</dd>
+        <dt>Physical region</dt><dd>{placement.physicalSide === 'both' ? 'Membrane region' : `${placement.physicalSide} physical side`}</dd>
         {candidateBasis && <><dt>Candidate basis</dt><dd>{candidateBasis.method}</dd></>}
-        {placement.depthAngstrom !== null && <><dt>Depth</dt><dd>{placement.depthAngstrom.toFixed(2)} Å</dd></>}
+        {placement.transform && <><dt>Applied translation</dt><dd className="tabular">({placement.transform.appliedTranslationXAngstrom.toFixed(2)}, {placement.transform.appliedTranslationYAngstrom.toFixed(2)}, {placement.transform.appliedTranslationZAngstrom.toFixed(2)}) Å</dd>
+          <dt>Rotations X/Y/Z</dt><dd className="tabular">{placement.transform.rotationXDegrees}° / {placement.transform.rotationYDegrees}° / {placement.transform.rotationZDegrees}°</dd></>}
         {placement.tiltDegrees !== null && <><dt>Tilt</dt><dd>{placement.tiltDegrees.toFixed(1)}°</dd></>}
         {measured && <><dt>Midplane</dt><dd>{placement.midplaneAngstrom!.toFixed(2)} Å</dd>
           <dt>Bilayer thickness</dt><dd>{placement.thicknessAngstrom!.toFixed(2)} Å</dd></>}
@@ -718,7 +1062,7 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
       </details>
     </section>
     <section className="account-card placement-regions-account" aria-label="Orientation evidence and contacting regions">
-      <h2>Orientation evidence</h2>
+      <h2>Spatial observations</h2>
       <div className="placement-orientation-list">
         {(['upper side', 'membrane core', 'lower side'] as const).map(label => {
           const anchor = inspection.annotations.find(item => item.label === label);
@@ -726,8 +1070,8 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
             className={anchor && inspection.focusId === anchor.subjectPartId ? 'selected' : ''}
             onClick={() => anchor && onSelectFocus(anchor.id)}>
             <span>{label === 'membrane core' ? 'Membrane core' : `${label === 'upper side' ? 'Upper' : 'Lower'} physical side`}</span>
-            <strong>{anchor?.geometryFocus && inspection.structureUrl ? `Observed · ${anchor.subjectPartId}` : 'No verified spatial anchor'}</strong>
-            {anchor?.evidenceId && <small className="tabular">Evidence {anchor.evidenceId}</small>}
+            <strong>{anchor?.geometryFocus && inspection.structureUrl ? 'Located in displayed coordinates' : 'No verified spatial anchor'}</strong>
+            {anchor?.evidenceId && <small>See attributed evidence below</small>}
           </button>;
         })}
       </div>
@@ -735,20 +1079,17 @@ function PlacementReviewAccount({ placement, state, inspection, canSelectFocus, 
         ? <details className="placement-contact-details"><summary>{placement.contactingRegions.length} exact contacting region{placement.contactingRegions.length === 1 ? '' : 's'} · inspect list</summary>
           <ul>{placement.contactingRegions.map((region, index) => <li key={`${region}:${index}`}>{region}</li>)}</ul>
         </details>
-        : <p>Contacting regions have not been independently established for this proposal.</p>}
-      <dl className="detail-grid">
-        <dt>Biological premise</dt><dd>{placement.sidedness || 'Not supplied'}</dd>
-      </dl>
-      <p className="help-text">The biological premise and PPM in/out assignment are distinct from physical upper and lower coordinates.</p>
+        : <p>No located protein region has yet been measured within the intended membrane core.</p>}
+      {!placement.transform && placement.sidedness && <p className="help-text">Method context: {placement.sidedness}</p>}
     </section>
     <section className={`account-card placement-support-account ${statusClass(placement.status)}`} aria-label="Placement standing and uncertainty">
-      <h2>Evidence and uncertainty</h2>
+      <h2>Technical position checks</h2>
       <p className="placement-standing">{standing}</p>
       <p>{placement.reason}</p>
-      {(placement.policyId || placement.witnessId) && <dl className="detail-grid">
+      {(placement.policyId || placement.witnessId) && <details className="source-provenance"><summary>Method details</summary><dl className="detail-grid">
         {placement.policyId && <><dt>Policy</dt><dd>{placement.policyId}{placement.policyVersion && ` · version ${placement.policyVersion}`}</dd></>}
         {placement.witnessId && <><dt>Independent witness</dt><dd>{placement.witnessId}</dd></>}
-      </dl>}
+      </dl></details>}
       {placement.limitations.map(limit => <p key={limit}>Limit: {limit}</p>)}
     </section>
     {placement.evidence.length > 0 && <section className="account-card placement-evidence-account" aria-label="Attributed placement evidence">
@@ -767,22 +1108,57 @@ export function ConnectedStructuralInspection({
   state,
   onSelectFocus,
   onInspectSubject,
+  proteinReview,
+  proteinOutcome,
+  proteinDraft,
+  placementOutcome,
   proposalDecision,
   exportFault = null,
   reviewAttempt = false,
   connectionMessage = null,
   onRefreshAccount,
+  structureReload = 0,
+  structureStatus = null,
+  onStructureLoad,
+  requestedSource = null,
+  sourcePreviewLabel = null,
+  onChainColors,
+  chainFocus = null,
+  activeArea,
+  membraneDraft,
+  membraneDraftMatchesProposal = false,
+  requestedAreaView = null,
 }: {
   state: WorkspaceState;
   onSelectFocus: (annotationId: string | null) => void;
   onInspectSubject: (subjectId: string) => void;
+  proteinReview?: ReactNode;
+  proteinOutcome?: ReactNode;
+  proteinDraft?: ReactNode;
+  placementOutcome?: ReactNode;
   proposalDecision?: ReactNode;
   exportFault?: string | null;
   reviewAttempt?: boolean;
   connectionMessage?: string | null;
   onRefreshAccount?: () => void;
+  structureReload?: number;
+  structureStatus?: StructureLoadStatus | null;
+  onStructureLoad?: (status: StructureLoadStatus) => void;
+  requestedSource?: { label: string; phase: 'retrieving' | 'rendering' | 'previewing' | 'previewFailed'; reason?: string } | null;
+  sourcePreviewLabel?: string | null;
+  onChainColors?: (subjectId: string, structureUrl: string, colors: Record<string, string>) => void;
+  chainFocus?: { chainId: string; serial: number } | null;
+  activeArea?: 'protein' | 'membrane' | 'placement' | 'preparation' | 'results';
+  membraneDraft?: { upper: LipidFraction[]; lower: LipidFraction[] };
+  membraneDraftMatchesProposal?: boolean;
+  requestedAreaView?: { area: string; subjectId: string; failure: string | null } | null;
 }) {
   const inspection = state.inspection;
+  // An option switch can retain the same verified coordinate artifact and Mol*
+  // canvas. Rendering standing follows those bytes; decision evidence still
+  // follows the exact inspection subject and study revision below.
+  const currentStructureStatus = structureStatus &&
+    structureStatus.structureUrl === inspection?.structureUrl ? structureStatus : null;
   const subject = inspection?.subjectId ?? state.study?.id ?? null;
   const stage = state.stages.find(item => item.stageId === subject);
   const preparationChange = state.protein?.changes.find(change => change.id === subject);
@@ -795,12 +1171,17 @@ export function ConnectedStructuralInspection({
     ?? placement?.status
     ?? (state.protein?.subjectId === subject ? state.protein.status : null)
     ?? (preparationChange ? state.protein?.status === 'declined' ? 'Declined proposal' : 'Preparation proposal' : null)
-    ?? (membrane ? membrane.status === 'notEstablished' ? 'Not established' : membrane.status === 'assessed' ? 'Assessed' : 'Proposed' : null);
+    ?? (membrane ? membrane.status === 'notEstablished' ? 'Not established' : membrane.status === 'assessing' ? 'Assessing' :
+      membrane.status === 'unavailable' ? 'Unavailable' : membrane.status === 'assessed' ? 'Assessed' : 'Proposed' : null);
   const selectedAction = state.actions.find(item => item.kind === 'setInspectionFocus' && item.subjectId === null);
   const canSelectFocus = selectedAction?.enabled === true;
   const affectedAnnotation = preparationChange && inspection?.annotations.find(item => item.geometryFocus);
   const [pickedAtom, setPickedAtom] = useState<AtomPickAccount | null>(null);
+  const [pickedLocation, setPickedLocation] = useState<PickedLocation | null>(null);
   const [pickMessage, setPickMessage] = useState<string | null>(null);
+  const [localInspection, setLocalInspection] = useState(false);
+  const [clearSelectionSerial, setClearSelectionSerial] = useState(0);
+  const [wholeSystemSerial, setWholeSystemSerial] = useState(0);
   const pickSequence = useRef(0);
   const selectedStructureKey = `${inspection?.subjectId ?? ''}|${inspection?.structureUrl ?? ''}`;
   const selectedStructureKeyRef = useRef(selectedStructureKey);
@@ -813,22 +1194,76 @@ export function ConnectedStructuralInspection({
   const compactReview = useRef<boolean | null>(null);
   const currentSourceContext = inspection && state.study?.selectedSourceId && (
     subject === state.study.selectedSourceId || subject === state.protein?.subjectId || preparationChange);
+  const isSourceInspection = inspection?.representationKind === 'structuralSource' &&
+    subject === state.study?.selectedSourceId;
+  const subjectHeading = viewerSubjectHeading(inspection, stage, state.study?.selectedSourceLabel);
+  const sourceCandidate = state.sourceCandidates.find(candidate => candidate.id === inspection?.subjectId);
+  const sourceRoute = (isSourceInspection ? state.study?.selectedSourceKind : sourceCandidate?.kind)
+    ?? (subject?.startsWith('rcsb:') ? 'rcsb' : subject?.startsWith('alphafold:') ? 'alphafold'
+      : subject?.startsWith('upload:') ? 'upload' : null);
+  const sourceOrigin = sourceRoute === 'alphafold' ? 'AlphaFold DB prediction'
+    : sourceRoute === 'upload' ? `Researcher upload · ${isSourceInspection && state.study?.uploadProvenance &&
+      state.study.uploadProvenance !== 'unknown'
+      ? `researcher-declared ${state.study.uploadProvenance} origin` : 'origin not established'}`
+      : sourceRoute === 'rcsb' ? sourceCandidate?.provenance.toLowerCase().includes('experimental entry search')
+        ? 'RCSB PDB · experimental entry' : 'RCSB PDB' : 'Source origin unavailable';
+  const revisionContext = inspection ? `Study revision ${inspection.studyRevisionNumber} · ${
+    inspection.studyRevisionId === state.study?.id ? 'current study' : 'historical revision'}` : '';
+  const subjectDetail = !inspection ? 'No subject selected'
+    : inspection.representationKind === 'structuralSource'
+      ? sourceOrigin
+      : stage && inspection.representationKind === 'completedStage'
+        ? 'Completed molecular result'
+        : inspection.representationKind === 'constructedSystem'
+          ? 'Checked constructed candidate; minimization not complete'
+          : inspection.representationKind === 'oriented-protein-with-proposed-membrane-bounds'
+            ? 'Positioned protein and proposed membrane bounds'
+            : inspection.representationKind === 'membraneModel'
+              ? 'Intended fractions; no lipid coordinates' : inspection.representationKind === 'intendedProtein' ||
+                inspection.representationKind === 'selected-protein-before-repair'
+                  ? 'Selected protein coordinates; reviewed changes are not yet applied' :
+                    inspection.representationKind === 'preparedProtein'
+                      ? 'Assessed prepared coordinates' : inspection.subjectId;
+  const viewerSubtitle = requestedSource
+    ? `${requestedSource.label} · ${requestedSource.phase === 'retrieving' ? 'retrieving source' :
+      requestedSource.phase === 'previewFailed' ? 'visualization unavailable' : 'loading coordinates'}`
+    : inspection ? `${subjectDetail}${isSourceInspection && sourcePreviewLabel ? ` · ${sourcePreviewLabel}` : ''} · ${revisionContext}` : subjectDetail;
 
   useEffect(() => {
     pickSequence.current += 1;
     setPickedAtom(null);
+    setPickedLocation(null);
     setPickMessage(null);
+    setLocalInspection(false);
   }, [selectedStructureKey]);
+
+  useEffect(() => {
+    if (inspection?.focusId && inspection.focus) setLocalInspection(true);
+  }, [inspection?.focusId, selectedStructureKey]);
 
   const onPickUnavailable = useCallback((reason: string) => {
     pickSequence.current += 1;
     setPickedAtom(null);
+    setPickedLocation(null);
     setPickMessage(reason);
+    setLocalInspection(false);
+    setClearSelectionSerial(value => value + 1);
   }, []);
 
-  const onPickAtom = useCallback((atomSiteIndex: number) => {
+  const onPickAtom = useCallback((location: PickedLocation) => {
     if (!inspection?.structureUrl) {
       onPickUnavailable('The selected subject has no verified structure for atom inspection.');
+      return;
+    }
+    // Mol* reads only the structure bytes bound to this exact inspection URL.
+    // A source has no source-to-result correspondence yet: report its actual
+    // coordinate identity without inventing an adopted preparation atom.
+    if (inspection.representationKind === 'structuralSource') {
+      pickSequence.current += 1;
+      setPickedAtom(null);
+      setPickedLocation(location);
+      setPickMessage(null);
+      setLocalInspection(false);
       return;
     }
     let token: string;
@@ -842,18 +1277,21 @@ export function ConnectedStructuralInspection({
       return;
     }
     const requestIndex = ++pickSequence.current;
+    const atomSiteIndex = location.atomSiteIndex;
     const subjectId = inspection.subjectId;
     const revisionId = inspection.studyRevisionId;
     const selectedKey = selectedStructureKey;
     setPickedAtom(null);
-    setPickMessage('Resolving selected atom against the host correspondence…');
+    setPickedLocation(location);
+    setLocalInspection(false);
+    setPickMessage('Resolving selection against the host correspondence…');
     void (async () => {
       try {
         const response = await fetch(`/api/inspection/atoms/${encodeURIComponent(subjectId)}/${encodeURIComponent(token)}/${atomSiteIndex}`, { cache: 'no-store' });
         if (requestIndex !== pickSequence.current || selectedStructureKeyRef.current !== selectedKey) return;
         if (!response.ok) {
           setPickMessage(response.status === 404
-            ? 'Verified atom identity is unavailable for this selected subject and structure.'
+            ? 'Source-to-result correspondence is unavailable for this selected coordinate; its displayed coordinate identity remains inspectable.'
             : `The selected atom could not be checked against the local account (${response.status}).`);
           return;
         }
@@ -872,7 +1310,23 @@ export function ConnectedStructuralInspection({
           setPickMessage('The selected atom identity is unavailable while the local connection is interrupted.');
       }
     })();
-  }, [inspection?.subjectId, inspection?.structureUrl, inspection?.studyRevisionId, selectedStructureKey, onPickUnavailable]);
+  }, [inspection?.subjectId, inspection?.structureUrl, inspection?.studyRevisionId,
+    inspection?.representationKind, selectedStructureKey, onPickUnavailable]);
+
+  function clearSelection(restoreOverview: boolean) {
+    pickSequence.current += 1;
+    setPickedAtom(null);
+    setPickedLocation(null);
+    setPickMessage(null);
+    setLocalInspection(false);
+    setClearSelectionSerial(value => value + 1);
+    if (restoreOverview) setWholeSystemSerial(value => value + 1);
+    if (inspection?.focusId) onSelectFocus(null);
+  }
+
+  function showWholeSystem() {
+    clearSelection(true);
+  }
 
   useEffect(() => {
     if (!preparationChange) { compactReview.current = null; return; }
@@ -896,30 +1350,110 @@ export function ConnectedStructuralInspection({
     return () => { window.removeEventListener('resize', orientReview); window.cancelAnimationFrame(frame ?? 0); };
   }, [preparationChange?.id]);
 
+  if (requestedAreaView && activeArea !== 'membrane') return <>
+    <section className="scene-panel" aria-label={`${requestedAreaView.area} view`}>
+      <div className="scene-heading"><div><h1>{requestedAreaView.area} view</h1><div className="scene-subtitle">Restoring the area’s selected subject</div></div></div>
+      <div className="scene-surface"><div className="scene-empty" role={requestedAreaView.failure ? 'alert' : 'status'}>
+        <strong>{requestedAreaView.failure ? 'View unavailable' : `Restoring ${requestedAreaView.area.toLowerCase()} view…`}</strong>
+        <span>{requestedAreaView.failure ?? 'Loading its structure and corresponding details without changing the scientific selection.'}</span>
+      </div></div>
+      <div className="scene-caption">The previous area’s molecule is not shown under this subject.</div>
+    </section>
+    <aside className="evidence-panel" aria-label={`${requestedAreaView.area} details`}><div className="evidence-content">
+      <p className="eyebrow">{requestedAreaView.area} task</p><h2 className="panel-heading">Current view</h2>
+      <div className={`hint-box${requestedAreaView.failure ? ' warning' : ''}`}>{requestedAreaView.failure ?? 'The exact subject and its details are being restored.'}</div>
+    </div></aside>
+  </>;
+
+  if ((activeArea === 'results' && state.stages.length === 0) ||
+      (activeArea === 'preparation' && !state.attempt && state.stages.length === 0) ||
+      (activeArea === 'placement' && !state.protein && !state.placement)) {
+    const label = activeArea === 'results' ? 'No completed system stage yet' :
+      activeArea === 'preparation' ? 'No system preparation attempt yet' : 'Prepare a protein to position it';
+    return <>
+      <section className="scene-panel" aria-label={`${activeArea} view`}><div className="scene-heading"><div><h1>{activeArea === 'results' ? 'System results' : activeArea === 'preparation' ? 'System preparation' : 'Protein placement'}</h1>
+        <div className="scene-subtitle">{label}</div></div></div><div className="scene-surface"><div className="scene-empty"><strong>{label}</strong><span>Return here when the corresponding molecular subject is available.</span></div></div>
+        <div className="scene-caption">No completed structure is implied by opening this work area.</div></section>
+      <aside className="evidence-panel"><div className="evidence-content"><p className="eyebrow">{activeArea} task</p><h2 className="panel-heading">Current standing</h2><div className="hint-box">{label}</div></div></aside>
+    </>;
+  }
+
+  if (activeArea === 'membrane') {
+    const selected = state.membrane;
+    const draft = membraneDraft ?? { upper: [], lower: [] };
+    const showDraft = !selected || !membraneDraftMatchesProposal;
+    const shown = showDraft ? draft : selected;
+    const standing = showDraft ? 'draft' : selected?.status === 'proposed' ? 'proposal' : 'chosen';
+    const heading = standing === 'draft' ? 'Membrane composition draft' : standing === 'proposal' ? 'Membrane proposal' : 'Chosen membrane';
+    const outcome = selected?.status === 'assessed' ? 'Membrane ready for placement' :
+      selected?.status === 'assessing' ? 'Checking membrane…' :
+      selected?.status === 'notEstablished' ? 'Membrane support not established' :
+      selected?.status === 'unavailable' ? 'Membrane check could not finish' :
+      selected ? 'Proposal awaiting adoption' : 'No membrane chosen yet';
+    return <>
+      <section className="scene-panel" aria-label="Membrane composition view">
+        <div className="scene-heading"><div><h1>{heading}</h1><div className="scene-subtitle">Upper and lower physical leaflets · {showDraft ? 'editable composition' : selected?.status === 'proposed' ? 'proposed intention' : 'adopted intention'}</div></div></div>
+        <div className="scene-surface"><EditableBilayerPreview upper={shown.upper} lower={shown.lower} standing={standing} /></div>
+        <div className="scene-caption">Composition preview — membrane not yet built.</div>
+      </section>
+      <aside className="evidence-panel" aria-label="Membrane details">
+        <div className="evidence-content"><p className="eyebrow">Membrane task</p><h2 className="panel-heading">Membrane checks</h2>
+          <section className="account-card" aria-label="Membrane outcome"><h3>{outcome}</h3>
+            {selected?.status === 'assessing' && <p role="status"><span className="activity-spinner" aria-hidden="true" />Checking the chosen composition and its molecular representations…</p>}
+            {selected?.reason && selected.status !== 'assessed' && <p>{selected.reason}</p>}
+            {selected?.status === 'assessed' && <p>Parameters and a construction route are available for this chosen membrane. Positioning and packing remain separate steps.</p>}
+            {!selected && <p>Choose species and target fractions for each leaflet in the input pane.</p>}
+            {showDraft && selected && <p>The displayed draft differs from the {selected.status === 'proposed' ? 'proposal' : 'chosen membrane'} below.</p>}
+          </section>
+          {selected && <section className="account-card" aria-label="Recorded membrane composition"><h3>{selected.status === 'proposed' ? 'Proposed composition' : 'Chosen composition'}</h3>
+            <dl className="detail-grid"><dt>Upper leaflet</dt><dd>{presentFractions(selected.upper).map(item => `${item.speciesId} ${targetPercent(item.fraction)}`).join(' · ')}</dd>
+              <dt>Lower leaflet</dt><dd>{presentFractions(selected.lower).map(item => `${item.speciesId} ${targetPercent(item.fraction)}`).join(' · ')}</dd></dl>
+            {selected.limitations.length > 0 && <details><summary>Technical details and limitations</summary>{selected.limitations.map(limit => <p key={limit}>{limit}</p>)}
+              {selected.policyId && <p>{selected.policyId} · {selected.policyVersion}</p>}</details>}
+          </section>}
+          {state.study && <details><summary>Fixed study conditions</summary><p>Nominal pH {state.study.conditions.nominalPh}; target NaCl {state.study.conditions.targetNaClMolar} M; optional equilibration target {state.study.conditions.optionalTemperatureKelvin} K.</p></details>}
+        </div>
+      </aside>
+    </>;
+  }
+
   return <>
     <section className="scene-panel" aria-label={stage ? 'Selected completed molecular stage' : reviewAttempt ? 'Current attempt inspection' : membrane ? 'Intended membrane model' : placement ? 'Placed protein and intended bilayer' : 'Molecular structure'}>
       <div className="scene-heading">
         <div>
-          <p className="eyebrow">Connected structural inspection</p>
-          <h1>{stage?.summary ?? (inspection && representationLabel(inspection.representationKind)) ?? 'Scientific subject'}</h1>
-          <div className="scene-subtitle tabular">{subject ?? 'No subject selected'}{inspection &&
-            ` · ${representationLabel(inspection.representationKind)} · study revision ${inspection.studyRevisionNumber} (${inspection.studyRevisionId}) · ${inspection.studyRevisionId === state.study?.id ? 'current' : 'historical'}`}</div>
+          <h1>{requestedSource ? 'Loading source structure' : subjectHeading}</h1>
+          <div className="scene-subtitle tabular" title={requestedSource ? requestedSource.label : inspection?.studyRevisionId}>
+            {viewerSubtitle}
+          </div>
         </div>
-        {subjectStatus && <span className={`status-badge ${statusClass(subjectStatus)}`}>{subjectStatus}</span>}
+        {!requestedSource && subjectStatus && <span className={`status-badge ${statusClass(subjectStatus)}`}>{subjectStatus}</span>}
       </div>
-      <div className={`scene-surface${placement && !reviewAttempt ? ' placement-scene-surface' : ''}${executionReview ? ' execution-scene-surface' : ''}`}>
-        {membrane && !reviewAttempt ? <IntendedBilayerPreview membrane={membrane} /> : <MolecularScene inspection={inspection} placement={reviewAttempt ? null : placement}
-          executionReview={executionReview} constructed={constructed} onPickAtom={onPickAtom} onPickUnavailable={onPickUnavailable} />}
-        {executionReview && <div className="execution-scene-label">{stage
-          ? `Selected ${stage.kind === 'Minimization' ? 'minimized' : 'equilibrated'} stage${stage.studyRevisionId === state.study?.id ? '' : ' · historical revision'}`
-          : inspection?.representationKind === 'constructedSystem' ? 'Current constructed system · verified'
-            : 'Current inspected subject · constructed system view not established'}</div>}
+      <div className={`scene-surface${inspection?.structureUrl && requestedSource?.phase !== 'retrieving' ? ' has-inspection-toolbar' : ''}${placement && !reviewAttempt ? ' placement-scene-surface' : ''}${executionReview ? ' execution-scene-surface' : ''}`}>
+        {requestedSource?.phase === 'retrieving' || requestedSource?.phase === 'previewing' || requestedSource?.phase === 'previewFailed' ? null : membrane && !reviewAttempt ? <IntendedBilayerPreview membrane={membrane} /> : <MolecularScene inspection={inspection} structureLabel={subjectHeading} placement={reviewAttempt ? null : placement}
+          executionReview={executionReview} constructed={constructed} onPickAtom={onPickAtom} onPickUnavailable={onPickUnavailable}
+          onStructureLoad={status => onStructureLoad?.(status)} reloadToken={structureReload}
+          localInspection={localInspection} hasSelection={!!(pickedLocation || inspection?.focusId || localInspection)}
+          onClearSelection={() => clearSelection(localInspection)} onShowWholeSystem={showWholeSystem}
+          clearSelectionSerial={clearSelectionSerial} wholeSystemSerial={wholeSystemSerial}
+          onChainColors={onChainColors} chainFocus={chainFocus} />}
+        {requestedSource && <div className="scene-source-loading" role="status" aria-label={`Loading source ${requestedSource.label}`}>
+          {requestedSource.phase !== 'previewFailed' && <span className="activity-spinner" aria-hidden="true" />}
+          <strong>{requestedSource.phase === 'retrieving' ? 'Retrieving source…' :
+            requestedSource.phase === 'previewFailed' ? 'Selected model view unavailable' : 'Loading structure…'}</strong>
+          <span className="tabular">{requestedSource.label}</span>
+          {requestedSource.reason && <span>{requestedSource.reason}</span>}
+        </div>}
+        {!requestedSource && executionReview && <div className="execution-scene-label">{inspection
+          ? `${subjectHeading} · ${
+            inspection.studyRevisionId === state.study?.id ? 'current study revision' : 'historical revision'}`
+          : 'No molecular subject selected'}</div>}
       </div>
       <div className="scene-caption">
-        {executionReview ? <><strong>{stage ? 'Selected completed molecular stage.' : inspection?.representationKind === 'constructedSystem' ? 'Verified constructed starting system.' : 'Earlier inspected subject.'}</strong>{' '}
+        {requestedSource ? <><strong>{requestedSource.phase === 'previewFailed' ? 'The selected model cannot be displayed.' : 'Loading the selected source view.'}</strong> {requestedSource.phase === 'previewFailed' ? 'Review the issue beside the model choice and retry.' : 'Its molecular view will appear when the exact coordinates finish loading.'}</>
+          : executionReview ? <><strong>{stage ? 'Selected completed molecular stage.' : inspection?.representationKind === 'constructedSystem' ? 'Verified constructed starting system.' : 'Earlier inspected subject.'}</strong>{' '}
           {inspection?.omittedMolecules.length ? `Not rendered: ${inspection.omittedMolecules.join(', ')}.` : 'See the exact subject account for representation limits and measurements.'}
           {' '}The scene itself does not establish a scientific qualification.</>
-          : placement ? <><strong>Oriented protein with intended bilayer bounds.</strong> The upper and lower translucent planes are registered to the measured midplane and thickness where available. PPM uses an implicit symmetric DOPC membrane; the selected membrane is assessed separately. No packed lipids or achieved system are shown.</>
+          : placement ? <><strong>Positioned protein with intended bilayer bounds.</strong> The upper and lower translucent planes mark this proposal’s membrane frame. {placement.transform ? 'The full construct was moved and rotated as one rigid body.' : 'The optional orientation method supplies a starting estimate.'} No packed lipids or achieved system are shown.</>
           : membrane ? <><strong>Intended model, not achieved packing.</strong> The two physical leaflets show target fractions only; membrane-local support is stated in the evidence account.</> : <><strong>Spatial view is evidence, not assessment.</strong>{' '}
         {inspection?.omittedMolecules.length
           ? `Not shown: ${inspection.omittedMolecules.join(', ')}.`
@@ -928,6 +1462,11 @@ export function ConnectedStructuralInspection({
     </section>
 
     <aside className="evidence-panel" aria-label="Evidence and assessment">
+      {requestedSource && inspection && <div className="notice source-evidence-pending" role="note">
+        {requestedSource.phase === 'retrieving'
+          ? `Loading ${requestedSource.label}. The evidence below still belongs to ${subjectHeading}.`
+          : `Loading the coordinates for ${subjectHeading}. Its source account is available below.`}
+      </div>}
       {connectionMessage && <div className="notice warning" role="alert">{connectionMessage}
         {onRefreshAccount && <div className="button-row"><button className="button compact" type="button" onClick={onRefreshAccount}>Refresh account</button></div>}
       </div>}
@@ -946,39 +1485,71 @@ export function ConnectedStructuralInspection({
           }}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}
       </nav>}
       <div className="evidence-content" ref={evidenceContent}>
-      <p className="eyebrow">Exact subject account</p>
+      <p className="eyebrow">{proteinReview || proteinOutcome ? 'Protein task' : placementOutcome ? 'Placement task' : proteinDraft ? 'Protein selection' : 'Exact subject account'}</p>
       <div className="status-line">
-        <h2 className="panel-heading">Evidence &amp; standing</h2>
-        {subjectStatus && <span className={`status-badge ${statusClass(subjectStatus)}`}>{subjectStatus}</span>}
+        <h2 className="panel-heading">{proteinOutcome ? 'Protein result' : proteinReview ? 'Review site' : placementOutcome ? 'Placement outcome' : proteinDraft ? 'Protein to assess' : 'Evidence & standing'}</h2>
+        {!proteinReview && !proteinOutcome && !placementOutcome && !proteinDraft && subjectStatus && <span className={`status-badge ${statusClass(subjectStatus)}`}>{subjectStatus}</span>}
       </div>
+      {proteinReview}
+      {proteinOutcome}
+      {placementOutcome}
+      {proteinDraft}
+      {!proteinReview && !proteinOutcome && !placementOutcome && <>
       {!inspection && !reviewAttempt && <div className="hint-box">Select a scientific subject to connect its structure with the applicable values and findings.</div>}
       {reviewAttempt && state.attempt && <AttemptReviewAccount state={state} attempt={state.attempt} onInspectConstructed={onInspectSubject} />}
-      {inspection && !stage && <section className="account-card inspection-origin-account" aria-label="Selected subject and study revision">
-        <h2>Selected subject and study revision</h2>
+      {inspection && !stage && !isSourceInspection && <section className="account-card inspection-origin-account" aria-label="Selected subject and study revision">
+        <h2>Viewing context</h2>
         <dl className="detail-grid">
-          <dt>Subject</dt><dd className="tabular">{inspection.subjectId}</dd>
-          <dt>Origin</dt><dd>Study revision {inspection.studyRevisionNumber} <span className="tabular">({inspection.studyRevisionId})</span></dd>
+          <dt>Subject</dt><dd>{subjectHeading}</dd>
+          <dt>Origin</dt><dd>Study revision {inspection.studyRevisionNumber}</dd>
           <dt>Context</dt><dd>{inspection.studyRevisionId === state.study?.id ? 'Current study revision' :
             `Historical subject; current study is revision ${state.study?.number ?? 'unknown'} (${state.study?.id ?? 'unavailable'})`}</dd>
+          {membrane && <><dt>Standing</dt><dd>{membrane.status === 'notEstablished' ? 'Support not established' :
+            membrane.status === 'assessing' ? 'Assessing support for adopted intention' :
+            membrane.status === 'unavailable' ? 'Assessment unavailable' :
+            membrane.status === 'assessed' ? 'Assessed membrane model' : 'Proposed intention'}</dd></>}
           {inspection.assessment && <><dt>Stage assessment</dt><dd>{inspection.assessment.currentlyApplicable ? '' : 'Historical assessment · '}{inspection.assessment.qualification}: {inspection.assessment.reason}</dd></>}
         </dl>
+        <details className="source-provenance"><summary>Exact subject and revision IDs</summary>
+          <p className="tabular">Subject {inspection.subjectId}<br />Study revision {inspection.studyRevisionId}</p>
+        </details>
       </section>}
+      {isSourceInspection && state.study && <details className="source-details" open={!proteinDraft || undefined}><summary>Source details</summary><section className="account-card selected-source-account" aria-label="Selected source">
+        <h2>Selected source</h2>
+        <dl className="detail-grid">
+          <dt>Structure</dt><dd>{state.study.selectedSourceLabel ?? 'Identified source'}</dd>
+          <dt>Route</dt><dd>{state.study.selectedSourceKind === 'rcsb' ? 'RCSB PDB' : state.study.selectedSourceKind === 'alphafold' ? 'AlphaFold DB' : 'Researcher upload'}</dd>
+          <dt>Revision</dt><dd>{inspection!.studyRevisionNumber} · current source</dd>
+          <dt>Preparation model</dt><dd>{state.study.modelIndex === null ? state.sourceModels.length === 1
+            ? 'Only coordinate model is a draft; protein selection not assessed' : 'Not chosen' :
+              `Source model ${state.sourceModels.find(model => model.index === state.study?.modelIndex)?.sourceModelId ?? state.study.modelIndex + 1} · selected for assessment`}</dd>
+        </dl>
+        {state.study.selectedSourceKind === 'alphafold' && <p className="source-qualification-note">Prediction coordinates; not experimental validation.</p>}
+        {state.study.selectedSourceKind === 'upload' && <p className="source-qualification-note">{state.study.uploadProvenance ? `Researcher-declared ${state.study.uploadProvenance} origin` : 'Origin not established'}; this label is not independently verified.</p>}
+        {state.sourcePrediction && <p className="source-qualification-note">Prediction confidence: {state.sourcePrediction.localConfidence.filter(item => item.pLddt !== null).length}/{state.sourcePrediction.localConfidence.length} mapped residues with local values; PAE {state.sourcePrediction.paeStanding.toLowerCase()}. Prediction uncertainty does not establish preparation or placement support.</p>}
+        <details className="source-provenance"><summary>Provenance and limitations</summary>
+          <p className="tabular">Exact source {state.study.selectedSourceId}<br />Study revision {inspection!.studyRevisionNumber} · {inspection!.studyRevisionId}</p>
+          {state.study.uploadProvenanceNote && <p>{state.study.uploadProvenanceNote}</p>}
+          {state.sourceCandidates.find(candidate => candidate.id === state.study?.selectedSourceId)?.limitations.map(limit => <p key={limit}>Limit: {limit}</p>)}
+          {state.sourcePrediction?.paeReason && <p>PAE: {state.sourcePrediction.paeReason}</p>}
+          {state.sourcePrediction?.limitations.map(limit => <p key={limit}>Limit: {limit}</p>)}
+          <p>Viewing source coordinates does not select chains, retain partners or establish a prepared protein.</p>
+        </details>
+      </section></details>}
       {inspection && showSubjectEvidence && <>
-        {!preparationChange && !placement && !executionReview && <section className="account-card" aria-label={membrane ? 'Selected membrane model' : 'Selected structure'}>
-          <h2>{membrane ? 'Selected membrane model' : 'Selected structure'}</h2>
+        {!isSourceInspection && !preparationChange && !placement && !executionReview && !membrane && <section className="account-card" aria-label="Selected structure">
+          <h2>Selected structure</h2>
           <dl className="detail-grid">
-          <dt>Subject</dt><dd>{inspection.subjectId}</dd>
           <dt>Representation</dt><dd>{representationLabel(inspection.representationKind)}</dd>
-          {membrane && <><dt>Standing</dt><dd>{membrane.status === 'notEstablished' ? 'Not established' : membrane.status === 'assessed' ? 'Assessed membrane model' : 'Proposed intention'}</dd></>}
           {inspection.focusId && <><dt>Selected part</dt><dd>{inspection.focusId}</dd></>}
           </dl>
         </section>}
         {membrane && !executionReview && <>
           <MembraneLeafletAccount side="Upper" fractions={membrane.upper} state={state} />
           <MembraneLeafletAccount side="Lower" fractions={membrane.lower} state={state} />
-          <section className="account-card membrane-purpose-account" aria-label="Membrane purpose and study conditions">
-            <h2>Purpose and fixed study conditions</h2>
-            <p>{membrane.scientificPurpose}</p>
+          <section className="account-card membrane-conditions-account" aria-label="Fixed study conditions">
+            <h2>Fixed study conditions</h2>
+            {membrane.scientificPurpose?.trim() && <p>Recorded purpose: {membrane.scientificPurpose}</p>}
             <dl className="detail-grid">
               <dt>Target salt and neutrality</dt><dd>{state.study ? `${state.study.conditions.targetNaClMolar} M NaCl with charge-neutralizing compatible monovalent counterions` : 'Not established'}</dd>
               <dt>Optional equilibration target</dt><dd>{state.study ? `${state.study.conditions.optionalTemperatureKelvin} K` : 'Not established'}</dd>
@@ -988,9 +1559,16 @@ export function ConnectedStructuralInspection({
           </section>
           <section className={`account-card membrane-support-account ${membrane.status === 'assessed' ? 'established' : membrane.status === 'notEstablished' ? 'unestablished' : ''}`} aria-label="Membrane-local support and uncertainty">
             <h2>Membrane-local support and uncertainty</h2>
-            <p className="membrane-support-standing">{membrane.status === 'assessed' ? 'Assessed membrane model' : membrane.status === 'notEstablished' ? 'Membrane model not established' : 'Proposal not yet assessed'}</p>
+            <p className="membrane-support-standing">{membrane.status === 'assessed' ? 'Assessed membrane model' :
+              membrane.status === 'assessing' ? 'Assessing adopted membrane model…' :
+              membrane.status === 'unavailable' ? 'Assessment unavailable' :
+              membrane.status === 'notEstablished' ? 'Membrane model not established' : 'Proposal not yet assessed'}</p>
             {membrane.reason && <p className="membrane-support-reason">{membrane.reason}</p>}
-            {membrane.policyId && <dl className="detail-grid"><dt>Policy</dt><dd>{membrane.policyId}{membrane.policyVersion && ` · version ${membrane.policyVersion}`}</dd></dl>}
+            {membrane.status === 'assessing' && <p role="status"><span className="activity-spinner" aria-hidden="true" />Checking the exact leaflet composition and selected representations…</p>}
+            {membrane.status === 'unavailable' && <p>Return to Membrane to retry the same adopted intention after the service is available.</p>}
+            {membrane.policyId && <details className="source-provenance"><summary>Support method</summary>
+              <p>{membrane.policyId}{membrane.policyVersion && ` · version ${membrane.policyVersion}`}</p>
+            </details>}
             {membrane.status === 'proposed' && <p>The selected fractions are an editable proposal until deliberately adopted and assessed.</p>}
             {membrane.status === 'assessed' && <p>Support applies to this exact model and the identified molecular representations. Protein placement and an assembled membrane remain separate.</p>}
             {membrane.limitations.map(limit => <p className="membrane-limit" key={limit}>Limit: {limit}</p>)}
@@ -1022,21 +1600,65 @@ export function ConnectedStructuralInspection({
         {placement && !reviewAttempt && <PlacementReviewAccount placement={placement} state={state}
           inspection={inspection} canSelectFocus={canSelectFocus} onSelectFocus={onSelectFocus} />}
         {stage && <StageReviewAccount state={state} stage={stage} exportFault={exportFault} />}
-        {(visiblePickedAtom || pickMessage) && <section className="account-card inspection-atom-account" aria-label="Selected atom correspondence">
-          <h2>Selected atom correspondence</h2>
+        {inspection.structureUrl && <section className="account-card inspection-atom-account" aria-label="Inspection selection">
+          <h2>Inspection selection</h2>
           {visiblePickedAtom ? <>
-            <dl className="detail-grid">
-              <dt>Result atom</dt><dd className="tabular">{visiblePickedAtom.atom.resultAtomId}</dd>
-              <dt>Role</dt><dd>{visiblePickedAtom.atom.moleculeRole} · {visiblePickedAtom.atom.atomRole} · {visiblePickedAtom.atom.element}</dd>
-              <dt>Origin</dt><dd>{visiblePickedAtom.atom.sourceAtomId ? `Source atom ${visiblePickedAtom.atom.sourceAtomId}` :
-                `Generated ${visiblePickedAtom.atom.generatedComponentRole ?? visiblePickedAtom.atom.role}`}</dd>
-              {visiblePickedAtom.atom.sourceResidue && <><dt>Source residue</dt><dd>Model {visiblePickedAtom.atom.sourceResidue.model} · chain {visiblePickedAtom.atom.sourceResidue.chain} · residue {visiblePickedAtom.atom.sourceResidue.residue}{visiblePickedAtom.atom.sourceResidue.insertionCode} · copy {visiblePickedAtom.atom.sourceResidue.copyId}</dd></>}
-              {visiblePickedAtom.atom.generatedSpeciesId && <><dt>Species</dt><dd>{visiblePickedAtom.atom.generatedSpeciesId}</dd></>}
-              {visiblePickedAtom.atom.physicalSide && <><dt>Physical leaflet</dt><dd>{visiblePickedAtom.atom.physicalSide}</dd></>}
-              {visiblePickedAtom.atom.approvedChangeId && <><dt>Approved change</dt><dd>{visiblePickedAtom.atom.approvedChangeId}</dd></>}
-            </dl>
-            <p className="help-text">Identity is resolved against this exact host-bound coordinate row and correspondence. Selecting it does not change the molecular model or assessment.</p>
-          </> : <p className="help-text">{pickMessage}</p>}
+            <p className="inspection-selection-name">{visiblePickedAtom.atom.sourceResidue
+              ? `${pickedLocation?.residueName ?? 'Residue'} ${visiblePickedAtom.atom.sourceResidue.residue}${visiblePickedAtom.atom.sourceResidue.insertionCode} · chain ${visiblePickedAtom.atom.sourceResidue.chain}`
+              : `${pickedLocation?.residueName ?? visiblePickedAtom.atom.generatedSpeciesId ?? visiblePickedAtom.atom.moleculeRole} · ${visiblePickedAtom.atom.moleculeRole}`}</p>
+            {pickedLocation?.atomLevel && <p className="inspection-selection-atom tabular">Atom {visiblePickedAtom.atom.resultAtomId} · {visiblePickedAtom.atom.element}</p>}
+            <p className="help-text">{localInspection ? 'Local atomic surroundings · 5 Å display extent. Contact aids are off until shown in Components.'
+              : 'Selected in the whole-system view. Use Inspect locally to reveal atomic surroundings.'}</p>
+            <div className="button-row inspection-selection-actions">
+              <button className="button primary compact" type="button" disabled={localInspection} onClick={() => setLocalInspection(true)}>Inspect locally</button>
+              <button className="button compact" type="button" onClick={() => clearSelection(localInspection)}>Clear selection</button>
+            </div>
+            <details className="inspection-correspondence"><summary>Exact coordinate correspondence</summary>
+              <dl className="detail-grid">
+                <dt>Coordinate atom</dt><dd className="tabular">{visiblePickedAtom.atom.resultAtomId}</dd>
+                <dt>Role</dt><dd>{visiblePickedAtom.atom.moleculeRole} · {visiblePickedAtom.atom.atomRole} · {visiblePickedAtom.atom.element}</dd>
+                <dt>Origin</dt><dd>{visiblePickedAtom.atom.sourceAtomId ? `Source atom ${visiblePickedAtom.atom.sourceAtomId}` :
+                  `Generated ${visiblePickedAtom.atom.generatedComponentRole ?? visiblePickedAtom.atom.role}`}</dd>
+                {visiblePickedAtom.atom.sourceResidue && <><dt>Source residue</dt><dd>Model {visiblePickedAtom.atom.sourceResidue.model} · chain {visiblePickedAtom.atom.sourceResidue.chain} · residue {visiblePickedAtom.atom.sourceResidue.residue}{visiblePickedAtom.atom.sourceResidue.insertionCode} · copy {visiblePickedAtom.atom.sourceResidue.copyId}</dd></>}
+                {visiblePickedAtom.atom.generatedSpeciesId && <><dt>Species</dt><dd>{visiblePickedAtom.atom.generatedSpeciesId}</dd></>}
+                {visiblePickedAtom.atom.physicalSide && <><dt>Physical leaflet</dt><dd>{visiblePickedAtom.atom.physicalSide}</dd></>}
+                {visiblePickedAtom.atom.approvedChangeId && <><dt>Approved change</dt><dd>{visiblePickedAtom.atom.approvedChangeId}</dd></>}
+              </dl>
+            </details>
+          </> : pickedLocation ? <>
+            <p className="inspection-selection-name">{pickedLocation.residueName ?? pickedLocation.entityKind}{pickedLocation.residueNumber !== null
+              ? ` ${pickedLocation.residueNumber}${pickedLocation.insertionCode}` : ''} · chain {pickedLocation.chain}</p>
+            <p className="inspection-selection-atom">Model {pickedLocation.modelNumber} · {pickedLocation.entityKind}{pickedLocation.atomLevel
+              ? ` · atom ${pickedLocation.atomName} (${pickedLocation.element})` : ''}</p>
+            <p className="help-text">{localInspection ? 'Local atomic surroundings · 5 Å display extent.'
+              : 'Selected from the exact displayed coordinates. Use Inspect locally to reveal atomic surroundings.'}</p>
+            {pickMessage && <p className="inspection-mapping-note">{pickMessage}</p>}
+            <div className="button-row inspection-selection-actions">
+              <button className="button primary compact" type="button" disabled={localInspection} onClick={() => setLocalInspection(true)}>Inspect locally</button>
+              <button className="button compact" type="button" onClick={() => clearSelection(localInspection)}>Clear selection</button>
+            </div>
+          </> : pickMessage ? <>
+            <p className="help-text">{pickMessage}</p>
+            <button className="button compact" type="button" onClick={() => clearSelection(localInspection)}>Clear selection</button>
+          </> : inspection.focusId && inspection.focus ? <>
+            <p className="inspection-selection-name">{inspection.annotations.find(item => item.subjectPartId === inspection.focusId)?.label
+              ?? `Chain ${inspection.focus.authAsymId} · residue ${inspection.focus.authSeqId}`}</p>
+            <p className="help-text">{localInspection ? 'Local atomic surroundings · 5 Å display extent.' : 'Selected finding on this subject.'}</p>
+            <div className="button-row inspection-selection-actions">
+              <button className="button primary compact" type="button" disabled={localInspection} onClick={() => setLocalInspection(true)}>Inspect locally</button>
+              <button className="button compact" type="button" onClick={() => clearSelection(localInspection)}>Clear selection</button>
+            </div>
+          </> : currentStructureStatus?.phase === 'failed' ? <>
+            <p className="inspection-selection-name">Structure unavailable for selection</p>
+            <p className="help-text">{isSourceInspection
+              ? 'Use Retry visualization beside the selected source. Its identity and evidence remain available.'
+              : 'The identified subject remains available in its evidence account.'}</p>
+          </> : currentStructureStatus?.phase === 'loading' ? <>
+            <p className="inspection-selection-name">Loading structure…</p>
+            <p className="help-text">Selection becomes available when the coordinates display.</p>
+          </> : <><p className="inspection-selection-name">No residue selected</p>
+            <p className="help-text">Click a visible molecule to identify it.</p></>}
+          <p className="help-text">Selection and display do not alter coordinates, retained chemistry or scientific standing.</p>
         </section>}
         {(inspection.findings.length > 0 || inspection.evidence.length > 0) &&
           <section className="evidence-section inspection-connected-account" aria-label="Selected subject findings and evidence">
@@ -1059,7 +1681,7 @@ export function ConnectedStructuralInspection({
                 <span className="tabular">Evidence {item.id} · Subject {item.subjectId}</span>
               </div>)}
           </section>}
-        {currentSourceContext && !executionReview && <section className="account-card source-account" aria-label="Source and assembly">
+        {currentSourceContext && !isSourceInspection && !executionReview && <section className="account-card source-account" aria-label="Source and assembly">
           <h2>Source and assembly</h2>
           <dl className="detail-grid">
             <dt>Source</dt><dd>{state.study!.selectedSourceId}</dd>
@@ -1093,7 +1715,7 @@ export function ConnectedStructuralInspection({
               onClick={() => onSelectFocus(affectedAnnotation.id)}>{inspection.focusId === affectedAnnotation.subjectPartId ? 'Affected region selected' : 'Focus affected region in structure'}</button></div>}
           </section>
         </>}
-        {inspection.focusId && <div className="button-row"><button className="button compact" type="button" disabled={!canSelectFocus} onClick={() => onSelectFocus(null)}>Clear selected part</button></div>}
+        {inspection.focusId && <div className="button-row"><button className="button compact" type="button" disabled={!canSelectFocus} onClick={() => clearSelection(localInspection)}>Clear selected part</button></div>}
         {inspection.annotations.length > 0 && <section className="evidence-section">
           <h2>Located evidence and findings</h2>
           <div className="annotation-list">
@@ -1142,6 +1764,7 @@ export function ConnectedStructuralInspection({
           <strong>{finding.disposition} · {finding.consequence}</strong><span>{finding.meaning}</span>
         </div>)}
       </section>}
+      </>}
       </div>
       {proposalDecision}
     </aside>

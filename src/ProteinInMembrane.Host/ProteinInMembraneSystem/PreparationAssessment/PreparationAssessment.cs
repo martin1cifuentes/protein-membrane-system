@@ -293,11 +293,8 @@ public sealed class PreparationAssessment
                     item.MaximumNearestDistanceAngstrom is double maximum2 && minimum2 > maximum2))
             return false;
         return rules.Any(item => item.StageKind == kind &&
-            item.FirstMoleculeRole == MoleculeRoleKind.Protein && item.SecondMoleculeRole == MoleculeRoleKind.Lipid &&
-            item.MinimumPairsWithinSearchRadius > 0 &&
-            item.MaximumNearestDistanceAngstrom is double maximum &&
-            double.IsFinite(maximum) && maximum > 0 &&
-            maximum <= policy.LocalStateObservation.ContactSearchRadiusAngstrom);
+            item.FirstMoleculeRole == MoleculeRoleKind.Protein &&
+            item.SecondMoleculeRole == MoleculeRoleKind.Lipid);
     }
 
     private static bool ContactRulesMet(StageKind kind, LocalStateObservations observed,

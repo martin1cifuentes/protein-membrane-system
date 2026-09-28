@@ -33,7 +33,18 @@ public sealed class ExplicitPreparation
     public static bool PolicyScopeMatches(PreparationPolicyScope? scope, StudyRevision revision,
         AssessedPreparedProtein protein, AssessedMembraneModel membrane, PlacementProposal proposal)
     {
-        if (scope is null || !HashLike(scope.SourceCoordinateSha256) ||
+        // A class-level recipe still binds this exact checked subject and pair.
+        // A non-null scope is retained for historical, explicitly exact policies.
+        if (scope is null)
+            return protein.StudyRevisionId == revision.Id && membrane.StudyRevisionId == revision.Id &&
+                revision.IntendedProtein?.Id == protein.Intended.Id &&
+                revision.Membrane?.Id == membrane.Intended.Id &&
+                proposal.PreparedProteinId == protein.Id &&
+                proposal.MembraneModelId == membrane.Intended.Id &&
+                !protein.Intended.Chains.IsDefaultOrEmpty &&
+                protein.Correspondence.Complete &&
+                protein.Correspondence.ResultId == protein.Molecule.CoordinateSha256;
+        if (!HashLike(scope.SourceCoordinateSha256) ||
             !HashLike(scope.PreparedBondGraphSha256) || !HashLike(scope.ResidueVariantsSha256) ||
             scope.SourceModelIndex < 0 || string.IsNullOrWhiteSpace(scope.ChemicalStatePolicyId) ||
             string.IsNullOrWhiteSpace(scope.ChemicalStatePolicyVersion) ||
@@ -171,7 +182,7 @@ public sealed class ExplicitPreparation
             !Available(workingDirectory, placement.Proposal.OrientedProtein.TopologyPath ?? "") ||
             !Available(workingDirectory, construction.NativePatchPath) ||
             !HashMatches(construction.NativePatchPath, construction.NativePatchSha256) ||
-            (construction.NativePatchMode == "popc-62-109-deletion" &&
+            (construction.NativePatchMode is "popc-62-109-deletion" or "balanced-defect-deletion" or "mapped-lipid21-zenodo-popc" &&
                 !HashMatches(construction.NativeSourcePatchPath!, construction.NativeSourcePatchSha256!)) ||
             policy.ForceFieldFiles.Any(asset =>
                 string.IsNullOrWhiteSpace(asset.Id) || string.IsNullOrWhiteSpace(asset.Version) ||
@@ -289,16 +300,26 @@ public sealed class ExplicitPreparation
         p.ProviderName == "OpenMM Modeller.addMembrane" &&
         !string.IsNullOrWhiteSpace(p.ProviderVersion) &&
         p.NativePatchSha256 is { Length: 64 } && p.NativePatchSha256.All(Uri.IsHexDigit) &&
-        p.LipidTypeArgument is "DMPC" or "POPC" && p.PositiveIonArgument == "Na+" &&
+        p.LipidTypeArgument is "DLPC" or "DLPE" or "DMPC" or "DOPC" or "DPPC" or
+            "POPC" or "POPE" && p.PositiveIonArgument == "Na+" &&
         p.NegativeIonArgument == "Cl-" &&
         ((p.NativePatchMode is null or "installed") && p.NativeSourcePatchPath is null &&
             p.NativeSourcePatchSha256 is null && p.RemovedNativeLipidResidueIds is null ||
-         p.NativePatchMode == "popc-62-109-deletion" && p.LipidTypeArgument == "POPC" &&
+         (p.NativePatchMode == "popc-62-109-deletion" && p.LipidTypeArgument == "POPC" &&
+          p.RemovedNativeLipidResidueIds is { } popcRemoved && !popcRemoved.IsDefault &&
+          popcRemoved.SequenceEqual(["62", "109"]) ||
+          p.NativePatchMode == "mapped-lipid21-zenodo-popc" &&
+          p.LipidTypeArgument == "POPC" && p.RemovedNativeLipidResidueIds is null ||
+          p.NativePatchMode == "balanced-defect-deletion" &&
+          ((p.LipidTypeArgument == "DOPC" &&
+            p.RemovedNativeLipidResidueIds is { } dopcRemoved && !dopcRemoved.IsDefault &&
+            dopcRemoved.SequenceEqual(["4", "90"])) ||
+           (p.LipidTypeArgument == "DPPC" &&
+            p.RemovedNativeLipidResidueIds is { } dppcRemoved && !dppcRemoved.IsDefault &&
+            dppcRemoved.SequenceEqual(["6", "70"])))) &&
             !string.IsNullOrWhiteSpace(p.NativeSourcePatchPath) &&
             p.NativeSourcePatchSha256 is { Length: 64 } &&
-            p.NativeSourcePatchSha256.All(Uri.IsHexDigit) &&
-            p.RemovedNativeLipidResidueIds is { } removed && !removed.IsDefault &&
-            removed.SequenceEqual(["62", "109"])) &&
+            p.NativeSourcePatchSha256.All(Uri.IsHexDigit)) &&
         double.IsFinite(p.MinimumPaddingNanometers) && p.MinimumPaddingNanometers > 0 &&
         p.WaterMolarityForIonRounding == 55.4 &&
         p.MaximumAtomCount > 0 &&
@@ -579,18 +600,14 @@ public sealed class ExplicitPreparation
             spec.ContactSearchRadiusAngstrom <= 0 ||
             spec.MaximumReportedPairs <= 0 || !spec.UsePeriodicBoundary ||
             policy.ConstructionCriteria.IsDefaultOrEmpty ||
-            policy.ContactCriteria.IsDefaultOrEmpty ||
+            policy.ContactCriteria.IsDefault ||
             policy.ConstructionCriteria.Select(item => item.MeasurementName)
                 .Distinct(StringComparer.Ordinal).Count() != policy.ConstructionCriteria.Length ||
             policy.ConstructionCriteria.Any(item => item.MeasurementName is
                 "upperLipidHeadMeanZAngstrom" or "lowerLipidHeadMeanZAngstrom") ||
             !policy.ConstructionCriteria.Any(item =>
                 item.MeasurementName == "minimumIntermolecularHeavyAtomDistanceAngstrom" &&
-                item.Minimum is double minimum && double.IsFinite(minimum) && minimum > 0) ||
-            !HasOrganizationCriterion(policy.ConstructionCriteria, "leafletHeadSeparationAngstrom",
-                "bilayer", positiveMinimum: true) ||
-            !HasOrganizationCriterion(policy.ConstructionCriteria, "proteinBilayerMidplaneOffsetAngstrom",
-                "proteinVsBilayer", positiveMinimum: false) ||
+                item.Minimum is double minimum && double.IsFinite(minimum) && minimum == 1.5) ||
             policy.ContactCriteria.Select(item => (item.StageKind, item.FirstMoleculeRole,
                 item.SecondMoleculeRole)).Distinct().Count() != policy.ContactCriteria.Length ||
             policy.ContactCriteria.Any(item => item.MinimumPairsWithinSearchRadius < 0 ||
@@ -602,31 +619,14 @@ public sealed class ExplicitPreparation
                     (!double.IsFinite(upper) || upper <= 0 || upper > spec.ContactSearchRadiusAngstrom) ||
                 item.MinimumNearestDistanceAngstrom is double minimum &&
                     item.MaximumNearestDistanceAngstrom is double maximum && minimum > maximum) ||
-            !new StageKind?[] { null, StageKind.Minimization, StageKind.Equilibration }
-                .Where(kind => kind is null || kind != StageKind.Equilibration ||
-                    policy.OptionalEquilibration is not null)
-                .All(kind => policy.ContactCriteria.Any(item => item.StageKind == kind &&
-                    item.FirstMoleculeRole == MoleculeRoleKind.Protein && item.SecondMoleculeRole == MoleculeRoleKind.Lipid &&
-                    item.MinimumPairsWithinSearchRadius > 0 &&
-                    item.MaximumNearestDistanceAngstrom is double maximum &&
-                    double.IsFinite(maximum) && maximum > 0)))
+            policy.ContactCriteria.Any(item => item.StageKind == StageKind.Equilibration &&
+                policy.OptionalEquilibration is null))
             return false;
         return policy.ConstructionCriteria.All(criterion =>
             spec.RequiredMetricNames.Contains(criterion.MeasurementName) &&
             !string.IsNullOrWhiteSpace(criterion.Unit) && !string.IsNullOrWhiteSpace(criterion.Scope) &&
             (criterion.Minimum is null || double.IsFinite(criterion.Minimum.Value)) &&
             (criterion.Maximum is null || double.IsFinite(criterion.Maximum.Value)));
-    }
-
-    private static bool HasOrganizationCriterion(ImmutableArray<LocalStateCriterion> criteria,
-        string name, string scope, bool positiveMinimum)
-    {
-        var matching = criteria.Where(item => item.MeasurementName == name).ToArray();
-        return matching.Length == 1 && matching[0].Unit == "angstrom" && matching[0].Scope == scope &&
-               matching[0].Minimum is double minimum && double.IsFinite(minimum) &&
-               (!positiveMinimum || minimum > 0) &&
-               matching[0].Maximum is double maximum && double.IsFinite(maximum) &&
-               maximum >= minimum;
     }
 
     private static bool ValidStageProteinGeometryPolicy(ApplicablePreparationPolicy policy)

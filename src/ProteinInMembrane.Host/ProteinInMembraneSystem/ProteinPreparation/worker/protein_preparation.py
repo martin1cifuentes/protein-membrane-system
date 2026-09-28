@@ -84,6 +84,17 @@ def _residue_kind(residue: Any, peptide_subchains: set[str]) -> str:
     return "unknown"
 
 
+def _partner_name(residue: Any, entities: Any) -> str:
+    # mmCIF may identify a nonpolymer by a descriptive entity name. PDB input
+    # usually has only the component code; keep that code when no name exists.
+    if residue.name == "HEM":
+        return "Heme"
+    for entity in entities:
+        if residue.subchain in entity.subchains and entity.name and entity.name != residue.name:
+            return entity.name
+    return residue.name
+
+
 def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     import gemmi
 
@@ -132,7 +143,9 @@ def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable)
                     partners.append({"sourceId": f"{index}:{chain.name}:{residue.seqid.num}:{_icode(residue.seqid.icode)}:{residue.name}",
                                      "label": residue.name, "kind": "nonpolymer",
                                      "atomCount": len(residue), "chain": chain.name,
-                                     "residue": int(residue.seqid.num)})
+                                     "residue": int(residue.seqid.num),
+                                     "insertionCode": _icode(residue.seqid.icode),
+                                     "displayName": _partner_name(residue, structure.entities)})
         assemblies = []
         for assembly in structure.assemblies:
             expanded = gemmi.make_assembly(assembly, model, gemmi.HowToNameCopiedChain.AddNumber)
@@ -142,7 +155,8 @@ def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable)
                 origin = _assembly_copy_origin(copy.name, source_names)
                 copies.append({"sourceChain": origin, "copyId": copy.name})
             assemblies.append({"name": assembly.name, "chainCopies": copies})
-        model_summaries.append({"index": index, "chains": chains,
+        model_summaries.append({"index": index, "sourceModelId": str(model.num) if model.num > 0 else None,
+                                "chains": chains,
                                 "assemblies": assemblies, "partners": partners, "residues": residues,
                                 "atomCount": sum(c["atomCount"] for c in chains)})
     if total_atoms > max_atoms:
@@ -161,6 +175,52 @@ def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable)
         },
         "provider": {"name": "Gemmi", "version": __import__("gemmi").__version__},
     }
+
+
+def preview_source_model(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
+    """Render one exact model/assembly without selecting preparation membership."""
+    import gemmi
+
+    path = work_path(directory, payload.get("sourcePath"), "sourcePath")
+    verify_sha256(path, require_text(payload.get("sourceSha256"), "sourceSha256"), "sourceSha256")
+    source = _open_structure(path)
+    index = require_integer(payload.get("modelIndex"), "modelIndex", 0)
+    if index >= len(source):
+        raise WorkError("invalidSelection", "The requested source coordinate model is absent")
+    assembly_id = payload.get("assemblyId")
+    if assembly_id is not None:
+        assembly_id = require_text(assembly_id, "assemblyId")
+        assembly = next((item for item in source.assemblies if item.name == assembly_id), None)
+        if assembly is None:
+            raise WorkError("invalidSelection", "The requested biological assembly is absent")
+        model = gemmi.make_assembly(assembly, source[index], gemmi.HowToNameCopiedChain.AddNumber)
+    else:
+        model = source[index]
+    chain_ids = [chain.name for chain in model]
+    if not chain_ids or len(set(chain_ids)) != len(chain_ids):
+        raise WorkError("ambiguousAssembly", "The displayed chain copies are not individually identifiable")
+    atom_count = sum(len(residue) for chain in model for residue in chain)
+    max_atoms = require_integer(payload.get("maxAtoms"), "maxAtoms", 1)
+    if atom_count <= 0 or atom_count > max_atoms:
+        raise WorkError("resourceRefused", "The exact model or assembly exceeds the source-preview atom bound")
+    preview = gemmi.Structure()
+    preview.name = source.name
+    preview.cell = source.cell
+    preview.add_model(model)
+    preview.setup_entities()
+    output = directory / "source-preview.cif"
+    if output.exists():
+        raise WorkError("invalidPath", "The source preview would overwrite an earlier artifact")
+    preview.make_mmcif_document().write_file(str(output))
+    readback = _open_structure(output)
+    if len(readback) != 1 or [chain.name for chain in readback[0]] != chain_ids or \
+            sum(len(residue) for chain in readback[0] for residue in chain) != atom_count:
+        raise WorkError("providerMismatch", "The source preview did not retain exact model and copy membership")
+    progress("sourcePreviewObserved", {"atomCount": atom_count})
+    return {"artifacts": [artifact(directory, output, "sourcePreviewCif")],
+            "observations": {"modelIndex": index, "assemblyId": assembly_id,
+                             "chainIds": chain_ids, "atomCount": atom_count},
+            "provider": {"name": "Gemmi", "version": gemmi.__version__}}
 
 
 def _selected_structure(source: Any, payload: dict[str, Any]):
@@ -530,6 +590,15 @@ def inspect_preparation_changes(directory: Path, payload: dict[str, Any], progre
 
 
 def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
+    if payload.get("planSeed") is not None:
+        import random
+        import numpy as np
+
+        seed = require_integer(payload["planSeed"], "planSeed")
+        if seed < 0 or seed > 2**32 - 1:
+            raise WorkError("invalidRequest", "planSeed exceeds the bounded 32-bit range")
+        random.seed(seed)
+        np.random.seed(seed)
     from openmm.app import ForceField, Modeller, PDBFile
     from ProteinInMembraneSystem.worker.geometry_observations import observe_protein_geometry
 
@@ -550,6 +619,20 @@ def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable
     selected_hydrogens = {(chain.name, int(residue.seqid.num), _icode(residue.seqid.icode), atom.name)
                           for chain in selected[0] for residue in chain for atom in residue
                           if atom.element.name in {"H", "D"}}
+    normalize_protein_hydrogens = payload.get("normalizeProteinHydrogens", False)
+    if not isinstance(normalize_protein_hydrogens, bool):
+        raise WorkError("invalidRequest", "normalizeProteinHydrogens must be a boolean")
+    normalized_source_hydrogens = (selected_hydrogens - {
+        key for key in selected_hydrogens if key[:3] in retained_partner_residues
+    }) if normalize_protein_hydrogens else set()
+    if normalized_source_hydrogens:
+        for chain in selected[0]:
+            for residue in chain:
+                for index in range(len(residue) - 1, -1, -1):
+                    atom = residue[index]
+                    key = (chain.name, int(residue.seqid.num), _icode(residue.seqid.icode), atom.name)
+                    if key in normalized_source_hydrogens:
+                        del residue[index]
     selected_path = directory / "selected-protein.pdb"
     selected.write_pdb(str(selected_path))
     progress("selectedStructure", {"chainCount": len(chain_map)})
@@ -600,7 +683,7 @@ def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable
         source_id = None
         role = "generated"
         approval_id = approved.get(key)
-        if key in selected_atoms:
+        if key in selected_atoms and key not in normalized_source_hydrogens:
             source_id = f"{address['residue']['model']}:{address['residue']['chain']}:{address['residue']['copyId']}:{key[1]}:{key[2]}:{key[3]}"
             role = "source"
             approval_id = None
@@ -622,8 +705,8 @@ def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable
     if lost_heavy:
         raise WorkError("correspondenceFailed", "Protein preparation lost selected heavy atoms",
                         {"missing": [list(key) for key in sorted(lost_heavy)]})
-    removed_hydrogens = selected_hydrogens - set(prepared_atoms)
-    added_hydrogens = after_hydrogen - selected_hydrogens
+    removed_hydrogens = normalized_source_hydrogens | (selected_hydrogens - set(prepared_atoms))
+    added_hydrogens = after_hydrogen - (selected_hydrogens - normalized_source_hydrogens)
     mapping_path = directory / "protein-correspondence.json"
     mapping_path.write_text(json.dumps({
         "sourceId": sha256(source_path), "resultId": sha256(prepared_path),

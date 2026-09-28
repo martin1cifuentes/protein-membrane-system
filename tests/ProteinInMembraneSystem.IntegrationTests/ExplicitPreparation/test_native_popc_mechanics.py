@@ -115,7 +115,7 @@ class NativePopcMechanics(unittest.TestCase):
         self.assertEqual(payload["nativePatchSha256"], observed_sha)
         for changed, reason in ((dict(payload, nativePatchSha256="0" * 64), "inputMismatch"),
                                 (dict(payload, nativePatchPath=str(self.reference_path)), "providerMismatch"),
-                                (dict(payload, lipidTypeArgument="POPE"), "unsupportedPolicy")):
+                                (dict(payload, lipidTypeArgument="POPE"), "providerMismatch")):
             with self.subTest(changed=changed), self.assertRaises(WorkError) as refused:
                 _native_provider_identity(changed)
             self.assertEqual(reason, refused.exception.code)

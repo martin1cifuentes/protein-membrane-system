@@ -21,7 +21,7 @@ public sealed partial class ProteinPreparationRouteTests
             new ResidueAddress(0, "A", 3, "", "A"));
 
     [Fact]
-    public async Task Exact_source_and_bond_graph_witness_supports_measured_placement_without_a_prepared_coordinate_digest()
+    public async Task Measured_exact_placement_passes_technical_checks_without_biological_witness_support()
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
@@ -47,22 +47,22 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal(PlacementPhysicalSide.Both, account.PhysicalSide);
         Assert.Equal(0, account.MidplaneAngstrom);
         Assert.Equal(20, account.ThicknessAngstrom);
-        Assert.Contains(account.Evidence, evidence => evidence.Bearing == EvidenceBearing.Supports);
+        Assert.Contains(account.Evidence, evidence => evidence.Method == "Measured placement geometry" &&
+            evidence.Bearing == EvidenceBearing.Context);
+        Assert.DoesNotContain(account.Evidence, evidence => evidence.Bearing == EvidenceBearing.Supports);
         Assert.Contains(account.ContactingRegions, region => region.Contains("A[A]:2", StringComparison.Ordinal));
         Assert.Single(worker.PpmRequests);
         Assert.Single(worker.MeasurementRequests);
         Assert.Equal(worker.PreparedHash, worker.PpmRequests[0].Payload.PreparedSha256);
         Assert.Equal(worker.OrientedHash, worker.MeasurementRequests[0].Payload.OrientedPdbSha256);
 
-        var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
-            new { subjectId = account.ProposalId });
-        Assert.True(inspected.Established, inspected.Reason);
-        Assert.Equal(account.ProposalId, inspected.Value!.Inspection!.SubjectId);
-        Assert.NotEmpty(inspected.Value.Inspection.Annotations);
-        Assert.NotEmpty(inspected.Value.Inspection.Metrics);
+        Assert.Equal(account.ProposalId, proposed.Value.Inspection!.SubjectId);
+        Assert.NotEmpty(proposed.Value.Inspection.Annotations);
+        Assert.NotEmpty(proposed.Value.Inspection.Metrics);
         var adopted = await Command(product, ActorActionKind.AdoptPlacement,
             new { proposalId = account.ProposalId });
         Assert.True(adopted.Established, adopted.Reason);
+        Assert.Equal(account.ProposalId, adopted.Value!.Inspection!.SubjectId);
         Assert.NotEqual(before.Study!.Id, adopted.Value!.Study!.Id);
         Assert.Equal(account.ProposalId, adopted.Value.Study.AdoptedPlacementProposalId);
         Assert.Equal(account.ProposalId, adopted.Value.Placement!.ProposalId);
@@ -138,16 +138,69 @@ public sealed partial class ProteinPreparationRouteTests
         var attempted = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
         Assert.True(attempted.Established, attempted.Reason);
         Assert.Null(attempted.Value!.Placement);
+        Assert.Equal("noProposal", attempted.Value.PlacementTask?.Standing);
+        Assert.Contains("orientation failed", attempted.Value.PlacementTask?.Message,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Single(worker.PpmRequests);
         Assert.Contains(attempted.Value.Notices, notice =>
             notice.Message.Contains("orientation failed", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task Pending_orientation_and_failed_new_position_keep_truthful_task_and_previous_proposal()
+    {
+        using var directory = new TemporaryDirectory();
+        var entered = new TaskCompletionSource<ScientificWorkRequest<PlacementPayload>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource<WorkerResult<PlacementObservations>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = new PlacementRouteWorker
+        {
+            PpmResponseAsync = (request, _) =>
+            {
+                entered.TrySetResult(request);
+                return released.Task;
+            }
+        };
+        var product = PlacementProduct(directory.Path, worker);
+        await EstablishProteinAndMembrane(product);
+        var pending = Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
+        var request = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("obtaining", product.Snapshot().PlacementTask?.Standing);
+        Assert.Null(product.Snapshot().Placement);
+        Assert.Contains(product.Snapshot().Actions, action =>
+            action.Kind == ActorActionKind.ProposePlacement && !action.Enabled);
+        released.SetResult(new WorkerResult<PlacementObservations>(request.RequestId,
+            request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Failed,
+            ImmutableArray<WorkerArtifact>.Empty, null, null, "orientationFailed",
+            "The controlled orientation failed without an output."));
+        var failed = await pending;
+        Assert.True(failed.Established, failed.Reason);
+        Assert.Equal("noProposal", failed.Value!.PlacementTask?.Standing);
+        Assert.Null(failed.Value.Placement);
+
+        using var secondDirectory = new TemporaryDirectory();
+        var secondWorker = new PlacementRouteWorker { FailSecondPpm = true };
+        var secondProduct = PlacementProduct(secondDirectory.Path, secondWorker);
+        await EstablishProteinAndMembrane(secondProduct);
+        var first = await Command(secondProduct, ActorActionKind.ProposePlacement, PlacementChoice());
+        Assert.Equal("supported", first.Value!.Placement?.Status);
+        var priorId = first.Value.Placement!.ProposalId;
+        var second = await Command(secondProduct, ActorActionKind.ProposePlacement, PlacementChoice());
+        Assert.True(second.Established, second.Reason);
+        Assert.Equal(priorId, second.Value!.Placement?.ProposalId);
+        Assert.Equal("supported", second.Value.Placement?.Status);
+        Assert.Equal("supported", second.Value.PlacementTask?.Standing);
+        Assert.Contains("orientation failed", second.Value.PlacementTask?.LatestAttemptIssue,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
-    [InlineData(0, "No placement support policy")]
-    [InlineData(2, "ambiguous placement support policies")]
-    public async Task Absent_or_ambiguous_placement_policy_cannot_promote_a_measured_candidate(
-        int policyCopies, string expectedReason)
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Absent_or_ambiguous_biological_policy_does_not_block_a_technically_checked_position(
+        int policyCopies)
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
@@ -155,10 +208,11 @@ public sealed partial class ProteinPreparationRouteTests
         await EstablishProteinAndMembrane(product);
         var proposed = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
         Assert.True(proposed.Established, proposed.Reason);
-        Assert.Equal("notEstablished", proposed.Value!.Placement!.Status);
-        Assert.Contains(expectedReason, proposed.Value.Placement.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("supported", proposed.Value!.Placement!.Status);
+        Assert.Contains("technical position checks", proposed.Value.Placement.Reason,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Single(worker.MeasurementRequests);
-        Assert.DoesNotContain(proposed.Value.Actions, action =>
+        Assert.Contains(proposed.Value.Actions, action =>
             action.Kind == ActorActionKind.AdoptPlacement && action.Enabled);
     }
 
@@ -176,8 +230,7 @@ public sealed partial class ProteinPreparationRouteTests
         var revised = await Command(product, ActorActionKind.RevisePlacement, new
         {
             proposalId = priorId, depthShiftAngstrom = 1.0, tiltAboutXDegrees = 0.0,
-            tiltAboutYDegrees = 0.0, rotationAboutNormalDegrees = 0.0,
-            rationale = "Reobserve the upper interface after a bounded shift."
+            tiltAboutYDegrees = 0.0, rotationAboutNormalDegrees = 0.0
         });
         Assert.True(revised.Established, revised.Reason);
         Assert.NotEqual(priorId, revised.Value!.Placement!.ProposalId);
@@ -192,14 +245,14 @@ public sealed partial class ProteinPreparationRouteTests
     }
 
     [Fact]
-    public async Task Changed_ppm_residue_library_disables_local_route_before_worker_invocation()
+    public async Task Changed_ppm_residue_library_blocks_optional_ppm_without_disabling_other_placement()
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
         var product = PlacementProduct(directory.Path, worker);
         await EstablishProteinAndMembrane(product);
         File.AppendAllText(Path.Combine(directory.Path, "res.lib"), "changed");
-        Assert.DoesNotContain(product.Snapshot().Actions, action =>
+        Assert.Contains(product.Snapshot().Actions, action =>
             action.Kind == ActorActionKind.ProposePlacement && action.Enabled);
 
         var refused = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
@@ -365,7 +418,7 @@ public sealed partial class ProteinPreparationRouteTests
     }
 
     [Fact]
-    public async Task Changed_biological_sidedness_creates_a_new_unwitnessed_proposal()
+    public async Task Changed_biological_sidedness_creates_a_new_technically_checked_proposal()
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
@@ -380,7 +433,7 @@ public sealed partial class ProteinPreparationRouteTests
                 biologicalSidedness = "periplasmic upper", ppmNterminalSide = "out" });
         Assert.True(changed.Established, changed.Reason);
         Assert.NotEqual(priorId, changed.Value!.Placement!.ProposalId);
-        Assert.Equal("notEstablished", changed.Value.Placement.Status);
+        Assert.Equal("supported", changed.Value.Placement.Status);
         Assert.Null(changed.Value.Placement.WitnessId);
         Assert.Equal("supported", positioned.Value.Placement.Status);
         Assert.Equal(2, worker.PpmRequests.Count);
@@ -424,7 +477,10 @@ public sealed partial class ProteinPreparationRouteTests
                 chains = new[] { new { sourceChain = "A", copyId = "A" } },
                 partners, alternateLocations = Array.Empty<object>() });
         Assert.True(protein.Established, protein.Reason);
-        Assert.Equal("assessed", protein.Value!.Protein!.Status);
+        Assert.Equal("review", protein.Value!.Protein!.Status);
+        var prepared = await Command(product, ActorActionKind.StartProteinPreparation, new { });
+        Assert.True(prepared.Established, prepared.Reason);
+        Assert.Equal("assessed", prepared.Value!.Protein!.Status);
         var proposed = await Command(product, ActorActionKind.ProposeMembrane,
             new { upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
                 lower = new[] { new { speciesId = "POPC", fraction = 1.0 } },
@@ -510,10 +566,19 @@ public sealed partial class ProteinPreparationRouteTests
 
     private sealed class PlacementRouteWorker : IScientificWorkerExchange
     {
+        public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+            ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<ManualPlacementObservations>>(new NotSupportedException());
+        public Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+            ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<SourcePreviewObservations>>(new NotSupportedException());
         public bool IncludePartner { get; init; }
         public bool FailMeasurement { get; init; }
         public bool FailSecondMeasurement { get; init; }
         public bool FailPpm { get; init; }
+        public bool FailSecondPpm { get; init; }
+        public Func<ScientificWorkRequest<PlacementPayload>, CancellationToken,
+            Task<WorkerResult<PlacementObservations>>>? PpmResponseAsync { get; init; }
         public string PreparedHash { get; private set; } = "";
         public string PreparedPath { get; private set; } = "";
         public string OrientedHash { get; private set; } = "";
@@ -595,7 +660,8 @@ public sealed partial class ProteinPreparationRouteTests
             ScientificWorkRequest<PlacementPayload> request, CancellationToken cancellationToken)
         {
             PpmRequests.Add(request);
-            if (FailPpm)
+            if (PpmResponseAsync is not null) return PpmResponseAsync(request, cancellationToken);
+            if (FailPpm || FailSecondPpm && PpmRequests.Count > 1)
                 return Task.FromResult(new WorkerResult<PlacementObservations>(request.RequestId,
                     request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Failed,
                     ImmutableArray<WorkerArtifact>.Empty, null, null, "orientationFailed",

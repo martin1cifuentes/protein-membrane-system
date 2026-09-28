@@ -65,7 +65,7 @@ public sealed class MembraneModelAssessmentOwnerTests
     }
 
     [Fact]
-    public async Task Same_model_id_with_changed_purpose_or_leaflet_is_not_the_adopted_revision_choice()
+    public async Task Same_model_id_with_changed_leaflet_is_not_the_adopted_revision_choice_but_legacy_purpose_is_annotation()
     {
         var worker = new MembraneWorkerStub(request => Observed(request, Observation("POPC", 134)));
         var owner = new MembraneOwner(worker);
@@ -90,19 +90,19 @@ public sealed class MembraneModelAssessmentOwnerTests
                     new LipidFraction("DOPC", 0.5)))
         };
 
-        foreach (var replacement in new[] { changedPurpose, changedLeaflet })
-        {
-            var result = await owner.AssessAsync(Revision(adopted), replacement,
-                Catalogue(), Policy(), "/tmp/membrane-unit", TestContext.Current.CancellationToken);
-            Assert.False(result.Established);
-            Assert.Contains("study revision", result.Reason);
-        }
+        var annotationOnly = await owner.AssessAsync(Revision(adopted), changedPurpose,
+            Catalogue(), Policy(), "/tmp/membrane-unit", TestContext.Current.CancellationToken);
+        Assert.True(annotationOnly.Established, annotationOnly.Reason);
+        var changed = await owner.AssessAsync(Revision(adopted), changedLeaflet,
+            Catalogue(), Policy(), "/tmp/membrane-unit", TestContext.Current.CancellationToken);
+        Assert.False(changed.Established);
+        Assert.Contains("study revision", changed.Reason);
         var duplicateCounterexample = await owner.AssessAsync(Revision(duplicateAdopted),
             coherentReplacement, Catalogue(), Policy(), "/tmp/membrane-unit",
             TestContext.Current.CancellationToken);
         Assert.False(duplicateCounterexample.Established);
         Assert.Contains("study revision", duplicateCounterexample.Reason);
-        Assert.Empty(worker.Requests);
+        Assert.Single(worker.Requests);
     }
 
     [Fact]

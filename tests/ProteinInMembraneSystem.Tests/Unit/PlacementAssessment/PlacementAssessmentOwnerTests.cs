@@ -168,14 +168,14 @@ public sealed class PlacementAssessmentOwnerTests
     }
 
     [Fact]
-    public async Task Independent_witness_and_policy_can_support_exact_measured_spanning_relationship()
+    public async Task Exact_measured_spanning_relationship_has_contextual_evidence_and_technical_support()
     {
         using var fixture = new PlacementFixture();
         var worker = new PlacementWorkerStub { MeasurementReply = request => Measured(request, fixture) };
         var owner = new PlacementOwner(worker);
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.Equal(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
         var result = Assess(owner, fixture, measured.Value);
         Assert.Equal(AssessmentStanding.Supported, result.Standing);
         Assert.Single(worker.MeasurementRequests);
@@ -189,7 +189,7 @@ public sealed class PlacementAssessmentOwnerTests
     }
 
     [Fact]
-    public void Spanning_assembly_witness_must_cover_each_selected_chain_and_reject_a_reversed_chain()
+    public void Spanning_assembly_witness_does_not_replace_exact_technical_measurement()
     {
         using var fixture = new PlacementFixture();
         var selectedB = new ChainSelection("B", "copy-B");
@@ -229,12 +229,18 @@ public sealed class PlacementAssessmentOwnerTests
         var residues = fixture.Residues.Select(ObservedResidue)
             .Concat(bResidues.Select(ObservedResidue)).ToImmutableArray();
         var report = new PlacementMeasurementReport(proposal.Id,
-            ImmutableArray.Create(new MeasuredValue("atomsWithinCore", 2, "atoms", "oriented protein")),
-            residues, ImmutableArray<ScientificEvidence>.Empty, ImmutableArray<string>.Empty);
+            ImmutableArray.Create(new MeasuredValue("atomsWithinCore", 2, "atoms", "oriented protein"),
+                new MeasuredValue("atomsAboveCore", 2, "atoms", "oriented protein"),
+                new MeasuredValue("atomsBelowCore", 2, "atoms", "oriented protein"),
+                new MeasuredValue("proteinSpan", 30, "Å", "oriented protein")),
+            residues, ImmutableArray.Create(new ScientificEvidence("measured", proposal.Id,
+                "controlled measurement", "Measured placement geometry", "Two observed core atoms",
+                "Exact selected assembly", "Technical coordinates only.", EvidenceBearing.Context)),
+            ImmutableArray<string>.Empty);
         var evidence = ImmutableArray.Create(new ScientificEvidence("witnessed", proposal.Id,
-            "independent published topology", "Independently witnessed placement relationship",
+            "independent published topology", "External topology context",
             "Both chain copies are positioned", $"Selected membrane {fixture.Membrane.Id}",
-            "Evidence applies to this exact assembly and bilayer.", EvidenceBearing.Supports));
+            "Topology context does not qualify this technical position.", EvidenceBearing.Context));
         var owner = new PlacementOwner(new PlacementWorkerStub());
         AssessmentStanding Standing(PlacementStructuralWitness witness, PlacementMeasurementReport measured) =>
             owner.Assess(revision, protein, fixture.Membrane, proposal, fixture.Policy,
@@ -242,7 +248,7 @@ public sealed class PlacementAssessmentOwnerTests
 
         Assert.Equal(AssessmentStanding.Supported, Standing(completeWitness, report));
         var missingBMarkers = completeWitness with { Residues = fixture.Witness.Residues };
-        Assert.Equal(AssessmentStanding.NotEstablished, Standing(missingBMarkers, report));
+        Assert.Equal(AssessmentStanding.Supported, Standing(missingBMarkers, report));
         var reversedB = report with { Residues = residues
             .SetItem(3, residues[3] with
                 { MinZAngstrom = -15, MaxZAngstrom = -15, MeanZAngstrom = -15,
@@ -250,15 +256,10 @@ public sealed class PlacementAssessmentOwnerTests
             .SetItem(5, residues[5] with
                 { MinZAngstrom = 15, MaxZAngstrom = 15, MeanZAngstrom = 15,
                   AtomsAboveCore = 1, AtomsBelowCore = 0 }) };
-        Assert.Equal(AssessmentStanding.NotEstablished, Standing(completeWitness, reversedB));
-
-        var emptySelectionProtein = protein with
-        { Intended = intended with { Chains = ImmutableArray<ChainSelection>.Empty } };
-        var emptySelectionWitness = completeWitness with
-        { ChainCopies = ImmutableArray<ChainSelection>.Empty };
+        Assert.Equal(AssessmentStanding.Supported, Standing(completeWitness, reversedB));
         Assert.Equal(AssessmentStanding.NotEstablished,
-            owner.Assess(revision, emptySelectionProtein, fixture.Membrane, proposal,
-                fixture.Policy, report, emptySelectionWitness, evidence,
+            owner.Assess(revision, protein, fixture.Membrane, proposal,
+                fixture.Policy, null, completeWitness, evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
     }
 
@@ -364,7 +365,7 @@ public sealed class PlacementAssessmentOwnerTests
     }
 
     [Fact]
-    public async Task Independent_exact_witness_can_establish_explicit_membrane_transfer_when_implicit_ppm_transfer_is_disallowed()
+    public async Task Optional_transfer_policy_and_witness_do_not_gate_a_technically_measured_position()
     {
         using var fixture = new PlacementFixture();
         fixture.Policy = fixture.Policy with { AllowsTransferFromPpmDopc = false };
@@ -372,16 +373,16 @@ public sealed class PlacementAssessmentOwnerTests
         var owner = new PlacementOwner(worker);
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.Equal(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
         Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
-        Assert.Equal(AssessmentStanding.NotEstablished,
+        Assert.Equal(AssessmentStanding.Supported,
             owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
                 fixture.Policy, measured.Value, null, measured.Value.Evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
     }
 
     [Fact]
-    public async Task One_surface_witness_needs_the_selected_interface_and_physical_water_side()
+    public async Task One_surface_technical_position_requires_a_measurement_for_its_exact_proposal()
     {
         using var fixture = new PlacementFixture();
         fixture.Proposal = fixture.Proposal with
@@ -418,14 +419,19 @@ public sealed class PlacementAssessmentOwnerTests
         var owner = new PlacementOwner(worker);
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.Equal(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
         Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
-        fixture.Proposal = fixture.Proposal with { PhysicalSide = PlacementPhysicalSide.Lower };
+        fixture.Proposal = fixture.Proposal with
+        {
+            Id = "new-lower-side-proposal", PhysicalSide = PlacementPhysicalSide.Lower,
+            Evidence = fixture.Proposal.Evidence.Select(item => item with
+            { SubjectId = "new-lower-side-proposal" }).ToImmutableArray()
+        };
         Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
     }
 
     [Fact]
-    public async Task Predicted_placement_needs_local_confidence_and_both_directional_pae_regions()
+    public async Task Prediction_regions_are_context_and_do_not_gate_technical_position()
     {
         using var fixture = new PlacementFixture();
         var source = fixture.Protein.Intended.Source;
@@ -459,43 +465,43 @@ public sealed class PlacementAssessmentOwnerTests
         var owner = new PlacementOwner(worker);
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.Equal(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
         Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
         Assert.Single(worker.PredictionRequests);
         Assert.Equal("AF-exact", worker.PredictionRequests[0].Payload.RecordId);
 
         var highPae = measured.Value with { Prediction = measured.Value.Prediction! with
         { SecondAlignedOnFirst = goodDirection with { MaximumAngstrom = 12 } } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, highPae).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, highPae).Standing);
         var highFirstDirection = measured.Value with { Prediction = measured.Value.Prediction! with
         { FirstAlignedOnSecond = goodDirection with { MaximumAngstrom = 12 } } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, highFirstDirection).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, highFirstDirection).Standing);
         var incompletePairs = measured.Value with { Prediction = measured.Value.Prediction! with
         { FirstAlignedOnSecond = goodDirection with { ValidPairCount = 2 } } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, incompletePairs).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, incompletePairs).Standing);
         var completeLocal = fixture.Protein.Prediction!.LocalConfidence;
         fixture.Protein = fixture.Protein with { Prediction = fixture.Protein.Prediction with
         { LocalConfidence = completeLocal.SetItem(0, completeLocal[0] with { PLddt = 60 }) } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
         fixture.Protein = fixture.Protein with { Prediction = fixture.Protein.Prediction! with
         { LocalConfidence = fixture.Protein.Prediction.LocalConfidence.RemoveAt(0) } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
         fixture.Protein = fixture.Protein with { Prediction = fixture.Protein.Prediction! with
         { LocalConfidence = completeLocal } };
         var wrongRecord = measured.Value with { Prediction = measured.Value.Prediction! with { RecordId = "AF-other" } };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, wrongRecord).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, wrongRecord).Standing);
         fixture.Policy = fixture.Policy with { PredictionCriterion = fixture.Policy.PredictionCriterion! with
         { IndependentWitnessCanResolvePredictionLimitations = true } };
         fixture.Witness = fixture.Witness with { PredictionResolutions = ImmutableArray.Create(
             new PlacementPredictionResolution(fixture.Residues,
                 true, false, "independent published topology")) };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, highPae).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, highPae).Standing);
         fixture.Protein = fixture.Protein with { Prediction = fixture.Protein.Prediction! with
         { LocalConfidence = completeLocal.SetItem(0, completeLocal[0] with { PLddt = 60 }) } };
         fixture.Witness = fixture.Witness with { PredictionResolutions = ImmutableArray.Create(
             new PlacementPredictionResolution(fixture.Residues,
                 false, true, "independent published topology")) };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
         fixture.Protein = fixture.Protein with { Prediction = fixture.Protein.Prediction! with
         { LocalConfidence = completeLocal } };
         fixture.Witness = fixture.Witness with { PredictionResolutions = ImmutableArray.Create(
@@ -505,11 +511,11 @@ public sealed class PlacementAssessmentOwnerTests
         fixture.Witness = fixture.Witness with { PredictionResolutions = ImmutableArray.Create(
             new PlacementPredictionResolution(fixture.Residues.RemoveAt(0),
                 true, true, "independent published topology")) };
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, highPae).Standing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, highPae).Standing);
     }
 
     [Fact]
-    public async Task Duplicate_leaflet_witness_cannot_match_the_distinct_selected_mixture()
+    public async Task Duplicate_contextual_leaflet_witness_does_not_override_measured_mixture_position()
     {
         using var fixture = new PlacementFixture(mixed: true);
         var duplicate = new LeafletComposition(LeafletSide.Upper,
@@ -519,8 +525,8 @@ public sealed class PlacementAssessmentOwnerTests
         var owner = new PlacementOwner(worker);
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.NotEqual(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
     }
 
     [Fact]
@@ -530,13 +536,13 @@ public sealed class PlacementAssessmentOwnerTests
         var worker = new PlacementWorkerStub { MeasurementReply = request => Measured(request, fixture) };
         var owner = new PlacementOwner(worker);
         var measured = (await Measure(owner, fixture)).Value!;
-        Assert.Equal(AssessmentStanding.NotEstablished,
+        Assert.Equal(AssessmentStanding.Supported,
             owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
                 null, measured, fixture.Witness, measured.Evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
         Assert.Equal(AssessmentStanding.NotEstablished,
             Assess(owner, fixture, measured with { ProposalId = "other" }).Standing);
-        Assert.Equal(AssessmentStanding.NotEstablished,
+        Assert.Equal(AssessmentStanding.Supported,
             Assess(owner, fixture, measured, witness: fixture.Witness with
             { PreparedBondGraphSha256 = "wrong" }).Standing);
         var contradiction = new ScientificEvidence("contradiction", fixture.Proposal.Id, "independent source",
@@ -558,14 +564,14 @@ public sealed class PlacementAssessmentOwnerTests
                 fixture.Witness.Residues[2] with { Residue = new ResidueAddress(1, "A", 99, "", "copy-A") }) })
         };
         foreach (var (policy, witness) in refusals)
-            Assert.Equal(AssessmentStanding.NotEstablished,
+            Assert.Equal(AssessmentStanding.Supported,
                 owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
                     policy, measured, witness, measured.Evidence,
                     ImmutableArray<ScientificFinding>.Empty).Standing);
     }
 
     [Fact]
-    public async Task Retained_partner_cannot_gain_support_without_an_exact_partner_to_region_mapping()
+    public async Task Retained_partner_is_covered_by_exact_construct_measurement_without_biological_mapping_gate()
     {
         using var fixture = new PlacementFixture();
         fixture.Protein = fixture.Protein with { Intended = fixture.Protein.Intended with
@@ -576,8 +582,8 @@ public sealed class PlacementAssessmentOwnerTests
         { MeasurementReply = request => Measured(request, fixture) });
         var measured = await Measure(owner, fixture);
         Assert.True(measured.Established, measured.Reason);
-        Assert.NotEqual(EvidenceBearing.Supports, measured.Value!.Evidence.Single().Bearing);
-        Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, measured.Value).Standing);
+        Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
     }
 
     [Fact]
@@ -605,7 +611,7 @@ public sealed class PlacementAssessmentOwnerTests
     }
 
     [Fact]
-    public async Task Exact_witness_with_observed_opposite_sides_is_unsupported_but_missing_mapping_is_not_established()
+    public async Task Opposite_biological_sides_are_contextual_while_missing_measurement_is_not_established()
     {
         using var fixture = new PlacementFixture();
         var oppositeWorker = new PlacementWorkerStub { MeasurementReply = request =>
@@ -625,8 +631,8 @@ public sealed class PlacementAssessmentOwnerTests
         var owner = new PlacementOwner(oppositeWorker);
         var opposite = await Measure(owner, fixture);
         Assert.True(opposite.Established, opposite.Reason);
-        Assert.Contains(opposite.Value!.Evidence, item => item.Bearing == EvidenceBearing.Contradicts);
-        Assert.Equal(AssessmentStanding.Unsupported, Assess(owner, fixture, opposite.Value).Standing);
+        Assert.Contains(opposite.Value!.Evidence, item => item.Bearing == EvidenceBearing.Context);
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, opposite.Value).Standing);
 
         var missing = opposite.Value with { Residues = opposite.Value.Residues.RemoveAt(0),
             Evidence = ImmutableArray<ScientificEvidence>.Empty };
@@ -651,20 +657,25 @@ public sealed class PlacementAssessmentOwnerTests
             new ProviderIdentity("controlled rigid transformation", "1"), null, null) };
         var owner = new PlacementOwner(worker);
         var revised = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
-            1, 2, 0, 5, "Move to inspect the upper loop contact.", "/tmp/placement-unit",
+            1, 2, 0, 5, "/tmp/placement-unit",
             TestContext.Current.CancellationToken);
         Assert.True(revised.Established, revised.Reason);
         Assert.NotEqual(fixture.Proposal.Id, revised.Value!.Id);
         Assert.Equal(fixture.Proposal.OrientedProtein.AtomCount, revised.Value.OrientedProtein.AtomCount);
         Assert.Null(revised.Value.TiltDegrees);
         Assert.Equal(1, revised.Value.MidplaneAngstrom);
+        Assert.Contains(revised.Value.Evidence, item => item.Observation.Contains("Depth 1 Å"));
         Assert.Equal(AssessmentStanding.NotEstablished,
             owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane,
                 revised.Value, fixture.Policy, null, fixture.Witness,
                 ImmutableArray<ScientificEvidence>.Empty, ImmutableArray<ScientificFinding>.Empty).Standing);
         var bad = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
-            double.NaN, 0, 0, 0, "", "/tmp/placement-unit", TestContext.Current.CancellationToken);
+            double.NaN, 0, 0, 0, "/tmp/placement-unit", TestContext.Current.CancellationToken);
         Assert.False(bad.Established);
+        var noChange = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
+            0, 0, 0, 0, "/tmp/placement-unit", TestContext.Current.CancellationToken);
+        Assert.False(noChange.Established);
+        Assert.Contains("Change at least one", noChange.Reason);
         Assert.Single(worker.AdjustmentRequests);
     }
 
@@ -796,6 +807,9 @@ public sealed class PlacementAssessmentOwnerTests
 
     private sealed class PlacementWorkerStub : IPlacementAssessmentWork
     {
+        public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+            ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<ManualPlacementObservations>>(new NotSupportedException());
         public Func<ScientificWorkRequest<PlacementPayload>, WorkerResult<PlacementObservations>>? PpmReply { get; init; }
         public Func<ScientificWorkRequest<PlacementAdjustmentPayload>, WorkerResult<PlacementAdjustmentObservations>>? AdjustmentReply { get; init; }
         public Func<ScientificWorkRequest<PlacementMeasurementPayload>, WorkerResult<PlacementMeasurementObservations>>? MeasurementReply { get; init; }

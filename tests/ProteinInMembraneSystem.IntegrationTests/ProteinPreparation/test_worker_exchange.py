@@ -377,6 +377,83 @@ class WorkerExchangeTests(unittest.TestCase):
             self.assertEqual(observed["actualDisulfides"], [])
             self.assertEqual(observed["geometryWarnings"], [])
 
+    def test_real_histidine_choice_reaches_provider_with_corresponding_result(self):
+        """6QWR model 1 is an identified provider fixture, not a new biological claim."""
+        catalogue = json.loads((ROOT / "config" / "policies" / "protein-slice1.json").read_text())
+        policy = catalogue["proteinChemicalStates"][0]
+        asset = dict(policy["forceFieldFiles"][0])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "6QWR.pdb"
+            shutil.copyfile(ROOT / "config" / "policies" / "source-assets" / "6QWR.pdb", source)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            staged_asset = directory / "protein.ff19SB.xml"
+            shutil.copyfile((ROOT / "config" / "policies" / asset["path"]).resolve(),
+                            staged_asset)
+            asset["path"] = str(staged_asset)
+            def address(number, insertion_code=""):
+                return {"model": 0, "chain": "A", "residue": number,
+                        "insertionCode": insertion_code, "copyId": "A"}
+            variants = []
+            seen = set()
+            for line in source.read_text().splitlines():
+                if line.startswith("ENDMDL"):
+                    break
+                if not line.startswith("ATOM"):
+                    continue
+                name = line[17:20].strip()
+                number = int(line[22:26])
+                insertion_code = line[26].strip()
+                key = number, insertion_code
+                if key in seen:
+                    continue
+                seen.add(key)
+                if name in policy["defaultVariants"]:
+                    variants.append({"residue": address(number, insertion_code),
+                                     "variant": policy["defaultVariants"][name],
+                                     "decisionId": None})
+                elif name == "HIS":
+                    variants.append({"residue": address(number, insertion_code),
+                                     "variant": "HID", "decisionId": "fixture-HIS-108"})
+            self.assertEqual([item for item in variants if item["variant"] == "HID"], [{
+                "residue": address(108), "variant": "HID", "decisionId": "fixture-HIS-108"}])
+            result, events = invoke(directory, "prepare_protein", {
+                "studyRevisionId": "real-histidine-review", "nominalPh": 7.0,
+                "disulfideCandidateMaxSgDistanceAngstrom": 2.5,
+                "sourcePath": str(source), "sourceSha256": digest,
+                "modelIndex": 0, "assemblyId": None,
+                "chainSelections": [{"sourceChain": "A", "copyId": "A"}],
+                "altlocChoices": [], "retainedPartners": [],
+                "approvedHeavyAtoms": [{"residue": address(211), "atomName": "OXT",
+                                        "decisionId": "fixture-OXT-211"}],
+                "approvedDisulfides": [], "residueVariants": variants,
+                "forceFieldFiles": [asset],
+                "geometrySpec": catalogue["proteinStructuralPolicies"][0]["measurement"],
+            }, request_id="real-histidine-review")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            terminal = events[-1]["payload"]
+            self.assertEqual([event["kind"] for event in events],
+                             ["progress", "progress", "progress", "result"])
+            self.assertEqual(terminal["studyRevisionId"], "real-histidine-review")
+            observed = terminal["observations"]
+            # The provider reports actual chemistry; the root retains decision IDs.
+            self.assertIn({"residue": address(108), "variant": "HID",
+                           "decisionId": None}, observed["actualResidueVariants"])
+            self.assertEqual(observed["addedHeavyAtoms"],
+                             [{"residue": address(211), "atomName": "OXT"}])
+            self.assertEqual(observed["preparedAtomCount"], 3205)
+            self.assertEqual(observed["geometryWarnings"], [])
+            artifacts = {item["role"]: item for item in terminal["artifacts"]}
+            self.assertEqual(set(artifacts),
+                             {"preparedPdb", "preparedBondGraph", "correspondenceJson"})
+            for item in artifacts.values():
+                self.assertEqual(hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest(),
+                                 item["sha256"])
+            correspondence = json.loads(Path(artifacts["correspondenceJson"]["path"]).read_text())
+            self.assertTrue(correspondence["complete"])
+            self.assertEqual(correspondence["sourceId"], digest)
+            self.assertEqual(correspondence["resultId"], artifacts["preparedPdb"]["sha256"])
+
 
 if __name__ == "__main__":
     unittest.main()

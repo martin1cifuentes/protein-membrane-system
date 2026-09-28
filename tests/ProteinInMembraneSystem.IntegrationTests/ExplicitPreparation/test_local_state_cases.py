@@ -168,6 +168,40 @@ class LocalStateObservationCases(unittest.TestCase):
         self.assertEqual("Observed", inverted["standing"])
         self.assertAlmostEqual(-20, measures(inverted)["leafletHeadSeparationAngstrom"])
 
+    def test_upper_position_does_not_wrap_opposing_leaflet_onto_protein_side(self):
+        cell_z = 79.4475
+        atoms = [
+            ("C", "protein", "backbone", None, (0, 0, 22.57)),
+            ("P", "lipid", "head", "upper", (2, 0, 19.2)),
+            ("P", "lipid", "head", "lower", (2, 0, cell_z - 21.26)),
+        ]
+        top, xyz, mapped = stage(atoms, cell=(62, 62, cell_z))
+        spec = specification(metrics=("upperLipidHeadMeanZAngstrom",
+                                      "lowerLipidHeadMeanZAngstrom",
+                                      "leafletHeadSeparationAngstrom",
+                                      "proteinBilayerMidplaneOffsetAngstrom"),
+                             pairs=(("protein", "lipid"),), radius=6)
+        spec["referenceMidplaneZAngstrom"] = 0.0
+        observed = observe_local_state(top, xyz, mapped, spec)
+        self.assertEqual("Observed", observed["standing"])
+        values = measures(observed)
+        self.assertAlmostEqual(19.2, values["upperLipidHeadMeanZAngstrom"])
+        self.assertAlmostEqual(-21.26, values["lowerLipidHeadMeanZAngstrom"])
+        self.assertAlmostEqual(40.46, values["leafletHeadSeparationAngstrom"])
+        self.assertAlmostEqual(23.6, values["proteinBilayerMidplaneOffsetAngstrom"])
+
+        wrapped = list(atoms)
+        wrapped[2] = (*wrapped[2][:4], (2, 0, -21.26))
+        top2, xyz2, mapped2 = stage(wrapped, cell=(62, 62, cell_z))
+        self.assertAlmostEqual(values["leafletHeadSeparationAngstrom"],
+                               measures(observe_local_state(top2, xyz2, mapped2, spec))[
+                                   "leafletHeadSeparationAngstrom"])
+        reversed_sides = copy.deepcopy(mapped)
+        reversed_sides["atoms"][1]["physicalSide"] = "lower"
+        reversed_sides["atoms"][2]["physicalSide"] = "upper"
+        inverted = observe_local_state(top, xyz, reversed_sides, spec)
+        self.assertAlmostEqual(-40.46, measures(inverted)["leafletHeadSeparationAngstrom"])
+
     def test_missing_cell_mapping_coordinates_and_coverage_are_unavailable(self):
         atoms = [("C", "protein", "backbone", None, (0, 0, 30)),
                  ("P", "lipid", "head", "upper", (5, 0, 40)),

@@ -127,12 +127,14 @@ static ConstructionProviderInstallation? ProbeConstructionProvider(string python
             return Convert.ToHexString(SHA256.HashData(patch)).ToLowerInvariant();
         }
         var dmpcPath = PatchPath("DMPC");
-        var popcPath = PatchPath("POPC");
-        var popcHash = PatchHash(popcPath);
+        var additional = new[] { "DLPC", "DLPE", "DOPC", "DPPC", "POPC", "POPE" }
+            .Select(species => (Species: species, Path: PatchPath(species)))
+            .Select(item => (item.Species, item.Path, Hash: PatchHash(item.Path)))
+            .Where(item => item.Hash is not null)
+            .Select(item => new NativePatchInstallation(item.Species, item.Path, item.Hash!))
+            .ToImmutableArray();
         return new ConstructionProviderInstallation(version, dmpcPath,
-            PatchHash(dmpcPath) ?? string.Empty,
-            popcHash is null ? ImmutableArray<NativePatchInstallation>.Empty :
-                ImmutableArray.Create(new NativePatchInstallation("POPC", popcPath, popcHash)));
+            PatchHash(dmpcPath) ?? string.Empty, additional);
     }
     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
         System.ComponentModel.Win32Exception or InvalidOperationException or JsonException or

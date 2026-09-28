@@ -45,7 +45,7 @@ public sealed class PreparationPolicyRouteTests
             new NativePatchInstallation("POPC", popcPath, new string('0', 64))) }));
         Assert.False(Matches(popc, installed with { AdditionalPatches = installed.AdditionalPatches.Add(
             new NativePatchInstallation("POPC", popcPath, popc.NativePatchSha256)) }));
-        Assert.False(Valid(popc with { LipidTypeArgument = "POPE" }));
+        Assert.False(Matches(popc with { LipidTypeArgument = "POPE" }, installed));
         Assert.False(Matches(popc with { ProviderVersion = "other" }, installed));
 
         var derivedPath = Path.Combine(fixture.Directory, "POPC-63x63.pdb");
@@ -67,6 +67,21 @@ public sealed class PreparationPolicyRouteTests
         Assert.False(Valid(custom with { NativePatchMode = "other" }));
         Assert.False(Matches(custom with { NativeSourcePatchSha256 = new string('0', 64) }, installed));
         Assert.False(Matches(custom with { NativeSourcePatchPath = derivedPath }, installed));
+
+        var mapped = popc with
+        {
+            NativePatchMode = "mapped-lipid21-zenodo-popc",
+            NativePatchPath = derivedPath,
+            NativePatchSha256 = ConstructionFixture.Hash(derivedPath),
+            NativeSourcePatchPath = popcPath,
+            NativeSourcePatchSha256 = popc.NativePatchSha256
+        };
+        Assert.True(Valid(mapped));
+        Assert.True(Matches(mapped, installed with
+        { AdditionalPatches = ImmutableArray<NativePatchInstallation>.Empty }));
+        Assert.False(Valid(mapped with { LipidTypeArgument = "DPPC" }));
+        Assert.False(Valid(mapped with { NativeSourcePatchSha256 = null }));
+        Assert.False(Matches(mapped with { ProviderVersion = "other" }, installed));
     }
 
     [Fact]

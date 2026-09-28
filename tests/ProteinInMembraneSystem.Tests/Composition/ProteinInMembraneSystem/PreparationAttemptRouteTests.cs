@@ -897,7 +897,8 @@ public sealed class PreparationAttemptRouteTests
     public async Task Stop_during_active_construction_cancels_only_the_exact_attempt()
     {
         using var fixture = new ConstructionFixture();
-        var worker = new AttemptRouteWorker(fixture) { BlockConstruction = true };
+        var worker = new AttemptRouteWorker(fixture) { BlockConstruction = true,
+            HoldCancellationObservation = true };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
         Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
@@ -909,9 +910,16 @@ public sealed class PreparationAttemptRouteTests
         Assert.True(active.Actions.Single(item => item.Kind == ActorActionKind.StopAttempt).Enabled);
         Assert.False((await Command(product, ActorActionKind.StopAttempt,
             new { attemptId = "another-attempt" })).Established);
-        Assert.True((await Command(product, ActorActionKind.StopAttempt,
-            new { attemptId = id })).Established);
+        var requested = await Command(product, ActorActionKind.StopAttempt, new { attemptId = id });
+        Assert.True(requested.Established);
+        Assert.Equal("running", requested.Value!.Attempt?.Status);
+        Assert.True(requested.Value.Attempt?.StopRequested);
+        Assert.False(requested.Value.Actions.Single(item => item.Kind == ActorActionKind.StopAttempt).Enabled);
+        Assert.Empty(requested.Value.Stages);
+        Assert.False((await Command(product, ActorActionKind.StopAttempt, new { attemptId = id })).Established);
+        worker.ReleaseCancellationObservation();
         await Until(() => product.Snapshot().Attempt?.Status == "stopped");
+        Assert.False(product.Snapshot().Attempt?.StopRequested);
         Assert.Null(product.Snapshot().Attempt?.Constructed);
         Assert.Empty(product.Snapshot().Stages);
         Assert.Empty(worker.MinimizationRequests);
@@ -1392,8 +1400,15 @@ public sealed class PreparationAttemptRouteTests
 
 internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScientificWorkerExchange
 {
+    public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+        ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken) =>
+        Task.FromException<WorkerResult<ManualPlacementObservations>>(new NotSupportedException());
+    public Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+        ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken) =>
+        Task.FromException<WorkerResult<SourcePreviewObservations>>(new NotSupportedException());
     private readonly ConstructionWorker _construction = new(fixture);
     private readonly TaskCompletionSource _releaseConstruction = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseCancellationObservation = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _releaseMinimization = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource ConstructionEntered { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1410,12 +1425,14 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
         WorkerResult<ExportVerificationObservations>>? ChangeNextExportResult { get; set; }
     public bool FailNextConstruction { get; set; }
     public bool BlockConstruction { get; set; }
+    public bool HoldCancellationObservation { get; set; }
     public bool ConstructionCancellationObserved { get; private set; }
     public int? ConstructedAtomCount { get; private set; }
     public string? ContactWarning { get; init; }
     public WorkerResultStanding MinimizationStanding { get; init; } = WorkerResultStanding.Observed;
     public ScientificWorkerExchange? MinimizationExchange { get; init; }
     public void ReleaseConstruction() => _releaseConstruction.TrySetResult();
+    public void ReleaseCancellationObservation() => _releaseCancellationObservation.TrySetResult();
     public void ReleaseMinimization() => _releaseMinimization.TrySetResult();
 
     public async Task<WorkerResult<ConstructionObservations>> ConstructSystemAsync(
@@ -1440,6 +1457,7 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
             try { await _releaseConstruction.Task.WaitAsync(cancellationToken); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                if (HoldCancellationObservation) await _releaseCancellationObservation.Task;
                 ConstructionCancellationObserved = true;
                 throw;
             }

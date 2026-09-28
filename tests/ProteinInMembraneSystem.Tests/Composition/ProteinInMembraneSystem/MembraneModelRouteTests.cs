@@ -12,6 +12,27 @@ namespace ProteinInMembraneSystem.Tests;
 public sealed class MembraneModelRouteTests
 {
     [Fact]
+    public void Legacy_authored_annotations_remain_readable_but_new_choices_need_no_annotation()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var legacy = new MembraneModel("legacy", new LeafletComposition(LeafletSide.Upper,
+            ImmutableArray.Create(new LipidFraction("POPC", 1))),
+            new LeafletComposition(LeafletSide.Lower,
+                ImmutableArray.Create(new LipidFraction("POPC", 1))),
+            FixedStudyConditions.Initial, "Original researcher note");
+        var restored = JsonSerializer.Deserialize<MembraneModel>(JsonSerializer.Serialize(legacy, options), options);
+        Assert.Equal("Original researcher note", restored!.ScientificPurpose);
+        var oldPartner = JsonSerializer.Deserialize<PartnerSelection>(
+            """{"sourceId":"cofactor","retain":false,"reason":"Original exclusion note"}""", options);
+        Assert.Equal("Original exclusion note", oldPartner!.Reason);
+        var currentPartner = JsonSerializer.Deserialize<PartnerSelection>(
+            """{"sourceId":"cofactor","retain":false}""", options);
+        Assert.Null(currentPartner!.Reason);
+        Assert.Null(JsonSerializer.Deserialize<MembraneModel>(
+            JsonSerializer.Serialize(legacy with { ScientificPurpose = null }, options), options)!.ScientificPurpose);
+    }
+
+    [Fact]
     public async Task A_proposal_becomes_a_chosen_and_assessed_model_only_after_explicit_adoption()
     {
         using var directory = new TemporaryDirectory();
@@ -43,12 +64,63 @@ public sealed class MembraneModelRouteTests
         Assert.Equal("POPC", adopted.Value.Membrane.Lower.Single().SpeciesId);
         Assert.Equal("policy-popc", adopted.Value.Membrane.PolicyId);
         Assert.Equal("1.0", adopted.Value.Membrane.PolicyVersion);
+        Assert.Null(adopted.Value.Membrane.ScientificPurpose);
         var wire = JsonSerializer.SerializeToElement(adopted.Value,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.Equal("policy-popc", wire.GetProperty("membrane").GetProperty("policyId").GetString());
         Assert.Equal("1.0", wire.GetProperty("membrane").GetProperty("policyVersion").GetString());
         Assert.Null(adopted.Value.Placement);
         Assert.Empty(adopted.Value.Stages);
+    }
+
+    [Fact]
+    public async Task Adoption_reports_assessment_in_progress_and_an_unavailable_check_can_retry_the_same_intention()
+    {
+        using var directory = new TemporaryDirectory();
+        var entered = new TaskCompletionSource<ScientificWorkRequest<MembraneAssessmentPayload>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource<WorkerResult<MembraneAssessmentObservations>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var worker = new MembraneRouteWorker
+        {
+            AssessResponseAsync = (request, _) =>
+            {
+                if (++calls == 1)
+                {
+                    entered.TrySetResult(request);
+                    return released.Task;
+                }
+                return Task.FromResult(MembraneRouteWorker.Observed(request, true));
+            }
+        };
+        var product = Product(directory.Path, worker);
+        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
+        var modelId = proposed.Value!.Membrane!.ModelId;
+        var adoption = Command(product, ActorActionKind.AdoptMembrane, new { modelId });
+        var request = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        var during = product.Snapshot();
+        Assert.Equal("assessing", during.Membrane!.Status);
+        Assert.Equal(modelId, during.Membrane.ModelId);
+        Assert.NotEqual(proposed.Value.Study!.Id, during.Study!.Id);
+        Assert.Contains(during.Actions, item => item.Kind == ActorActionKind.AdoptMembrane && !item.Enabled);
+
+        released.SetException(new IOException("controlled membrane provider interruption"));
+        var unavailable = await adoption;
+        Assert.True(unavailable.Established, unavailable.Reason);
+        Assert.Equal("unavailable", unavailable.Value!.Membrane!.Status);
+        Assert.Contains("interruption", unavailable.Value.Membrane.Reason);
+        Assert.Contains(unavailable.Value.Actions, item => item.Kind == ActorActionKind.AdoptMembrane && item.Enabled);
+        var adoptedRevision = unavailable.Value.Study!.Id;
+        var retry = await Command(product, ActorActionKind.AdoptMembrane, new { modelId });
+        Assert.True(retry.Established, retry.Reason);
+        Assert.Equal("assessed", retry.Value!.Membrane!.Status);
+        Assert.Equal(adoptedRevision, retry.Value.Study!.Id);
+        Assert.Equal([adoptedRevision, adoptedRevision],
+            worker.MembraneRequests.Select(item => item.Payload.StudyRevisionId));
+        Assert.Equal(request.Payload.MembraneModelId, modelId);
     }
 
     [Fact]
@@ -203,14 +275,11 @@ public sealed class MembraneModelRouteTests
         (string Species, double Fraction) secondUpper,
         (string Species, double Fraction) lower)
         => new { upper = new[] { Fraction(firstUpper), Fraction(secondUpper) },
-            lower = new[] { Fraction(lower) }, scientificPurpose = Purpose };
+            lower = new[] { Fraction(lower) } };
 
     private static object Composition((string Species, double Fraction) upper,
         (string Species, double Fraction) lower)
-        => new { upper = new[] { Fraction(upper) }, lower = new[] { Fraction(lower) },
-            scientificPurpose = Purpose };
-
-    private const string Purpose = "A deliberately simplified POPC reference membrane.";
+        => new { upper = new[] { Fraction(upper) }, lower = new[] { Fraction(lower) } };
     private static object Fraction((string Species, double Fraction) item) =>
         new { speciesId = item.Species, fraction = item.Fraction };
 
@@ -266,22 +335,36 @@ public sealed class MembraneModelRouteTests
 
     private sealed class MembraneRouteWorker : IScientificWorkerExchange
     {
+        public Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+            ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<ManualPlacementObservations>>(new NotSupportedException());
+        public Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+            ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken) =>
+            Task.FromException<WorkerResult<SourcePreviewObservations>>(new NotSupportedException());
         public List<ScientificWorkRequest<MembraneAssessmentPayload>> MembraneRequests { get; } = [];
         public bool CombinedParameterizationObserved { get; init; } = true;
+        public Func<ScientificWorkRequest<MembraneAssessmentPayload>, CancellationToken,
+            Task<WorkerResult<MembraneAssessmentObservations>>>? AssessResponseAsync { get; init; }
 
         public Task<WorkerResult<MembraneAssessmentObservations>> AssessMembraneAsync(
             ScientificWorkRequest<MembraneAssessmentPayload> request, CancellationToken cancellationToken)
         {
             MembraneRequests.Add(request);
+            if (AssessResponseAsync is not null) return AssessResponseAsync(request, cancellationToken);
+            return Task.FromResult(Observed(request, CombinedParameterizationObserved));
+        }
+        public static WorkerResult<MembraneAssessmentObservations> Observed(
+            ScientificWorkRequest<MembraneAssessmentPayload> request, bool combinedParameterizationObserved)
+        {
             var species = request.Payload.SpeciesRepresentations.Select(item => new SpeciesTemplateObservation(
                 item.SpeciesId, item.ChemistryId, item.AtomCount, item.AtomCount,
                 true, ImmutableArray<string>.Empty)).ToImmutableArray();
             var observations = new MembraneAssessmentObservations(species, ImmutableArray<string>.Empty,
-                CombinedParameterizationObserved);
-            return Task.FromResult(new WorkerResult<MembraneAssessmentObservations>(request.RequestId,
+                combinedParameterizationObserved);
+            return new WorkerResult<MembraneAssessmentObservations>(request.RequestId,
                 request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Observed,
                 ImmutableArray<WorkerArtifact>.Empty, observations,
-                new ProviderIdentity("controlled OpenMM observations", "8.6.0"), null, null));
+                new ProviderIdentity("controlled OpenMM observations", "8.6.0"), null, null);
         }
 
         public Task<WorkerResult<SourceInspectionObservations>> InspectSourceAsync(

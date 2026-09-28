@@ -17,7 +17,7 @@ from typing import Any, Callable
 import numpy as np
 
 from ProteinInMembraneSystem.worker.exchange import (WorkError, artifact, require_mapping, require_number,
-                       require_text, verify_sha256, work_path)
+                       require_integer, require_text, verify_sha256, work_path)
 
 
 def _atom_signature(line: str) -> tuple[str, str, str, str, str, str]:
@@ -266,6 +266,124 @@ def _rotated(x: float, y: float, z: float, a: float, b: float, c: float) -> tupl
     return cc * x - sc * y, sc * x + cc * y, z
 
 
+def _headgroup_boundary(directory: Path, raw_species: Any) -> float:
+    """Use exact phospholipid template head/tail extents as a starting frame."""
+    import gemmi
+
+    if not isinstance(raw_species, list) or not raw_species:
+        raise WorkError("missingFrame", "The chosen membrane has no identified coordinate templates")
+    extents = []
+    seen = set()
+    for raw in raw_species:
+        item = require_mapping(raw, "leafletSpecies item")
+        species_id = require_text(item.get("speciesId"), "speciesId")
+        if species_id in seen:
+            raise WorkError("ambiguousFrame", "A membrane species was supplied more than once")
+        seen.add(species_id)
+        path = work_path(directory, item.get("coordinateTemplatePath"), "coordinateTemplatePath")
+        verify_sha256(path, require_text(item.get("coordinateTemplateSha256"), "coordinateTemplateSha256"),
+                      "coordinateTemplateSha256")
+        structure = gemmi.read_structure(str(path))
+        if len(structure) != 1:
+            raise WorkError("missingFrame", f"{species_id} has no single-molecule coordinate template")
+        atoms = [atom for chain in structure[0] for residue in chain for atom in residue]
+        if len(atoms) != require_integer(item.get("atomCount"), "atomCount", 1):
+            raise WorkError("providerMismatch", f"{species_id} template atom count differs")
+        if item.get("category") != "lipid":
+            continue  # Sterol geometry is packed separately; it does not define the phospholipid slab.
+        indices = item.get("headAtomIndices")
+        if not isinstance(indices, list) or len(indices) != 1 or any(
+                type(i) is not int or i < 1 or i > len(atoms) or atoms[i - 1].name != "P"
+                for i in indices):
+            raise WorkError("missingFrame", f"{species_id} lacks mapped polar-head anchors")
+        heavy = [atom for atom in atoms if atom.element.name.upper() not in ("H", "D")]
+        head_z = atoms[indices[0] - 1].pos.z
+        # Native patches may store a reference molecule with either normal
+        # orientation. The starting half-thickness is independent of its sign.
+        extent = max(abs(head_z - min(atom.pos.z for atom in heavy)),
+                     abs(head_z - max(atom.pos.z for atom in heavy)))
+        if not math.isfinite(extent) or extent < 5 or extent > 80:
+            raise WorkError("missingFrame", f"{species_id} head-to-tail template extent is unusable")
+        extents.append(extent)
+    if not extents:
+        raise WorkError("missingFrame", "A phospholipid template is required to define this starting bilayer frame")
+    return max(extents)
+
+
+def place_manual(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
+    """Apply one actor-specified rigid transform to the complete prepared construct."""
+    source = work_path(directory, payload.get("preparedPdbPath"), "preparedPdbPath")
+    verify_sha256(source, require_text(payload.get("preparedSha256"), "preparedSha256"), "preparedSha256")
+    require_text(payload.get("preparedProteinId"), "preparedProteinId")
+    source_count = require_integer(payload.get("preparedAtomCount"), "preparedAtomCount", 1)
+    max_atoms = require_integer(payload.get("maximumAtomCount"), "maximumAtomCount", 1)
+    if source_count > max_atoms:
+        raise WorkError("resourceRefused", "The complete prepared construct exceeds the placement atom bound")
+    start = require_text(payload.get("startingPosition"), "startingPosition")
+    if start not in ("center", "upper", "lower"):
+        raise WorkError("invalidRequest", "Choose center, upper or lower as the starting position")
+    offsets = [require_number(payload.get(name), name) for name in
+               ("offsetXAngstrom", "offsetYAngstrom", "offsetZAngstrom")]
+    angles_degrees = [require_number(payload.get(name), name) for name in
+                      ("rotationXDegrees", "rotationYDegrees", "rotationZDegrees")]
+    if any(abs(value) > 100000 for value in offsets) or any(abs(value) > 360000 for value in angles_degrees):
+        raise WorkError("resourceRefused", "The requested position exceeds the bounded PDB coordinate range")
+    boundary = _headgroup_boundary(directory, payload.get("leafletSpecies"))
+    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+    atom_lines = _source_atoms(lines)
+    if len(atom_lines) != source_count:
+        raise WorkError("correspondenceFailed", "Prepared atom count differs from the current construct")
+    positions = np.array([_position(line, "invalidStructure", "Prepared atom") for line in atom_lines])
+    heavy = np.array([_element(line, "invalidStructure", "Prepared atom") not in ("H", "D") for line in atom_lines])
+    if not bool(np.any(heavy)):
+        raise WorkError("invalidStructure", "The construct has no heavy atoms for a rigid-transform pivot")
+    pivot = np.mean(positions[heavy], axis=0)
+    radians = tuple(math.radians(value) for value in angles_degrees)
+    rotation = np.column_stack([_rotated(*basis, *radians) for basis in np.eye(3)])
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-10) or \
+            abs(float(np.linalg.det(rotation)) - 1) > 1e-10:
+        raise WorkError("invalidTransform", "The requested rotation is not a proper rigid transform")
+    rotated = (positions - pivot) @ rotation.T + pivot
+    minimum = np.min(rotated[heavy], axis=0)
+    maximum = np.max(rotated[heavy], axis=0)
+    translation = np.array(offsets, dtype=float) - (minimum + maximum) / 2
+    if start == "upper":
+        translation[2] = boundary + 2 - minimum[2] + offsets[2]
+    elif start == "lower":
+        translation[2] = -boundary - 2 - maximum[2] + offsets[2]
+    transformed = rotated + translation
+    if not bool(np.all(np.isfinite(transformed))):
+        raise WorkError("invalidTransform", "The requested position contains nonfinite coordinates")
+    output = directory / "manual-placement.pdb"
+    if output.exists():
+        raise WorkError("invalidPath", "Manual placement would overwrite a prior result")
+    iterator = iter(transformed)
+    with output.open("w", encoding="utf-8") as stream:
+        for line in lines:
+            if line.startswith(("ATOM  ", "HETATM")):
+                point = next(iterator)
+                if any(len(f"{value:8.3f}") != 8 for value in point):
+                    raise WorkError("resourceRefused", "A positioned atom exceeds the PDB coordinate field")
+                stream.write(f"{line[:30]}{point[0]:8.3f}{point[1]:8.3f}{point[2]:8.3f}{line[54:]}")
+            else:
+                stream.write(line)
+    if _atoms(source) != _atoms(output):
+        raise WorkError("correspondenceFailed", "Rigid placement changed atom identity or order")
+    observed = np.array([_position(line, "providerMismatch", "Positioned atom") for line in _source_atoms(output.read_text().splitlines())])
+    deviation = float(np.max(np.linalg.norm(observed - transformed, axis=1)))
+    if deviation > 0.001:
+        raise WorkError("providerMismatch", "Positioned coordinates differ from the declared rigid transform")
+    progress("manualPlacementObserved", {"atomCount": source_count})
+    return {"artifacts": [artifact(directory, output, "orientedPdb")],
+            "observations": {"sourceAtomCount": source_count, "orientedAtomCount": len(observed),
+                             "appliedTranslationXAngstrom": float(translation[0]),
+                             "appliedTranslationYAngstrom": float(translation[1]),
+                             "appliedTranslationZAngstrom": float(translation[2]),
+                             "headgroupBoundaryAngstrom": boundary,
+                             "maximumRigidDeviationAngstrom": deviation, "geometryWarnings": []},
+            "provider": {"name": "Scientific worker rigid placement", "version": "1"}}
+
+
 def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     source = work_path(directory, payload.get("orientedPdbPath"), "orientedPdbPath")
     verify_sha256(source, require_text(payload.get("orientedPdbSha256"), "orientedPdbSha256"), "orientedPdbSha256")
@@ -274,7 +392,6 @@ def adjust_placement(directory: Path, payload: dict[str, Any], progress: Callabl
     x_degrees = require_number(payload.get("tiltAboutXDegrees"), "tiltAboutXDegrees")
     y_degrees = require_number(payload.get("tiltAboutYDegrees"), "tiltAboutYDegrees")
     normal_degrees = require_number(payload.get("rotationAboutNormalDegrees"), "rotationAboutNormalDegrees")
-    require_text(payload.get("rationale"), "rationale")
     lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
     atom_lines = _source_atoms(lines)
     positions = [tuple(_position(line, "invalidStructure", "Placement atom")) for line in atom_lines]

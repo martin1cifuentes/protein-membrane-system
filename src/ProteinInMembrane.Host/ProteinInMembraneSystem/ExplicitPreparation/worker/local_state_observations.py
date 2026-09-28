@@ -44,6 +44,11 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
     use_periodic = spec.get("usePeriodicBoundary")
     if not isinstance(use_periodic, bool):
         raise WorkError("invalidRequest", "usePeriodicBoundary must be explicit")
+    reference_midplane = spec.get("referenceMidplaneZAngstrom")
+    if reference_midplane is not None:
+        reference_midplane = require_number(reference_midplane, "referenceMidplaneZAngstrom")
+        if not use_periodic:
+            raise WorkError("invalidRequest", "A reference midplane requires periodic observation")
     declared_pairs = spec.get("contactRolePairs")
     if not isinstance(declared_pairs, list) or not declared_pairs:
         raise WorkError("invalidRequest", "At least one local-state role pair is required")
@@ -205,10 +210,23 @@ def observe_local_state(topology: Any, positions: Any, correspondence: Any,
                                 [f"{a}|{b}" for a, b in role_pairs])
         anchor = (math.atan2(sine, cosine) / (2 * math.pi) * length_z) % length_z
 
-        def local_image(values: list[float]) -> list[float]:
-            return [z - round((z - anchor) / length_z) * length_z for z in values]
+        def local_image(values: list[float], image_anchor: float) -> list[float]:
+            return [z - round((z - image_anchor) / length_z) * length_z for z in values]
 
-        backbone, upper, lower = local_image(backbone), local_image(upper), local_image(lower)
+        backbone = local_image(backbone, anchor)
+        if reference_midplane is None:
+            upper, lower = local_image(upper, anchor), local_image(lower, anchor)
+        else:
+            # Construction defines the membrane midplane in the written
+            # coordinate frame. An upper-side protein can be farther than
+            # half a cell from the opposing heads; anchoring both leaflets
+            # on the protein would put that entire leaflet in the wrong image.
+            upper = local_image(upper, reference_midplane)
+            lower = local_image(lower, reference_midplane)
+            bilayer_midplane = (sum(upper) / len(upper) + sum(lower) / len(lower)) / 2
+            backbone_mean = sum(backbone) / len(backbone)
+            shift = round((backbone_mean - bilayer_midplane) / length_z) * length_z
+            backbone = [z - shift for z in backbone]
     measurements = []
     for name in requested:
         if name == "minimumIntermolecularDistanceAngstrom":

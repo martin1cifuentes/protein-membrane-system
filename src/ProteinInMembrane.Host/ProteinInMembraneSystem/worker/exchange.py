@@ -10,7 +10,7 @@ System/State XML and generated molecular files are attempt-scoped under
 workingDirectory; the host stages and hashes them before requesting work.
 Only the explicit PPM executable and the verified OpenMM-installed membrane
 patch may be read outside that directory. Operations are inspect_source,
-inspect_preparation_changes, assess_membrane, prepare_protein, place_ppm,
+inspect_preparation_changes, recommend_preparation, assess_membrane, prepare_protein, place_ppm,
 adjust_placement, measure_placement, summarize_prediction_evidence,
 construct_system, minimize, equilibrate, observe_stage and verify_export. Each
 process reads exactly one request and writes progress events
@@ -109,10 +109,13 @@ def emit(request_id: str, kind: str, payload: dict[str, Any]) -> None:
 def _dispatch(operation: str) -> Callable[[Path, dict[str, Any], Callable[[str, dict[str, Any]], None]], dict[str, Any]]:
     owner_modules = {
         "inspect_source": "ProteinPreparation.worker.protein_preparation",
+        "preview_source_model": "ProteinPreparation.worker.protein_preparation",
         "inspect_preparation_changes": "ProteinPreparation.worker.protein_preparation",
+        "recommend_preparation": "ProteinPreparation.worker.preparation_recommendations",
         "prepare_protein": "ProteinPreparation.worker.protein_preparation",
         "assess_membrane": "MembraneModelAssessment.worker.membrane_model",
         "place_ppm": "PlacementAssessment.worker.placement_assessment",
+        "place_manual": "PlacementAssessment.worker.placement_assessment",
         "adjust_placement": "PlacementAssessment.worker.placement_assessment",
         "measure_placement": "PlacementAssessment.worker.placement_assessment",
         "summarize_prediction_evidence": "PlacementAssessment.worker.prediction_placement",

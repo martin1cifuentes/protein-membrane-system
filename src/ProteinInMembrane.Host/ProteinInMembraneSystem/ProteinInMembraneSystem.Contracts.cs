@@ -44,7 +44,7 @@ public sealed record ResearcherDecision(
     ResearcherDecisionKind Kind,
     ResearcherDecisionValue ChosenValue,
     DateTimeOffset At,
-    string Rationale);
+    string? Rationale);
 
 // These are product-owned choices, distinct from open provenance descriptions and provider data.
 [JsonConverter(typeof(JsonStringEnumConverter<SourceRouteKind>))]
@@ -128,7 +128,8 @@ public sealed record ResidueAddress(
 public sealed record AtomAddress(ResidueAddress Residue, string AtomName);
 
 public sealed record ChainSelection(string SourceChain, string CopyId);
-public sealed record PartnerSelection(string SourceId, bool Retain, string Reason);
+// Reason remains readable for earlier records, but the explicit disposition is the required choice.
+public sealed record PartnerSelection(string SourceId, bool Retain, string? Reason = null);
 public sealed record AlternateLocationChoice(ResidueAddress Residue, string Altloc, string DecisionId);
 public sealed record ResidueVariantChoice(ResidueAddress Residue, string Variant, string? DecisionId);
 public sealed record HeavyAtomApproval(ResidueAddress Residue, string AtomName, string DecisionId);
@@ -174,7 +175,48 @@ public sealed record PreparationProposalReport(
     ImmutableArray<string> UnresolvedQuestions,
     ProteinGeometryObservations? SourceGeometry = null);
 
+/// <summary>A disposable, jointly checked starting-state plan; authorization is separate.</summary>
+public sealed record RecommendedPreparationPlan(
+    string Id,
+    string StudyRevisionId,
+    string IntendedProteinId,
+    string ChemicalPolicyId,
+    string ChemicalPolicyVersion,
+    string SourceSha256,
+    string PlanSha256,
+    WorkerArtifact Candidate,
+    ImmutableArray<RecommendedStateChoice> Choices,
+    ImmutableArray<AtomAddress> ProposedHeavyAtoms,
+    ImmutableArray<AtomAddress> RemovedSourceHydrogens,
+    string Method,
+    string MethodVersion,
+    double NominalPh,
+    int Seed,
+    int CandidateAtomCount,
+    ImmutableArray<string> PrerequisiteDecisionIds,
+    ImmutableArray<WorkerArtifact> CandidateArtifacts,
+    ProteinPreparationObservations CandidateObservations,
+    ProviderIdentity? CandidateProvider);
+public sealed record RecommendedStateChoice(ResidueAddress Residue, string Variant, bool Overridden);
+public sealed record PreparationPlanAccount(
+    string Standing,
+    string? PlanId,
+    string? PlanSha256,
+    string? Method,
+    double? NominalPh,
+    int StateChoiceCount,
+    int HeavyAtomCount,
+    int RemovedSourceHydrogenCount,
+    ImmutableArray<RecommendedStateChoice> Choices,
+    string? Message,
+    bool AuthorizationAvailable,
+    bool HasOverrides);
+
 public interface IObservedDiagnostic { }
+/// <summary>Terminal worker standing for an attempted protein preparation without a promoted result.</summary>
+public sealed record ProteinPreparationExchangeDiagnostic(WorkerResultStanding Standing) : IObservedDiagnostic;
+/// <summary>A checked recommendation dependency changed before promotion; retry rechecks its exact bytes.</summary>
+public sealed record ProteinPreparationInputIntegrityDiagnostic : IObservedDiagnostic;
 /// <summary>Observed but unpromoted prepared candidate; not an Assessed Prepared Protein.</summary>
 public sealed record ProteinPreparationDiagnostic(
     MolecularArtifact Candidate,
@@ -382,7 +424,10 @@ public sealed record ProteinChemicalStatePolicy(
     ImmutableArray<ForceFieldAsset> ForceFieldFiles,
     ImmutableDictionary<string, string> DefaultVariants,
     ImmutableArray<string> PermittedVariants,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    ProteinRecommendationMethod? Recommendation = null);
+public sealed record ProteinRecommendationMethod(string Id, string Version, int Seed,
+    bool NormalizeProteinHydrogens);
 
 /// <summary>Bounded, evidence-backed protein geometry interpretation, independent of the worker.</summary>
 public sealed record ProteinStructuralAssessmentPolicy(
@@ -548,7 +593,8 @@ public sealed record LocalStateObservationSpec(
     double ContactSearchRadiusAngstrom,
     int MaximumReportedPairs,
     bool UsePeriodicBoundary,
-    ImmutableArray<string> RequiredMetricNames);
+    ImmutableArray<string> RequiredMetricNames,
+    double? ReferenceMidplaneZAngstrom = null);
 public sealed record LocalContactRolePair(MoleculeRoleKind FirstMoleculeRole, MoleculeRoleKind SecondMoleculeRole);
 public sealed record LocalStateCriterion(
     string MeasurementName,
@@ -683,13 +729,26 @@ public sealed record AssessedPreparedProtein(
     ProteinGeometryObservations? Geometry = null,
     string? ChemicalStatePolicyVersion = null,
     string? StructuralAssessmentPolicyId = null,
-    string? StructuralAssessmentPolicyVersion = null);
+    string? StructuralAssessmentPolicyVersion = null,
+    PreparationPlanProvenance? RecommendationPlan = null);
+
+public sealed record PreparationPlanProvenance(
+    string PlanSha256,
+    string Method,
+    string MethodVersion,
+    double NominalPh,
+    int Seed,
+    string CheckedCandidateSha256,
+    ImmutableArray<RecommendedStateChoice> Choices,
+    ImmutableArray<AtomAddress> ProposedHeavyAtoms,
+    ImmutableArray<AtomAddress> RemovedSourceHydrogens);
 
 public sealed record LipidFraction(string SpeciesId, double Fraction);
 
 [JsonConverter(typeof(JsonStringEnumConverter<ProteinTopologyKind>))]
 public enum ProteinTopologyKind
 {
+    [JsonStringEnumMemberName("unclassified")] Unclassified = 0,
     [JsonStringEnumMemberName("membrane-spanning")] MembraneSpanning = 1,
     [JsonStringEnumMemberName("one-surface-associated")] OneSurfaceAssociated
 }
@@ -722,7 +781,8 @@ public sealed record MembraneModel(
     LeafletComposition Upper,
     LeafletComposition Lower,
     FixedStudyConditions Conditions,
-    string ScientificPurpose);
+    // Earlier authored purpose annotations survive in records and exports.
+    string? ScientificPurpose = null);
 
 public sealed record AssessedMembraneModel(
     string Id,
@@ -757,7 +817,22 @@ public sealed record PlacementProposal(
     string? BiologicalSidedness,
     ImmutableArray<string> ContactingRegions,
     ImmutableArray<ScientificEvidence> Evidence,
-    ImmutableArray<string> Limitations);
+    ImmutableArray<string> Limitations,
+    PlacementTransform? Transform = null);
+
+[JsonConverter(typeof(JsonStringEnumConverter<PlacementStartingPosition>))]
+public enum PlacementStartingPosition
+{
+    [JsonStringEnumMemberName("center")] Center = 1,
+    [JsonStringEnumMemberName("upper")] Upper,
+    [JsonStringEnumMemberName("lower")] Lower
+}
+
+public sealed record PlacementTransform(PlacementStartingPosition StartingPosition,
+    double OffsetXAngstrom, double OffsetYAngstrom, double OffsetZAngstrom,
+    double RotationXDegrees, double RotationYDegrees, double RotationZDegrees,
+    double AppliedTranslationXAngstrom, double AppliedTranslationYAngstrom,
+    double AppliedTranslationZAngstrom, double HeadgroupBoundaryAngstrom);
 
 public sealed record OpmReferenceRecord(
     string PdbAccession,
@@ -1091,7 +1166,72 @@ public sealed record WorkspaceState(
     InspectionAccount? Inspection,
     ImmutableArray<AvailableAction> Actions,
     ImmutableArray<WorkspaceNotice> Notices,
-    PredictionEvidenceAccount? SourcePrediction = null);
+    PredictionEvidenceAccount? SourcePrediction = null,
+    ProteinPreparationReviewAccount? PreparationReview = null,
+    ProteinTaskAccount? ProteinTask = null,
+    PlacementTaskAccount? PlacementTask = null,
+    ImmutableArray<PlacementMethodAccount> PlacementMethods = default,
+    PreparationPlanAccount? PreparationPlan = null);
+
+/// <summary>Availability of optional orientation contributions, independently of manual positioning.</summary>
+public sealed record PlacementMethodAccount(string Method, string Standing, string? Reason);
+
+/// <summary>The enclosing Protein task, independent of any selected review row or molecular view.</summary>
+public sealed record ProteinTaskAccount(
+    string StudyRevisionId,
+    string IntendedProteinId,
+    string SourceId,
+    ImmutableArray<ChainSelection> Chains,
+    string Standing,
+    string? Message,
+    string? PreparedProteinId,
+    bool RetryAvailable);
+
+/// <summary>The enclosing placement task for the current prepared protein and membrane intention.</summary>
+public sealed record PlacementTaskAccount(
+    string StudyRevisionId,
+    string PreparedProteinId,
+    string MembraneModelId,
+    string? ProposalId,
+    string Standing,
+    string Message,
+    bool Adopted,
+    string? LatestAttemptIssue = null);
+
+/// <summary>Root-owned standing for exact preparation decision scopes, not a count of proposals.</summary>
+public sealed record ProteinPreparationReviewAccount(
+    string StudyRevisionId,
+    string IntendedProteinId,
+    ImmutableArray<PreparationDecisionAccount> Decisions,
+    int ConfirmedCount,
+    int RemainingCount,
+    ImmutableArray<string> Blockers,
+    string PreparationStanding,
+    string? PreparationMessage,
+    string InspectionRelation = "unavailable");
+
+public sealed record PreparationDecisionAccount(
+    string Id,
+    PreparationChangeKind Kind,
+    ResidueAddress Residue,
+    ResidueAddress? PartnerResidue,
+    string? AtomName,
+    string Standing,
+    string? ChosenProposalId,
+    ImmutableArray<PreparationDecisionOptionAccount> Options,
+    string? Blocker);
+
+public sealed record PreparationDecisionOptionAccount(
+    string ProposalId,
+    string ProposedChange,
+    string Disposition,
+    string? DecisionId,
+    bool EvidenceCurrent,
+    string? ConfirmationBlocker,
+    bool StartsPreparationOnConfirmation,
+    bool StartsPreparationOnDecline,
+    ImmutableArray<ScientificEvidence> Evidence,
+    string InformationRole = "observed");
 
 public sealed record StudyAccount(
     string Id,
@@ -1107,7 +1247,8 @@ public sealed record StudyAccount(
     SourceRouteKind? SelectedSourceKind = null,
     UploadOriginKind? UploadProvenance = null,
     string? UploadProvenanceNote = null,
-    string? AdoptedPlacementProposalId = null);
+    string? AdoptedPlacementProposalId = null,
+    string? SelectedSourceLabel = null);
 
 public sealed record SourceCandidateAccount(
     string Id,
@@ -1146,7 +1287,7 @@ public sealed record ProteinAccount(
 public sealed record MembraneAccount(
     string ModelId,
     string Status,
-    string ScientificPurpose,
+    string? ScientificPurpose,
     ImmutableArray<LipidFraction> Upper,
     ImmutableArray<LipidFraction> Lower,
     ImmutableArray<string> Limitations,
@@ -1185,7 +1326,8 @@ public sealed record PlacementAccount(
     ImmutableArray<string> Limitations = default,
     string? PolicyId = null,
     string? PolicyVersion = null,
-    string? WitnessId = null);
+    string? WitnessId = null,
+    PlacementTransform? Transform = null);
 
 public sealed record AttemptAccount(
     string AttemptId,
@@ -1198,7 +1340,8 @@ public sealed record AttemptAccount(
     string? PolicyVersion = null,
     string? CurrentStageId = null,
     ConstructionDerivation? Derivation = null,
-    ConstructedSystemAccount? Constructed = null);
+    ConstructedSystemAccount? Constructed = null,
+    bool StopRequested = false);
 
 public sealed record ConstructedSystemAccount(
     string SubjectId,
@@ -1232,6 +1375,11 @@ public enum ActorActionKind
     [JsonStringEnumMemberName("selectSource")] SelectSource,
     [JsonStringEnumMemberName("selectProteinModel")] SelectProteinModel,
     [JsonStringEnumMemberName("approvePreparationChange")] ApprovePreparationChange,
+    [JsonStringEnumMemberName("retryProteinPreparation")] RetryProteinPreparation,
+    [JsonStringEnumMemberName("authorizePreparationPlan")] AuthorizePreparationPlan,
+    [JsonStringEnumMemberName("overridePreparationPlanChoice")] OverridePreparationPlanChoice,
+    [JsonStringEnumMemberName("retryPreparationPlan")] RetryPreparationPlan,
+    [JsonStringEnumMemberName("startProteinPreparation")] StartProteinPreparation,
     // Availability for the negative decision; the actual command is ApprovePreparationChange with approve=false.
     [JsonStringEnumMemberName("declinePreparationChange")] DeclinePreparationChange,
     [JsonStringEnumMemberName("proposeMembrane")] ProposeMembrane,
@@ -1274,8 +1422,16 @@ public interface IProteinPreparationWork
 {
     Task<WorkerResult<SourceInspectionObservations>> InspectSourceAsync(
         ScientificWorkRequest<SourceInspectionPayload> request, CancellationToken cancellationToken);
+    Task<WorkerResult<SourcePreviewObservations>> PreviewSourceModelAsync(
+        ScientificWorkRequest<SourcePreviewPayload> request, CancellationToken cancellationToken);
     Task<WorkerResult<PreparationChangeObservations>> InspectPreparationChangesAsync(
         ScientificWorkRequest<PreparationChangeInspectionPayload> request, CancellationToken cancellationToken);
+    Task<WorkerResult<PreparationRecommendationObservations>> RecommendPreparationAsync(
+        ScientificWorkRequest<PreparationRecommendationPayload> request, CancellationToken cancellationToken)
+        => Task.FromResult(new WorkerResult<PreparationRecommendationObservations>(request.RequestId,
+            request.Payload.StudyRevisionId, null, null, WorkerResultStanding.Unobserved,
+            ImmutableArray<WorkerArtifact>.Empty, null, null, "recommendation-unavailable",
+            "The starting-state recommendation worker is unavailable."));
     Task<WorkerResult<ProteinPreparationObservations>> PrepareProteinAsync(
         ScientificWorkRequest<ProteinPreparationPayload> request, CancellationToken cancellationToken);
 }
@@ -1288,6 +1444,8 @@ public interface IMembraneModelAssessmentWork
 
 public interface IPlacementAssessmentWork
 {
+    Task<WorkerResult<ManualPlacementObservations>> PlaceManualAsync(
+        ScientificWorkRequest<ManualPlacementPayload> request, CancellationToken cancellationToken);
     Task<WorkerResult<PredictionRegionSummaryObservations>> SummarizePredictionEvidenceAsync(
         ScientificWorkRequest<PredictionRegionSummaryPayload> request, CancellationToken cancellationToken);
     Task<WorkerResult<PlacementObservations>> PlacePpmAsync(
@@ -1361,6 +1519,12 @@ public sealed record SourceInspectionPayload(
     int MaxAtoms,
     SourceRouteKind SourceKind,
     PredictionEvidenceAsset? Prediction);
+public sealed record SourcePreviewPayload(string SourcePath, string SourceSha256, int ModelIndex,
+    string? AssemblyId, int MaxAtoms);
+public sealed record SourcePreviewObservations(int ModelIndex, string? AssemblyId,
+    ImmutableArray<string> ChainIds, int AtomCount);
+public sealed record SourcePreviewAccount(string SourceId, int ModelIndex, string? AssemblyId,
+    string StructureUrl, ImmutableArray<string> ChainIds);
 public sealed record PredictedResidueConfidence(
     ResidueAddress Residue,
     double? PLddt,
@@ -1412,7 +1576,9 @@ public sealed record SourcePartnerObservation(
     string Kind,
     int AtomCount,
     string? Chain,
-    int? Residue);
+    int? Residue,
+    string? InsertionCode = null,
+    string? DisplayName = null);
 
 [JsonConverter(typeof(JsonStringEnumConverter<SourceResidueKind>))]
 public enum SourceResidueKind
@@ -1439,7 +1605,8 @@ public sealed record SourceModelObservation(
     ImmutableArray<SourceAssemblyObservation> Assemblies,
     ImmutableArray<SourcePartnerObservation> Partners,
     ImmutableArray<SourceResidueObservation> Residues,
-    int AtomCount);
+    int AtomCount,
+    string? SourceModelId = null);
 public sealed record SourceInspectionObservations(
     string SourceFormat,
     ImmutableArray<SourceModelObservation> Models,
@@ -1503,7 +1670,41 @@ public sealed record ProteinPreparationPayload(
     ImmutableArray<DisulfideChoice> ApprovedDisulfides,
     ImmutableArray<ResidueVariantChoice> ResidueVariants,
     ImmutableArray<ForceFieldAsset> ForceFieldFiles,
-    ProteinGeometryMeasurementSpec GeometrySpec);
+    ProteinGeometryMeasurementSpec GeometrySpec,
+    bool NormalizeProteinHydrogens = false,
+    int? PlanSeed = null);
+
+public sealed record PreparationRecommendationPayload(
+    string StudyRevisionId,
+    double NominalPh,
+    double DisulfideCandidateMaxSgDistanceAngstrom,
+    string SourcePath,
+    string SourceSha256,
+    int ModelIndex,
+    string? AssemblyId,
+    ImmutableArray<ChainSelection> ChainSelections,
+    ImmutableArray<AlternateLocationChoice> AltlocChoices,
+    ImmutableArray<DisulfideChoice> ApprovedDisulfides,
+    ImmutableArray<SourcePartnerObservation> RetainedPartners,
+    ImmutableArray<AtomAddress> ProposedHeavyAtoms,
+    ImmutableArray<ResidueVariantChoice> Overrides,
+    ImmutableArray<ForceFieldAsset> ForceFieldFiles,
+    ImmutableArray<string> PermittedVariants,
+    ProteinGeometryMeasurementSpec GeometrySpec,
+    int Seed);
+public sealed record PreparationRecommendationObservations(
+    string PlanSha256,
+    string CandidateSha256,
+    ImmutableArray<RecommendedStateChoice> Choices,
+    ImmutableArray<AtomAddress> ProposedHeavyAtoms,
+    ImmutableArray<AtomAddress> RemovedSourceHydrogens,
+    int CandidateAtomCount,
+    ProteinPreparationObservations CandidateObservations,
+    string Method,
+    string MethodVersion,
+    double NominalPh,
+    int Seed,
+    bool JointParameterizationObserved);
 
 public sealed record ProteinPreparationObservations(
     int SourceAtomCount,
@@ -1545,6 +1746,19 @@ public sealed record PlacementObservations(
     ImmutableArray<string> InterpretationWarnings,
     string AssumedMembrane);
 
+public sealed record ManualPlacementPayload(string StudyRevisionId, string PreparedProteinId,
+    string PreparedPdbPath, string PreparedSha256, int PreparedAtomCount,
+    ImmutableArray<MolecularRepresentation> LeafletSpecies,
+    PlacementStartingPosition StartingPosition,
+    double OffsetXAngstrom, double OffsetYAngstrom, double OffsetZAngstrom,
+    double RotationXDegrees, double RotationYDegrees, double RotationZDegrees,
+    int MaximumAtomCount);
+public sealed record ManualPlacementObservations(int SourceAtomCount, int OrientedAtomCount,
+    double AppliedTranslationXAngstrom, double AppliedTranslationYAngstrom,
+    double AppliedTranslationZAngstrom, double HeadgroupBoundaryAngstrom,
+    double MaximumRigidDeviationAngstrom,
+    ImmutableArray<string> GeometryWarnings);
+
 public sealed record PlacementAdjustmentPayload(
     string StudyRevisionId,
     string SourceProposalId,
@@ -1553,7 +1767,6 @@ public sealed record PlacementAdjustmentPayload(
     double TiltAboutXDegrees,
     double TiltAboutYDegrees,
     double RotationAboutNormalDegrees,
-    string Rationale,
     string OrientedPdbSha256 = "");
 public sealed record PlacementAdjustmentObservations(
     int SourceAtomCount,

@@ -151,7 +151,7 @@ def _native_representation(directory: Path, raw: Any, species: str, category: st
 def _native_atom_name(name: str, species: str) -> str:
     # OpenMM's PDB reader moves the final digit of long Lipid21 acyl names to
     # the front. The exact reference atom order and bonds are checked below.
-    if species in {"DMPC", "POPC"}:
+    if species in {"DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "POPC", "POPE"}:
         match = re.fullmatch(r"([0-9])C(21|31)", name)
         if match:
             return f"C{match.group(2)}{match.group(1)}"
@@ -182,22 +182,22 @@ def _native_signed_volume(points: list[tuple[float, float, float]],
 
 def _native_alkene_cosine(points: list[tuple[float, float, float]],
                           names: dict[str, int], bonds: set[tuple[int, int]],
-                          raw: Any) -> float:
+                          raw: Any, species: str = "POPC") -> float:
     check = require_mapping(raw, "molecular alkene check")
     requested = check.get("atomNames")
     if (check.get("kind") != "alkene" or check.get("expected") != "cis" or
             not isinstance(requested, list) or len(requested) != 4 or
             len(set(requested)) != 4 or any(name not in names for name in requested)):
-        raise WorkError("invalidTemplate", "POPC needs its identified cis-alkene descriptor")
+        raise WorkError("invalidTemplate", f"{species} needs its identified cis-alkene descriptor")
     indices = [names[name] for name in requested]
     if any(tuple(sorted((first, second))) not in bonds
            for first, second in zip(indices, indices[1:])):
-        raise WorkError("invalidTemplate", "POPC cis descriptor does not follow bonded atoms")
+        raise WorkError("invalidTemplate", f"{species} cis descriptor does not follow bonded atoms")
     first, second, third, fourth = (points[index] for index in indices)
     axis = tuple(third[i] - second[i] for i in range(3))
     axis_squared = sum(value * value for value in axis)
     if not math.isfinite(axis_squared) or axis_squared <= 1e-8:
-        raise WorkError("providerMismatch", "A POPC alkene has unresolved central-bond geometry")
+        raise WorkError("providerMismatch", f"A {species} alkene has unresolved central-bond geometry")
     left = tuple(first[i] - second[i] for i in range(3))
     right = tuple(fourth[i] - third[i] for i in range(3))
     dot_left = sum(left[i] * axis[i] for i in range(3)) / axis_squared
@@ -209,7 +209,7 @@ def _native_alkene_cosine(points: list[tuple[float, float, float]],
                             sum(value * value for value in right_projected))
     cosine = numerator / denominator if denominator > 1e-8 else math.nan
     if not math.isfinite(cosine) or cosine <= 0.5:
-        raise WorkError("providerMismatch", "A POPC cis alkene differs from the declared chemistry")
+        raise WorkError("providerMismatch", f"A {species} cis alkene differs from the declared chemistry")
     return cosine
 
 
@@ -233,22 +233,22 @@ def _native_molecule_matches(residue: Any, reference: Any, species: str, positio
                 for a, e in zip(actual, expected)) or
             actual_bonds != expected_bonds):
         raise WorkError("providerMismatch", f"Native {species} atom order, element, or molecular bonds differ")
-    if species in {"DMPC", "POPC"}:
-        expected_count = 1 if species == "DMPC" else 2
+    if species in {"DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "POPC", "POPE"}:
+        expected_count = 1 + {"DOPC": 2, "POPC": 1, "POPE": 1}.get(species, 0)
         if not isinstance(stereo_checks, list) or len(stereo_checks) != expected_count:
             raise WorkError("invalidTemplate", f"{species} lacks its qualified stereo descriptors")
         points = [tuple(float(value) for value in positions[atom.index].value_in_unit(unit.angstrom))
                   for atom in actual]
         names = {expected_atom.name: index for index, expected_atom in enumerate(expected)}
         _native_signed_volume(points, names, stereo_checks[0], species)
-        if species == "POPC":
-            _native_alkene_cosine(points, names, actual_bonds, stereo_checks[1])
+        for check in stereo_checks[1:]:
+            _native_alkene_cosine(points, names, actual_bonds, check, species)
     return actual
 
 
 def _native_lipid_side(atoms: list[Any], points: list[tuple[float, float, float]],
                        center_angstrom: float, species: str) -> str:
-    if species not in {"DMPC", "POPC"}:
+    if species not in {"DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "POPC", "POPE"}:
         raise WorkError("unsupportedPolicy", "Native leaflet geometry has no identified lipid")
     phosphorus = [atom for atom in atoms if atom.name == "P"]
     if len(phosphorus) != 1:
@@ -257,8 +257,13 @@ def _native_lipid_side(atoms: list[Any], points: list[tuple[float, float, float]
     if head_z == center_angstrom:
         raise WorkError("providerMismatch", f"A {species} phosphate lies on the physical side divider")
     side = "upper" if head_z > center_angstrom else "lower"
-    tail_names = {"C214", "C314"} if species == "DMPC" else {"C218", "C316"}
-    tails = [atom for atom in atoms if _native_atom_name(atom.name, species) in tail_names]
+    tails = []
+    for chain in ("2", "3"):
+        chain_atoms = [(int(match.group(1)), atom) for atom in atoms
+                       if (match := re.fullmatch(rf"C{chain}(\d+)",
+                           _native_atom_name(atom.name, species)))]
+        if chain_atoms:
+            tails.append(max(chain_atoms, key=lambda item: item[0])[1])
     if len(tails) != 2 or (head_z - sum(points[atom.index][2] for atom in tails) / 2) * (
             1 if side == "upper" else -1) <= 0:
         raise WorkError("providerMismatch", f"A native {species} has the wrong leaflet head-to-tail orientation")
@@ -277,8 +282,8 @@ def _native_provider_identity(payload: dict[str, Any]) -> tuple[Path, str, str]:
             importlib.metadata.version("openmm") != "8.6.0"):
         raise WorkError("providerMismatch", "Installed OpenMM provider is not the identified native 8.6 build")
     species = payload.get("lipidTypeArgument")
-    if species not in {"DMPC", "POPC"}:
-        raise WorkError("unsupportedPolicy", "Native construction covers identified DMPC or POPC only")
+    if species not in {"DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "POPC", "POPE"}:
+        raise WorkError("unsupportedPolicy", "Native construction needs an identified supported pure phospholipid")
     mode = payload.get("nativePatchMode", "installed")
     expected_path = (Path(openmm.app.__file__).resolve().parent / "data" / f"{species}.pdb").resolve()
     if mode == "installed":
@@ -291,47 +296,68 @@ def _native_provider_identity(payload: dict[str, Any]) -> tuple[Path, str, str]:
         expected_sha = require_text(payload.get("nativePatchSha256"), "nativePatchSha256")
         verify_sha256(expected_path, expected_sha, "nativePatchSha256")
         return expected_path, expected_sha, version
-    if (mode != "popc-62-109-deletion" or species != "POPC" or
-            payload.get("removedNativeLipidResidueIds") != ["62", "109"]):
+    if mode == "mapped-lipid21-zenodo-popc":
+        if (species != "POPC" or payload.get("removedNativeLipidResidueIds") not in (None, []) or
+                payload.get("nativeSourcePatchSha256") !=
+                "5ec34d5a49f208af18b20eaeb97276bd5737e3c8bf6ef265f20fde3718b3e702" or
+                payload.get("nativePatchSha256") !=
+                "464ecd96499b9574b8d35e60dbf61b185e487a10296cd09aabdde4db8b2c7c37"):
+            raise WorkError("providerMismatch", "The mapped POPC patch is not the qualified identified source and conversion")
+        source = Path(require_text(payload.get("nativeSourcePatchPath"),
+                                   "nativeSourcePatchPath")).resolve()
+        derived = Path(require_text(payload.get("nativePatchPath"), "nativePatchPath")).resolve()
+        if source.suffix.lower() != ".gro" or derived.suffix.lower() != ".cif":
+            raise WorkError("providerMismatch", "The mapped POPC patch needs its exact GRO source and mmCIF conversion")
+        verify_sha256(source, payload["nativeSourcePatchSha256"], "nativeSourcePatchSha256")
+        verify_sha256(derived, payload["nativePatchSha256"], "nativePatchSha256")
+        return derived, payload["nativePatchSha256"], version
+    valid_custom = (
+        mode == "popc-62-109-deletion" and species == "POPC" and
+        payload.get("removedNativeLipidResidueIds") == ["62", "109"] or
+        mode == "balanced-defect-deletion" and
+        (species, payload.get("removedNativeLipidResidueIds")) in (
+            ("DOPC", ["4", "90"]), ("DPPC", ["6", "70"])))
+    if not valid_custom:
         raise WorkError("unsupportedPolicy", "No identified custom native patch derivation matches this request")
     declared_source = Path(require_text(payload.get("nativeSourcePatchPath"),
                                         "nativeSourcePatchPath")).resolve()
     if declared_source != expected_path or not expected_path.is_file():
-        raise WorkError("providerMismatch", "Custom POPC source is not the installed OpenMM resource")
+        raise WorkError("providerMismatch", f"Custom {species} source is not the installed OpenMM resource")
     source_sha = require_text(payload.get("nativeSourcePatchSha256"), "nativeSourcePatchSha256")
     verify_sha256(expected_path, source_sha, "nativeSourcePatchSha256")
     derived = Path(require_text(payload.get("nativePatchPath"), "nativePatchPath")).resolve()
     if derived == expected_path or not derived.is_file():
-        raise WorkError("providerMismatch", "Custom POPC patch must be a separate identified resource")
+        raise WorkError("providerMismatch", f"Custom {species} patch must be a separate identified resource")
     derived_sha = require_text(payload.get("nativePatchSha256"), "nativePatchSha256")
     verify_sha256(derived, derived_sha, "nativePatchSha256")
     return derived, derived_sha, version
 
 
-def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any,
-                                       stereo_checks: Any,
-                                       removed_ids: list[str]) -> None:
-    """Prove the custom patch only deletes the named opposing lipids."""
+def _native_verified_deleted_patch(source: Any, derived: Any, reference: Any,
+                                   stereo_checks: Any, removed_ids: list[str],
+                                   species: str, residue_name: str) -> None:
+    """Prove an identified derivative only deletes its two defective lipids."""
     from collections import Counter, defaultdict
     from openmm import unit
 
     original_residues = list(source.topology.residues())
     derived_residues = list(derived.topology.residues())
     omitted = [residue for residue in original_residues
-               if residue.name == "POP" and residue.id in removed_ids]
+               if residue.name == residue_name and residue.id in removed_ids]
     survivors = [residue for residue in original_residues if residue not in omitted]
     if (len(omitted) != 2 or [residue.id for residue in omitted] != removed_ids or
             len(survivors) != len(derived_residues) or
             Counter(residue.name for residue in derived_residues) !=
-                Counter({"POP": 126, "HOH": 5120})):
-        raise WorkError("providerMismatch", "Custom POPC patch does not have the exact two-lipid deletion")
+                Counter(residue.name for residue in survivors) or
+            sum(residue.name == residue_name for residue in derived_residues) != 126):
+        raise WorkError("providerMismatch", f"Custom {species} patch does not have the exact two-lipid deletion")
     source_cell = source.topology.getPeriodicBoxVectors()
     derived_cell = derived.topology.getPeriodicBoxVectors()
     if (source_cell is None or derived_cell is None or
             any(abs(source_cell[i][axis].value_in_unit(unit.angstrom) -
                     derived_cell[i][axis].value_in_unit(unit.angstrom)) > 1e-6
                 for i in range(3) for axis in range(3))):
-        raise WorkError("providerMismatch", "Custom POPC patch changed the source periodic cell")
+        raise WorkError("providerMismatch", f"Custom {species} patch changed the source periodic cell")
 
     def bonds_by_residue(topology: Any) -> dict[int, set[tuple[int, int]]]:
         local = {atom.index: index for residue in topology.residues()
@@ -339,7 +365,7 @@ def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any
         bonds: dict[int, set[tuple[int, int]]] = defaultdict(set)
         for first, second in topology.bonds():
             if first.residue is not second.residue:
-                raise WorkError("providerMismatch", "Custom POPC patch has a cross-residue bond")
+                raise WorkError("providerMismatch", f"Custom {species} patch has a cross-residue bond")
             bonds[first.residue.index].add(tuple(sorted((local[first.index], local[second.index]))))
         return bonds
 
@@ -352,7 +378,7 @@ def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any
                 (retained.name, retained.id, retained.chain.id, retained.insertionCode) or
                 len(original_atoms) != len(retained_atoms) or
                 source_bonds[original.index] != derived_bonds[retained.index]):
-            raise WorkError("providerMismatch", "Custom POPC patch changed a survivor identity or bond")
+            raise WorkError("providerMismatch", f"Custom {species} patch changed a survivor identity or bond")
         for before, after in zip(original_atoms, retained_atoms):
             before_identity = before.element, before.name, before.formalCharge
             after_identity = after.element, after.name, after.formalCharge
@@ -360,7 +386,7 @@ def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any
                     max(abs((source.positions[before.index][axis] -
                              derived.positions[after.index][axis]).value_in_unit(unit.angstrom))
                         for axis in range(3)) > 1e-4):
-                raise WorkError("providerMismatch", "Custom POPC patch changed survivor atom identity or coordinate")
+                raise WorkError("providerMismatch", f"Custom {species} patch changed survivor atom identity or coordinate")
 
     expected_bonds = _native_molecule_bonds(reference.topology, next(reference.topology.residues()))
     points = [tuple(float(value) for value in point.value_in_unit(unit.angstrom))
@@ -368,13 +394,62 @@ def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any
     center = derived_cell[2][2].value_in_unit(unit.angstrom) / 2
     sides: Counter[str] = Counter()
     for residue in derived_residues:
-        if residue.name != "POP":
+        if residue.name != residue_name:
             continue
-        atoms = _native_molecule_matches(residue, reference, "POPC", derived.positions,
+        atoms = _native_molecule_matches(residue, reference, species, derived.positions,
                                          stereo_checks, derived_bonds[residue.index], expected_bonds)
-        sides[_native_lipid_side(atoms, points, center, "POPC")] += 1
+        sides[_native_lipid_side(atoms, points, center, species)] += 1
     if sides != Counter({"upper": 63, "lower": 63}):
-        raise WorkError("providerMismatch", "Custom POPC patch lacks exact opposing 63/63 leaflets")
+        raise WorkError("providerMismatch", f"Custom {species} patch lacks exact opposing 63/63 leaflets")
+
+
+def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any,
+                                       stereo_checks: Any,
+                                       removed_ids: list[str]) -> None:
+    _native_verified_deleted_patch(source, derived, reference, stereo_checks,
+                                   removed_ids, "POPC", "POP")
+
+
+def _native_verified_mapped_popc_patch(patch: Any, reference: Any,
+                                      stereo_checks: Any) -> None:
+    """Check every molecule of the pinned intact converted POPC input."""
+    from collections import Counter
+    from openmm import unit
+
+    residues = list(patch.topology.residues())
+    lipids = [residue for residue in residues if residue.name == "POPC"]
+    waters = [residue for residue in residues if residue.name == "HOH"]
+    if (len(lipids) != 128 or len(waters) != 5120 or len(residues) != 5248 or
+            patch.topology.getNumAtoms() != 32512):
+        raise WorkError("providerMismatch", "Mapped POPC input changed its complete lipid or water population")
+    vectors = patch.topology.getPeriodicBoxVectors()
+    if vectors is None or any(abs(vectors[i][j].value_in_unit(unit.angstrom)) > 1e-6
+                              for i in range(3) for j in range(3) if i != j):
+        raise WorkError("providerMismatch", "Mapped POPC input lacks its orthorhombic periodic cell")
+    lengths = [vectors[i][i].value_in_unit(unit.angstrom) for i in range(3)]
+    if any(not math.isfinite(value) or value <= 0 for value in lengths):
+        raise WorkError("providerMismatch", "Mapped POPC input has a nonfinite or empty cell")
+    if any(first.residue is not second.residue for first, second in patch.topology.bonds()):
+        raise WorkError("providerMismatch", "Mapped POPC input contains a cross-molecule bond")
+    water_names = [atom.name for atom in waters[0].atoms()]
+    if water_names != ["O", "H1", "H2"] or any(
+            [atom.name for atom in residue.atoms()] != water_names or
+            len(_native_molecule_bonds(patch.topology, residue)) != 2
+            for residue in waters):
+        raise WorkError("providerMismatch", "Mapped POPC input changed its water identities or bonds")
+    expected_bonds = _native_molecule_bonds(reference.topology,
+                                            next(reference.topology.residues()))
+    points = [tuple(float(value) for value in position.value_in_unit(unit.angstrom))
+              for position in patch.positions]
+    side_counts: Counter[str] = Counter()
+    for residue in lipids:
+        atoms = _native_molecule_matches(residue, reference, "POPC", patch.positions,
+                                         stereo_checks,
+                                         _native_molecule_bonds(patch.topology, residue),
+                                         expected_bonds)
+        side_counts[_native_lipid_side(atoms, points, lengths[2] / 2, "POPC")] += 1
+    if side_counts != Counter({"upper": 64, "lower": 64}):
+        raise WorkError("providerMismatch", "Mapped POPC input changed its opposing leaflet populations")
 
 
 def _native_system_settings(ff: Any, topology: Any, settings_raw: Any,
@@ -465,10 +540,10 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
     lipid_type = payload.get("lipidTypeArgument")
     patch_mode = payload.get("nativePatchMode", "installed")
     installed_patch, patch_sha, provider_version = _native_provider_identity(payload)
-    if (lipid_type not in {"DMPC", "POPC"} or
+    if (lipid_type not in {"DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "POPC", "POPE"} or
             payload.get("positiveIonArgument") != "Na+" or
             payload.get("negativeIonArgument") != "Cl-"):
-        raise WorkError("unsupportedPolicy", "This native route covers identified pure DMPC or POPC with NaCl only")
+        raise WorkError("unsupportedPolicy", "This native route covers identified pure phospholipids with NaCl only")
     center = require_number(payload.get("membraneCenterZNanometers"), "membraneCenterZNanometers")
     padding = require_number(payload.get("minimumPaddingNanometers"), "minimumPaddingNanometers", 0.000001)
     ionic_strength = require_number(payload.get("ionicStrengthMolar"), "ionicStrengthMolar", 0)
@@ -492,7 +567,9 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
         representations[species], references[species] = representation, reference
     lipid = representations[lipid_type]
     heads = lipid.get("headAtomIndices")
-    if heads != [20] or list(references[lipid_type].topology.atoms())[19].name != "P":
+    if (not isinstance(heads, list) or len(heads) != 1 or
+            not isinstance(heads[0], int) or heads[0] < 1 or heads[0] > lipid["atomCount"] or
+            list(references[lipid_type].topology.atoms())[heads[0] - 1].name != "P"):
         raise WorkError("invalidTemplate", f"The native {lipid_type} route requires the declared phosphate head index")
 
     oriented = PDBFile(str(oriented_path))
@@ -535,8 +612,11 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
     protein_charge = _nonbonded_charge(ff.createSystem(approved_graph))
     if abs(protein_charge - round(protein_charge)) > 1e-4:
         raise WorkError("unsupportedPolicy", "Native monovalent neutralization requires integral protein charge")
-    patch = PDBFile(str(installed_patch))
-    native_residue_name = {"DMPC": "DMP", "POPC": "POP"}[lipid_type]
+    patch = (PDBxFile(str(installed_patch)) if patch_mode == "mapped-lipid21-zenodo-popc"
+             else PDBFile(str(installed_patch)))
+    native_residue_name = (lipid_type if patch_mode == "mapped-lipid21-zenodo-popc" else
+                           {"DLPC": "DLP", "DLPE": "DLP", "DMPC": "DMP",
+                            "DOPC": "DOP", "DPPC": "DPP", "POPC": "POP", "POPE": "POP"}[lipid_type])
     patch_lipid = next((residue for residue in patch.topology.residues()
                         if residue.name == native_residue_name), None)
     if patch_lipid is None:
@@ -546,12 +626,16 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
     patch_bonds = _native_molecule_bonds(patch.topology, patch_lipid)
     _native_molecule_matches(patch_lipid, references[lipid_type], lipid_type, patch.positions,
                              lipid.get("stereoChecks"), patch_bonds, reference_bonds[lipid_type])
-    if patch_mode == "popc-62-109-deletion":
+    if patch_mode == "mapped-lipid21-zenodo-popc":
+        _native_verified_mapped_popc_patch(patch, references[lipid_type],
+                                           lipid.get("stereoChecks"))
+    elif patch_mode != "installed":
         source_patch = PDBFile(require_text(payload.get("nativeSourcePatchPath"),
                                             "nativeSourcePatchPath"))
-        _native_verified_custom_popc_patch(source_patch, patch, references[lipid_type],
-                                           lipid.get("stereoChecks"),
-                                           payload["removedNativeLipidResidueIds"])
+        _native_verified_deleted_patch(source_patch, patch, references[lipid_type],
+                                       lipid.get("stereoChecks"),
+                                       payload["removedNativeLipidResidueIds"],
+                                       lipid_type, native_residue_name)
     # A source PDB may carry a placeholder 1 A CRYST1 record.  Modeller uses
     # the input cell's Z when it exists, so it must be cleared before this call.
     oriented.topology.setUnitCellDimensions(None)
@@ -561,14 +645,14 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
     progress("nativeMembraneStarted", {"providerVersion": provider_version,
                                        "nativePatchSha256": patch_sha.lower(),
                                        "nativePatchMode": patch_mode})
-    modeller.addMembrane(ff, lipidType=patch if patch_mode == "popc-62-109-deletion" else lipid_type,
+    modeller.addMembrane(ff, lipidType=patch if patch_mode != "installed" else lipid_type,
                         membraneCenterZ=center * unit.nanometer,
                         minimumPadding=padding * unit.nanometer,
                         positiveIon="Na+", negativeIon="Cl-",
                         ionicStrength=ionic_strength * unit.molar,
                         platform=Platform.getPlatformByName("CPU"))
     verify_sha256(installed_patch, patch_sha, "nativePatchSha256")
-    if patch_mode == "popc-62-109-deletion":
+    if patch_mode != "installed":
         verify_sha256(Path(payload["nativeSourcePatchPath"]),
                       payload["nativeSourcePatchSha256"], "nativeSourcePatchSha256")
     for raw in force_field_raw:
@@ -668,9 +752,8 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
             generated_by_index[atom.index] = (species, role, residue.index)
     if (any(role is None for role in role_by_index) or
             species_counts[("lipid", "upper", lipid_type)] == 0 or
-            species_counts[("lipid", "lower", lipid_type)] == 0 or
-            species_counts[("lipid", "upper", lipid_type)] != species_counts[("lipid", "lower", lipid_type)]):
-        raise WorkError("providerMismatch", f"Native result lacks complete pure symmetric {lipid_type} leaflets")
+            species_counts[("lipid", "lower", lipid_type)] == 0):
+        raise WorkError("providerMismatch", f"Native result lacks identified {lipid_type} on both physical leaflets")
 
     system = _native_system_settings(ff, topology, payload.get("systemSettings"), cell, water_atoms)
     from openmm import NonbondedForce

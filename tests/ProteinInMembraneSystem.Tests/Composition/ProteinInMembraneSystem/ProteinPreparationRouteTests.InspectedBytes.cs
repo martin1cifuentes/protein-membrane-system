@@ -47,17 +47,14 @@ public sealed partial class ProteinPreparationRouteTests
                 partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
         Assert.True(modeled.Established, modeled.Reason);
         var proposal = Assert.Single(modeled.Value!.Protein!.Changes);
-        var selected = await Command(product, ActorActionKind.SelectInspectionSubject,
-            new { subjectId = proposal.Id });
-        Assert.True(selected.Established, selected.Reason);
-        Assert.Contains(selected.Value!.Actions, action =>
+        Assert.Contains(modeled.Value!.Actions, action =>
             action.Kind == ActorActionKind.ApprovePreparationChange &&
             action.SubjectId == proposal.Id && action.Enabled);
 
         var previewPath = Assert.Single(Directory.EnumerateFiles(directory.Path,
             "selected-preview.pdb", SearchOption.AllDirectories));
         if (delete) File.Delete(previewPath);
-        else File.AppendAllText(previewPath, "changed after inspection");
+        else File.AppendAllText(previewPath, "changed after proposal");
 
         Assert.DoesNotContain(product.Snapshot().Actions, action =>
             action.Kind == ActorActionKind.ApprovePreparationChange &&
@@ -65,7 +62,7 @@ public sealed partial class ProteinPreparationRouteTests
         var refusal = await Command(product, ActorActionKind.ApprovePreparationChange,
             new { proposalId = proposal.Id, approve = true, rationale = "Approve exact CB" });
         Assert.False(refusal.Established);
-        Assert.Contains("structure", refusal.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("preview", refusal.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, worker.PrepareProteinCalls);
         Assert.Equal("review", product.Snapshot().Protein!.Status);
         Assert.Contains(product.Snapshot().Actions, action =>
@@ -89,23 +86,20 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(proposed.Established, proposed.Reason);
         var placement = Assert.IsType<PlacementAccount>(proposed.Value!.Placement);
         Assert.Equal("supported", placement.Status);
-        var selected = await Command(product, ActorActionKind.SelectInspectionSubject,
-            new { subjectId = placement.ProposalId });
-        Assert.True(selected.Established, selected.Reason);
-        Assert.Contains(selected.Value!.Actions, action =>
+        Assert.Contains(proposed.Value.Actions, action =>
             action.Kind == ActorActionKind.AdoptPlacement && action.Enabled);
 
         var orientedPath = Assert.Single(Directory.EnumerateFiles(directory.Path,
             "oriented.pdb", SearchOption.AllDirectories));
         if (delete) File.Delete(orientedPath);
-        else File.AppendAllText(orientedPath, "changed after inspection");
+        else File.AppendAllText(orientedPath, "changed after proposal");
 
         Assert.DoesNotContain(product.Snapshot().Actions, action =>
             action.Kind == ActorActionKind.AdoptPlacement && action.Enabled);
         var refusal = await Command(product, ActorActionKind.AdoptPlacement,
             new { proposalId = placement.ProposalId });
         Assert.False(refusal.Established);
-        Assert.Contains("structure", refusal.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("coordinates", refusal.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Null(product.Snapshot().Study!.AdoptedPlacementProposalId);
     }
 }

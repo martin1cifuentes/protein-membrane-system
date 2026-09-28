@@ -120,7 +120,7 @@ def click_molstar_atom(page, expected: dict):
       return false;
     }""", index)
     assert emitted, f"Mol* did not contain expected atom-site row {index}"
-    card = page.get_by_role("region", name="Selected atom correspondence")
+    card = page.get_by_role("region", name="Inspection selection")
     expect(card).to_contain_text(expected["resultAtomId"], timeout=30000)
     expect(card).to_contain_text(expected["moleculeRole"])
     if expected["generatedSpeciesId"]:
@@ -330,7 +330,7 @@ class InspectAndReattachRoute(unittest.TestCase):
                         page.get_by_role("button", name="Show workflow").click()
                     page.locator("#source-upload").set_input_files(str(SOURCE))
                     page.locator("#upload-provenance").select_option("experimental")
-                    page.get_by_role("button", name="Inspect uploaded source").click()
+                    page.get_by_role("button", name="Upload source").click()
                     revised = await_state(page, lambda state: state["study"] is not None and
                                           state["study"]["id"] != origin_id,
                                           "new study revision from new source choice", timeout=180)

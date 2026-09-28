@@ -31,7 +31,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[3]
-HOST = ROOT / "out" / "host" / "ProteinInMembrane.Host.dll"
+HOST = Path(os.environ.get("PIM_BROWSER_HOST", str(ROOT / "out" / "host" / "ProteinInMembrane.Host.dll"))).resolve()
 WORKER = ROOT / "out" / "python" / "bin" / "python"
 LAUNCHER = ROOT / "scripts" / "start-local.sh"
 POLICY = Path(os.environ.get(
@@ -39,7 +39,6 @@ POLICY = Path(os.environ.get(
     str(ROOT / "config" / "policies" / "protein-membrane-slice2.json"),
 )).resolve()
 ARTIFACTS = ROOT / "out" / "browser-acceptance" / "slice2"
-PURPOSE = "Compare a defined mixed asymmetric PC and PE bilayer for a placement study."
 
 
 @contextmanager
@@ -52,14 +51,17 @@ def running_host(workspace: Path, catalogue: Path):
     environment = dict(
         os.environ,
         PIM_PORT=str(port),
+        ASPNETCORE_URLS=base,
         PIM_WORKSPACE_ROOT=str(workspace),
         PIM_POLICY_CATALOGUE=str(catalogue),
+        PIM_WORKER_PYTHON=str(WORKER),
+        PIM_OWNER_SOURCE_ROOT=str(ROOT / "src" / "ProteinInMembrane.Host"),
     )
     environment.pop("PIM_PPM_EXECUTABLE", None)
     log_path = workspace.parent / "membrane-host.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(
-            [str(LAUNCHER)], cwd=ROOT, env=environment,
+            ["dotnet", str(HOST)] if os.environ.get("PIM_BROWSER_HOST") else [str(LAUNCHER)], cwd=ROOT, env=environment,
             stdout=log, stderr=subprocess.STDOUT,
         )
         try:
@@ -148,9 +150,16 @@ def choose_fraction(page, side: str, index: int, species: str, percentage: str):
 
 
 def inspect_membrane(page):
-    page.get_by_role("button", name="Inspect membrane").click()
+    page.get_by_role("button", name="View proposal account").click()
+    page.get_by_role("button", name="Collapse inputs").click()
     expect(page.locator(".workspace")).to_have_class(re.compile(r"\bworkflow-closed\b"))
     expect(page.locator(".evidence-panel")).to_be_visible()
+
+
+def open_membrane(page, base):
+    page.goto(base, wait_until="domcontentloaded")
+    page.get_by_role("navigation", name="Research work areas")\
+        .get_by_role("button", name="Membrane").click()
 
 
 def require_intended_preview(page):
@@ -257,7 +266,7 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                 browser = chromium(playwright)
                 try:
                     page = browser.new_page(viewport={"width": 1672, "height": 941})
-                    page.goto(base, wait_until="domcontentloaded")
+                    open_membrane(page, base)
                     before = current_state(page)
                     self.assertIsNone(before["membrane"])
                     self.assertIsNone(before["placement"])
@@ -272,7 +281,6 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     choose_fraction(page, "Lower", 1, "POPC", "25")
                     page.get_by_role("button", name="Add lipid").nth(1).click()
                     choose_fraction(page, "Lower", 2, "POPE", "75")
-                    page.locator("#scientific-purpose").fill(PURPOSE)
                     page.get_by_role("button", name="Propose membrane model").click()
                     proposed = await_membrane_status(page, "proposed")
                     model_id = proposed["membrane"]["modelId"]
@@ -292,7 +300,7 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     assert_exact_leaflets(self, panel.inner_text(),
                                           {"POPC": 60, "POPE": 40},
                                           {"POPC": 25, "POPE": 75})
-                    expect(panel).to_contain_text(PURPOSE)
+                    expect(panel.get_by_text("Purpose and fixed study conditions")).to_have_count(0)
                     expect(panel).to_contain_text("0.15 M")
                     expect(panel).to_contain_text("charge-neutralizing compatible monovalent counterions")
                     expect(panel).to_contain_text("303 K")
@@ -300,8 +308,8 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     capture_review(self, page, "proposed", 1672, 941)
                     capture_review(self, page, "proposed", 820, 760)
 
-                    page.get_by_role("button", name="Show workflow").click()
-                    page.get_by_role("button", name="Adopt and assess model").click()
+                    page.get_by_role("button", name="Show inputs").click()
+                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
                     assessed = await_membrane_status(page, "assessed")
                     self.assertEqual(assessed["membrane"]["modelId"], model_id)
                     self.assertEqual(assessed["study"]["number"], before["study"]["number"] + 1)
@@ -326,7 +334,7 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     assert_exact_leaflets(self, panel.inner_text(),
                                           {"POPC": 60, "POPE": 40},
                                           {"POPC": 25, "POPE": 75})
-                    expect(panel).to_contain_text(PURPOSE)
+                    expect(panel.get_by_text("Purpose and fixed study conditions")).to_have_count(0)
                     expect(panel).to_contain_text("Lipid21")
                     expect(panel).to_contain_text(membrane_policy["id"])
                     expect(panel).to_contain_text(membrane_policy["version"])
@@ -345,11 +353,11 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     self.assertNotRegex(panel.inner_text(), r"(?i)\bachieved\s+(?:molecule count|composition)\b")
                     for summary in panel.get_by_text("Coordinate and parameter asset identities").all():
                         summary.click()
-                    expect(page.locator(".stage-strip")).to_contain_text("Stage assessment")
+                    expect(page.locator(".stage-strip")).to_contain_text("None yet")
                     capture_review(self, page, "assessed", 1672, 941)
                     capture_review(self, page, "assessed", 820, 760)
 
-                    page.get_by_role("button", name="Show workflow").click()
+                    page.get_by_role("button", name="Show inputs").click()
                     page.get_by_label("Lower leaflet percentage 1", exact=True).fill("30")
                     page.get_by_label("Lower leaflet percentage 2", exact=True).fill("70")
                     page.get_by_role("button", name="Propose membrane model").click()
@@ -365,7 +373,7 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     self.assertEqual(revised_proposal["membrane"]["speciesSupport"], [])
                     self.assertEqual(revised_proposal["membrane"]["evidence"], [])
                     self.assertIsNone(revised_proposal["placement"])
-                    page.get_by_role("button", name="Adopt and assess model").click()
+                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
                     revised_assessed = await_membrane_status(page, "assessed")
                     self.assertEqual(revised_assessed["membrane"]["modelId"], revised_id)
                     self.assertEqual(revised_assessed["study"]["number"], assessed["study"]["number"] + 1)
@@ -387,22 +395,22 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                 browser = chromium(playwright)
                 try:
                     page = browser.new_page(viewport={"width": 1672, "height": 941})
-                    page.goto(base, wait_until="domcontentloaded")
+                    open_membrane(page, base)
                     before = current_state(page)
                     self.assertIn("POPC", {item["speciesId"] for item in before["availableLipids"]})
                     choose_fraction(page, "Upper", 1, "POPC", "60")
                     choose_fraction(page, "Lower", 1, "POPC", "100")
-                    page.locator("#scientific-purpose").fill("A deliberately simple physical bilayer.")
                     expect(page.get_by_role("button", name="Propose membrane model")).to_be_disabled()
                     self.assertIsNone(current_state(page)["membrane"])
-                    expect(page.locator("#researcher-workflow")).to_contain_text("totaling 100%")
+                    expect(page.locator("#membrane-workflow .input-guidance"))\
+                        .to_contain_text("upper leaflet totals 60.0%; adjust it to 100%")
 
                     page.get_by_label("Upper leaflet percentage 1", exact=True).fill("100")
                     page.get_by_role("button", name="Propose membrane model").click()
                     proposed = await_membrane_status(page, "proposed")
                     model_id = proposed["membrane"]["modelId"]
                     self.assertEqual(proposed["study"]["number"], before["study"]["number"])
-                    page.get_by_role("button", name="Adopt and assess model").click()
+                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
                     rejected = await_membrane_status(page, "notEstablished")
                     self.assertEqual(rejected["membrane"]["modelId"], model_id)
                     self.assertEqual(rejected["study"]["number"], before["study"]["number"] + 1)
@@ -419,10 +427,8 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     capture_review(self, page, "not-established", 1672, 941)
                     capture_review(self, page, "not-established", 820, 760)
 
-                    page.get_by_role("button", name="Show workflow").click()
+                    page.get_by_role("button", name="Show inputs").click()
                     expect(page.get_by_role("button", name="Propose membrane model")).to_be_enabled()
-                    page.locator("#scientific-purpose").fill(
-                        "Reconsider the unsupported membrane premise before placement.")
                     page.get_by_role("button", name="Propose membrane model").click()
                     revised = await_membrane_status(page, "proposed")
                     self.assertNotEqual(revised["membrane"]["modelId"], model_id)
@@ -440,15 +446,13 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                 browser = chromium(playwright)
                 try:
                     page = browser.new_page(viewport={"width": 1672, "height": 941})
-                    page.goto(base, wait_until="domcontentloaded")
+                    open_membrane(page, base)
                     self.assertEqual(current_state(page)["availableLipids"], [])
                     for side in ("Upper", "Lower"):
                         page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option("__other__")
                         page.get_by_label(f"{side} leaflet exact species ID 1", exact=True).fill(unlisted)
                         page.get_by_label(f"{side} leaflet percentage 1", exact=True).fill("100")
                     page.get_by_role("button", name="Add lipid").nth(0).click()
-                    page.locator("#scientific-purpose").fill(
-                        "Inspect the exact requested chemical identity before choosing a representation.")
                     expect(page.get_by_role("button", name="Propose membrane model")).to_be_enabled()
                     page.get_by_role("button", name="Propose membrane model").click()
                     proposed = await_membrane_status(page, "proposed")
@@ -460,14 +464,14 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     ])
                     inspect_membrane(page)
                     expect(page.locator(".evidence-panel")).to_contain_text(unlisted)
-                    page.get_by_role("button", name="Adopt and assess model").click()
+                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
                     rejected = await_membrane_status(page, "notEstablished")
                     self.assertEqual(rejected["membrane"]["upper"][0]["speciesId"], unlisted)
                     self.assertEqual(rejected["membrane"]["lower"][0]["speciesId"], unlisted)
                     self.assertIsNone(rejected["placement"])
                     self.assertFalse(next(item["enabled"] for item in rejected["actions"]
                                           if item["kind"] == "proposePlacement"))
-                    page.get_by_role("button", name="Show workflow").click()
+                    page.get_by_role("button", name="Show inputs").click()
                     inspect_membrane(page)
                     expect(page.locator(".evidence-panel")).to_contain_text(unlisted)
                     expect(page.locator(".evidence-panel")).to_contain_text(
@@ -485,7 +489,7 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                     browser = chromium(playwright)
                     try:
                         page = browser.new_page(viewport={"width": 1672, "height": 941})
-                        page.goto(base, wait_until="domcontentloaded")
+                        open_membrane(page, base)
                         before = current_state(page)
                         candidates = {item["speciesId"] for item in before["availableLipids"]}
                         self.assertNotIn("POPC", candidates,
@@ -496,15 +500,13 @@ class BrowserMembraneChoiceTests(unittest.TestCase):
                             page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option("__other__")
                             page.get_by_label(f"{side} leaflet exact species ID 1", exact=True).fill("POPC")
                             page.get_by_label(f"{side} leaflet percentage 1", exact=True).fill("100")
-                        page.locator("#scientific-purpose").fill(
-                            f"Assess exactly POPC despite an identified {fault} asset failure.")
                         page.get_by_role("button", name="Propose membrane model").click()
                         proposed = await_membrane_status(page, "proposed")
                         self.assertEqual(proposed["membrane"]["upper"],
                                          [{"speciesId": "POPC", "fraction": 1.0}])
                         self.assertEqual(proposed["membrane"]["lower"],
                                          [{"speciesId": "POPC", "fraction": 1.0}])
-                        page.get_by_role("button", name="Adopt and assess model").click()
+                        page.get_by_role("button", name="Adopt and assess displayed proposal").click()
                         refused = await_membrane_status(page, "notEstablished")
                         self.assertEqual(refused["membrane"]["modelId"], proposed["membrane"]["modelId"])
                         self.assertEqual(refused["membrane"]["upper"], proposed["membrane"]["upper"])

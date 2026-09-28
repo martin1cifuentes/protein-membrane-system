@@ -79,7 +79,7 @@ export function AttemptReviewAccount({ state, attempt, onInspectConstructed }: {
 
     <section className="account-card execution-progress-account" aria-label="Observed preparation progress">
       <h2>Observed progress</h2>
-      <div className="execution-progress-body">
+      <div className={`execution-progress-body${running ? ' is-running' : ''}`}>
         {running && <span className="execution-progress-spinner" aria-hidden="true" />}
         <div>
           <p>{attempt.message}</p>

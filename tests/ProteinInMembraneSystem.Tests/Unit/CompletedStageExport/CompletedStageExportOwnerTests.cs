@@ -49,6 +49,32 @@ public sealed class CompletedStageExportOwnerTests
         Assert.Equal(stage.Id, declared.GetProperty("stageId").GetString());
         Assert.Equal("QualifiedPrepared", declared.GetProperty("qualification").GetString());
         Assert.Equal(assessment.Reason, declared.GetProperty("reason").GetString());
+        var membrane = manifest.RootElement.GetProperty("membrane").GetProperty("intended");
+        Assert.Equal(assessed.Membrane.Intended.ScientificPurpose,
+            membrane.GetProperty("scientificPurpose").GetString());
+        Assert.Equal("DMPC", membrane.GetProperty("upper").GetProperty("fractions")[0]
+            .GetProperty("speciesId").GetString());
+        Assert.Equal(assessed.Protein.Changes.Length,
+            manifest.RootElement.GetProperty("preparedProtein").GetProperty("changes").GetArrayLength());
+        Assert.Equal(stage.Id, manifest.RootElement.GetProperty("lineage").GetProperty("sourceToResult")
+            .GetProperty("resultId").GetString());
+
+        var withoutPurpose = assessed.Membrane with
+        {
+            Intended = assessed.Membrane.Intended with { ScientificPurpose = null }
+        };
+        var newResult = await owner.ExportAsync(stage, assessment, basis.Revision,
+            assessed.Protein, withoutPurpose, assessed.Placement,
+            assessed.Constructed, assessed.Constructed.Derivation, assessed.Policy,
+            ImmutableArray<ResearcherDecision>.Empty, null, null, null,
+            Path.Combine(basis.Directory, "no-purpose-export"), TestContext.Current.CancellationToken);
+        Assert.True(newResult.Established, newResult.Reason);
+        using var newArchive = ZipFile.OpenRead(newResult.Value!.BundlePath);
+        using var newManifest = JsonDocument.Parse(newArchive.GetEntry("manifest.json")!.Open());
+        Assert.Equal(JsonValueKind.Null, newManifest.RootElement.GetProperty("membrane")
+            .GetProperty("intended").GetProperty("scientificPurpose").ValueKind);
+        Assert.Equal(assessment.Qualification.ToString(), newManifest.RootElement.GetProperty("assessment")
+            .GetProperty("qualification").GetString());
     }
 
     [Fact]

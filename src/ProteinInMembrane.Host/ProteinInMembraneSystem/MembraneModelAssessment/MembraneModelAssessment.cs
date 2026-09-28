@@ -188,7 +188,6 @@ public sealed class MembraneModelAssessment
     private static bool SameChoice(MembraneModel adopted, MembraneModel chosen)
     {
         return adopted.Id == chosen.Id && adopted.Conditions == chosen.Conditions &&
-            adopted.ScientificPurpose == chosen.ScientificPurpose &&
             adopted.Upper.PhysicalSide == chosen.Upper.PhysicalSide &&
             adopted.Lower.PhysicalSide == chosen.Lower.PhysicalSide &&
             SameDeclaredFractions(adopted.Upper.Fractions, chosen.Upper.Fractions) &&

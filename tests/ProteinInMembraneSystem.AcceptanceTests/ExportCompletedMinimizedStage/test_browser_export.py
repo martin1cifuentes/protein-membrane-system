@@ -249,8 +249,8 @@ class ExportBrowserTests(unittest.TestCase):
                             page.route("**/api/commands", controlled.command)
                             page.route("**/api/export/*", controlled.download)
                             page.goto(base, wait_until="domcontentloaded")
-                            expect(page.get_by_label("Completed and attempted stages"))\
-                                .to_contain_text("No completed stage is currently established.")
+                            expect(page.get_by_label("System stages and attempts"))\
+                                .to_contain_text("No minimized or equilibrated system stage has completed.")
                             expect(page.get_by_role("button", name="Export this completed stage"))\
                                 .to_have_count(0)
                             expect(page.get_by_role("button", name="Export with status"))\
@@ -292,7 +292,6 @@ class ExportBrowserTests(unittest.TestCase):
                             page.goto(base, wait_until="domcontentloaded")
                             expect(page.get_by_label("Completed stage information"))\
                                 .to_contain_text("Stage information")
-                            page.get_by_role("button", name="Show workflow").click()
                             expect(page.get_by_role("button", name="Export this completed stage"))\
                                 .to_be_disabled()
                             expect(page.get_by_role("button", name="Export with status"))\
@@ -315,6 +314,7 @@ class ExportBrowserTests(unittest.TestCase):
                 page.route("**/api/commands", controlled.command)
                 page.route("**/api/export/*", controlled.download)
                 page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.get_by_role("button", name="Export with status")).to_be_enabled()
                 controlled.stale_revision_once = True
                 page.get_by_role("button", name="Export with status").click()
@@ -348,26 +348,30 @@ class ExportBrowserTests(unittest.TestCase):
                 page.route("**/api/commands", controlled.command)
                 page.route("**/api/export/*", controlled.download)
                 page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.get_by_role("button", name="Export with status")).to_be_enabled()
                 self.capture(page, "export-ready", 1672)
                 page.get_by_role("button", name="Export with status").click()
                 failure = page.get_by_label("Export validation and unchanged stage review")
                 expect(failure).to_contain_text("Export not delivered")
                 expect(failure).to_contain_text("Bundle correspondence not verified")
-                expect(page.get_by_role("button", name="Export validation"))\
+                expect(page.get_by_role("navigation", name="Review account sections")\
+                       .get_by_role("button", name="Evidence"))\
                     .to_have_attribute("aria-current", "page")
                 self.capture(page, "export-failure", 1672)
                 self.assert_unchanged_stage(page)
                 self.assertEqual(controlled.gets, [], "A refused command cannot begin ZIP delivery")
                 expect(page.get_by_role("button", name="Retry export")).to_be_enabled()
-                page.locator(".stage-card").filter(has_text="stage-two").click()
+                page.locator(".stage-card[title*='stage-two']").click()
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.get_by_label("Export validation and unchanged stage review"))\
                     .to_have_count(0)
                 expect(page.get_by_label("Minimized stage review and distinct scientific assessment"))\
                     .to_contain_text("A separate observed condition failed")
                 expect(page.get_by_label("Completed stage information"))\
                     .to_contain_text("Historical stage from study revision revision-zero")
-                page.locator(".stage-card").filter(has_text="stage-one").click()
+                page.locator(".stage-card[title*='stage-one']").click()
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(failure).to_contain_text("Bundle correspondence not verified")
                 with page.expect_download(timeout=30000) as pending:
                     page.get_by_role("button", name="Retry export").click()
@@ -401,12 +405,14 @@ class ExportBrowserTests(unittest.TestCase):
                 page.route("**/api/commands", controlled.command)
                 page.route("**/api/export/*", controlled.download)
                 page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.get_by_role("button", name="Export with status")).to_be_enabled()
                 self.capture(page, "export-ready", 820)
                 page.get_by_role("button", name="Export with status").click()
                 failure = page.get_by_label("Export validation and unchanged stage review")
                 expect(failure).to_contain_text("Bundle bytes changed after validation")
-                expect(page.get_by_role("button", name="Export validation"))\
+                expect(page.get_by_role("navigation", name="Review account sections")\
+                       .get_by_role("button", name="Evidence"))\
                     .to_have_attribute("aria-current", "page")
                 self.capture(page, "export-failure", 820)
                 self.assert_unchanged_stage(page)

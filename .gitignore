@@ -2,6 +2,7 @@
 /out/
 /browser/node_modules/
 /browser/dist/
+/leap.log
 
 # .NET build products and user settings
 bin/

@@ -201,6 +201,7 @@ public sealed class CompletedStageExport
                         protein.ChemicalStatePolicyId, protein.ChemicalStatePolicyVersion,
                         protein.StructuralAssessmentPolicyId, protein.StructuralAssessmentPolicyVersion,
                         protein.ResidueVariants, protein.Changes, protein.Limitations,
+                        protein.RecommendationPlan,
                         protein.Evidence, protein.Findings
                     },
                     membrane = new { membrane.Id, membrane.StudyRevisionId,
@@ -471,16 +472,35 @@ public sealed class CompletedStageExport
                     : sourceAccession ?? source.Provenance,
                 "Derived coordinates are included; the original source file is identified by digest but is not bundled.",
                 "incorporated and transformed"),
-            new("native lipid coordinate patch", policy.Construction.LipidTypeArgument + " patch",
+        };
+        if (policy.Construction.NativePatchMode == "mapped-lipid21-zenodo-popc")
+        {
+            const string record = "https://doi.org/10.5281/zenodo.14776136";
+            const string rights = "https://creativecommons.org/licenses/by/4.0/";
+            const string citation = "Frankel, Amber Lipid21 bilayer simulations, Zenodo v1 (2025), 10.5281/zenodo.14776136";
+            incorporated.Add(new AttributionEntry("native lipid coordinate patch",
+                "POPC one-residue Lipid21 conversion", "Zenodo v1 mapped for OpenMM 8.6",
+                record, attempt.NativePatchSha256, "Creative Commons Attribution 4.0; adapted coordinates",
+                rights, citation,
+                "Exact atom permutation, bonds, coordinates and cell are identified by the mapped patch and source digests; neither source file is bundled in this export.",
+                "incorporated and transformed"));
+            incorporated.Add(new AttributionEntry("source bilayer coordinates", "POPC.gro",
+                "Zenodo v1", record, policy.Construction.NativeSourcePatchSha256,
+                "Creative Commons Attribution 4.0", rights, citation,
+                "The original solvated periodic POPC coordinates supplied the mapped starting patch; the source GRO is identified by digest and is not bundled.",
+                "incorporated and transformed"));
+        }
+        else
+            incorporated.Add(new AttributionEntry("native lipid coordinate patch",
+                policy.Construction.LipidTypeArgument + " patch",
                 policy.Construction.ProviderVersion,
                 "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
                 attempt.NativePatchSha256,
-                "OpenMM application layer MIT terms; no separate DMPC.pdb file terms are asserted",
+                "OpenMM application layer MIT terms; no separate patch-file terms are asserted",
                 OpenMmTermsUri,
                 "OpenMM application package, exact build identified by attempt construction provider version",
                 "Lipid coordinates are derived into the bundle; the native source patch is identified, not bundled.",
-                "incorporated and transformed")
-        };
+                "incorporated and transformed"));
         var references = new List<AttributionEntry>();
         foreach (var representation in membrane.SpeciesRepresentations)
             references.Add(new AttributionEntry("assessed molecular reference", representation.SpeciesId,
