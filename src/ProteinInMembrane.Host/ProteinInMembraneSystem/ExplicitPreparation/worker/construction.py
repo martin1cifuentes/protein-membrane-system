@@ -1,4 +1,4 @@
-"""Owner-local native OpenMM explicit construction and completed-stage observations.
+"""Owner-local explicit construction and completed-stage observations.
 
 The worker returns exact provider mechanics and observations. The C# owner decides
 whether a candidate or completed stage meets an identified product policy.
@@ -311,103 +311,7 @@ def _native_provider_identity(payload: dict[str, Any]) -> tuple[Path, str, str]:
         verify_sha256(source, payload["nativeSourcePatchSha256"], "nativeSourcePatchSha256")
         verify_sha256(derived, payload["nativePatchSha256"], "nativePatchSha256")
         return derived, payload["nativePatchSha256"], version
-    valid_custom = (
-        mode == "popc-62-109-deletion" and species == "POPC" and
-        payload.get("removedNativeLipidResidueIds") == ["62", "109"] or
-        mode == "balanced-defect-deletion" and
-        (species, payload.get("removedNativeLipidResidueIds")) in (
-            ("DOPC", ["4", "90"]), ("DPPC", ["6", "70"])))
-    if not valid_custom:
-        raise WorkError("unsupportedPolicy", "No identified custom native patch derivation matches this request")
-    declared_source = Path(require_text(payload.get("nativeSourcePatchPath"),
-                                        "nativeSourcePatchPath")).resolve()
-    if declared_source != expected_path or not expected_path.is_file():
-        raise WorkError("providerMismatch", f"Custom {species} source is not the installed OpenMM resource")
-    source_sha = require_text(payload.get("nativeSourcePatchSha256"), "nativeSourcePatchSha256")
-    verify_sha256(expected_path, source_sha, "nativeSourcePatchSha256")
-    derived = Path(require_text(payload.get("nativePatchPath"), "nativePatchPath")).resolve()
-    if derived == expected_path or not derived.is_file():
-        raise WorkError("providerMismatch", f"Custom {species} patch must be a separate identified resource")
-    derived_sha = require_text(payload.get("nativePatchSha256"), "nativePatchSha256")
-    verify_sha256(derived, derived_sha, "nativePatchSha256")
-    return derived, derived_sha, version
-
-
-def _native_verified_deleted_patch(source: Any, derived: Any, reference: Any,
-                                   stereo_checks: Any, removed_ids: list[str],
-                                   species: str, residue_name: str) -> None:
-    """Prove an identified derivative only deletes its two defective lipids."""
-    from collections import Counter, defaultdict
-    from openmm import unit
-
-    original_residues = list(source.topology.residues())
-    derived_residues = list(derived.topology.residues())
-    omitted = [residue for residue in original_residues
-               if residue.name == residue_name and residue.id in removed_ids]
-    survivors = [residue for residue in original_residues if residue not in omitted]
-    if (len(omitted) != 2 or [residue.id for residue in omitted] != removed_ids or
-            len(survivors) != len(derived_residues) or
-            Counter(residue.name for residue in derived_residues) !=
-                Counter(residue.name for residue in survivors) or
-            sum(residue.name == residue_name for residue in derived_residues) != 126):
-        raise WorkError("providerMismatch", f"Custom {species} patch does not have the exact two-lipid deletion")
-    source_cell = source.topology.getPeriodicBoxVectors()
-    derived_cell = derived.topology.getPeriodicBoxVectors()
-    if (source_cell is None or derived_cell is None or
-            any(abs(source_cell[i][axis].value_in_unit(unit.angstrom) -
-                    derived_cell[i][axis].value_in_unit(unit.angstrom)) > 1e-6
-                for i in range(3) for axis in range(3))):
-        raise WorkError("providerMismatch", f"Custom {species} patch changed the source periodic cell")
-
-    def bonds_by_residue(topology: Any) -> dict[int, set[tuple[int, int]]]:
-        local = {atom.index: index for residue in topology.residues()
-                 for index, atom in enumerate(residue.atoms())}
-        bonds: dict[int, set[tuple[int, int]]] = defaultdict(set)
-        for first, second in topology.bonds():
-            if first.residue is not second.residue:
-                raise WorkError("providerMismatch", f"Custom {species} patch has a cross-residue bond")
-            bonds[first.residue.index].add(tuple(sorted((local[first.index], local[second.index]))))
-        return bonds
-
-    source_bonds = bonds_by_residue(source.topology)
-    derived_bonds = bonds_by_residue(derived.topology)
-    for original, retained in zip(survivors, derived_residues):
-        original_atoms = list(original.atoms())
-        retained_atoms = list(retained.atoms())
-        if ((original.name, original.id, original.chain.id, original.insertionCode) !=
-                (retained.name, retained.id, retained.chain.id, retained.insertionCode) or
-                len(original_atoms) != len(retained_atoms) or
-                source_bonds[original.index] != derived_bonds[retained.index]):
-            raise WorkError("providerMismatch", f"Custom {species} patch changed a survivor identity or bond")
-        for before, after in zip(original_atoms, retained_atoms):
-            before_identity = before.element, before.name, before.formalCharge
-            after_identity = after.element, after.name, after.formalCharge
-            if (before_identity != after_identity or
-                    max(abs((source.positions[before.index][axis] -
-                             derived.positions[after.index][axis]).value_in_unit(unit.angstrom))
-                        for axis in range(3)) > 1e-4):
-                raise WorkError("providerMismatch", f"Custom {species} patch changed survivor atom identity or coordinate")
-
-    expected_bonds = _native_molecule_bonds(reference.topology, next(reference.topology.residues()))
-    points = [tuple(float(value) for value in point.value_in_unit(unit.angstrom))
-              for point in derived.positions]
-    center = derived_cell[2][2].value_in_unit(unit.angstrom) / 2
-    sides: Counter[str] = Counter()
-    for residue in derived_residues:
-        if residue.name != residue_name:
-            continue
-        atoms = _native_molecule_matches(residue, reference, species, derived.positions,
-                                         stereo_checks, derived_bonds[residue.index], expected_bonds)
-        sides[_native_lipid_side(atoms, points, center, species)] += 1
-    if sides != Counter({"upper": 63, "lower": 63}):
-        raise WorkError("providerMismatch", f"Custom {species} patch lacks exact opposing 63/63 leaflets")
-
-
-def _native_verified_custom_popc_patch(source: Any, derived: Any, reference: Any,
-                                       stereo_checks: Any,
-                                       removed_ids: list[str]) -> None:
-    _native_verified_deleted_patch(source, derived, reference, stereo_checks,
-                                   removed_ids, "POPC", "POP")
+    raise WorkError("unsupportedPolicy", "Only intact qualified native membrane patches are available")
 
 
 def _native_verified_mapped_popc_patch(patch: Any, reference: Any,
@@ -520,7 +424,13 @@ def _native_system_settings(ff: Any, topology: Any, settings_raw: Any,
 
 
 def construct_system(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
-    """Observe one exact native membrane build; the product judges its result."""
+    """Observe one selected complete construction route; the product judges its result."""
+    route = payload.get("route")
+    if route == "packmolMemgen":
+        from .packmol_memgen import construct_memgen
+        return construct_memgen(directory, payload, progress)
+    if route != "nativeOpenMm":
+        raise WorkError("unsupportedPolicy", "The requested construction route is unidentified")
     from collections import Counter, defaultdict
     from openmm import Context, Platform, VerletIntegrator, XmlSerializer, unit
     from openmm.app import ForceField, Modeller, PDBFile, PDBxFile
@@ -629,13 +539,6 @@ def construct_system(directory: Path, payload: dict[str, Any], progress: Callabl
     if patch_mode == "mapped-lipid21-zenodo-popc":
         _native_verified_mapped_popc_patch(patch, references[lipid_type],
                                            lipid.get("stereoChecks"))
-    elif patch_mode != "installed":
-        source_patch = PDBFile(require_text(payload.get("nativeSourcePatchPath"),
-                                            "nativeSourcePatchPath"))
-        _native_verified_deleted_patch(source_patch, patch, references[lipid_type],
-                                       lipid.get("stereoChecks"),
-                                       payload["removedNativeLipidResidueIds"],
-                                       lipid_type, native_residue_name)
     # A source PDB may carry a placeholder 1 A CRYST1 record.  Modeller uses
     # the input cell's Z when it exists, so it must be cleared before this call.
     oriented.topology.setUnitCellDimensions(None)

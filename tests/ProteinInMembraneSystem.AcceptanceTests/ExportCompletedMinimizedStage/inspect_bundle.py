@@ -34,7 +34,7 @@ def cell_lengths_angles(vectors: np.ndarray):
 
 
 def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
-            assessment_id: str) -> dict:
+            assessment_id: str, check_standing: str) -> dict:
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
         assert REQUIRED <= names, f"Missing bundle entries: {sorted(REQUIRED - names)}"
@@ -46,11 +46,12 @@ def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
     assert manifest["attempt"]["id"] == attempt_id
     assert manifest["assessment"]["id"] == assessment_id
     assert manifest["assessment"]["stageId"] == stage_id
-    assert manifest["assessment"]["qualification"] == "Indeterminate"
+    assert manifest["assessment"]["checkStanding"] == check_standing
     # The portable account must identify both original study and molecular
     # inputs; the exact nested attribution is checked against the owner schema.
     assert manifest["stage"]["kind"] == "Minimization"
-    assert manifest["stage"]["policyId"]
+    assert manifest["stage"]["policyId"] == "canonical-protein-pure-dmpc-native-construction"
+    assert manifest["attempt"]["policyId"] == manifest["stage"]["policyId"]
     assert manifest["study"]["id"] == revision_id
     assert manifest["preparedProtein"] and manifest["membrane"] and manifest["placement"]
     assert manifest["construction"] and manifest["forceFieldAssets"]
@@ -58,11 +59,17 @@ def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
     assert manifest["findings"] is not None and manifest["limitations"] is not None
     lineage = manifest["lineage"]
     assert lineage["sourceCoordinateSha256"] == SOURCE_6QWR_SHA256
-    assert lineage["sourceModelIndex"] == 0  # First RCSB model, zero-indexed in the product.
-    assert lineage["sourceAccession"] == "6QWR"
+    assert lineage["sourceModelIndex"] == 0  # First uploaded coordinate model, zero-indexed.
+    assert lineage["sourceAccession"] is None
+    assert lineage["sourceId"].startswith("upload:")
     assert manifest["preparedProtein"]["source"]["sha256"] == SOURCE_6QWR_SHA256
+    assert manifest["preparedProtein"]["source"]["kind"] == "upload"
+    assert manifest["preparedProtein"]["source"]["uploadProvenance"] == "experimental"
     assert manifest["attempt"]["nativePatchSha256"] == DMPC_PATCH_SHA256
     assert manifest["construction"]["provider"]["providerVersion"] == "8.6.0.dev-c6173db"
+    assert manifest["construction"]["provider"]["route"] == "nativeOpenMm"
+    assert manifest["construction"]["provider"]["saltConvention"] == \
+        "nativeAddedSaltPlusNeutralization"
     asset_ids = {item["id"] for item in manifest["forceFieldAssets"]}
     assert asset_ids == {"openmm-amber19-protein-ff19sb",
                          "openmm-amber19-lipid21",
@@ -85,19 +92,23 @@ def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
                                   all(character in "0123456789abcdef" for character in digest.lower()))
     source_attribution = next(item for item in data
                               if item["role"] == "protein source coordinates")
-    assert source_attribution["name"] == "6QWR"
+    assert source_attribution["name"] == lineage["sourceId"]
     assert source_attribution["sha256"] == SOURCE_6QWR_SHA256
-    assert source_attribution["sourceUri"] == "https://www.rcsb.org/structure/6QWR"
-    assert "CC0" in source_attribution["rights"]
+    assert source_attribution["sourceUri"] == manifest["preparedProtein"]["source"]["provenance"]
+    assert "Local upload: 6QWR.pdb" in source_attribution["sourceUri"]
+    assert "not independently verified" in source_attribution["sourceUri"]
+    assert source_attribution["rights"] == "Source-specific rights were not established by this record"
     assert any(item["sha256"] == DMPC_PATCH_SHA256 and
                item["role"] == "native lipid coordinate patch" for item in data)
     assert any(item["role"] == "assessed molecular reference" and
-               "not inserted" in item["useLimitations"].lower() for item in references)
+               item["sha256"] == species["coordinateTemplateSha256"] and
+               "assessment template" in item["useLimitations"].lower()
+               for species in manifest["membrane"]["species"] for item in references)
     assert any(item["role"] == "orientation tool" and item["name"] == "PPM 2.0" and
                item["sha256"] is not None
                for item in tools)
     assert any("OpenMM" in item["name"] and item["role"] == "construction tool" and
-               item["sha256"] is None and "not recorded" in item["useLimitations"]
+               item["sha256"] is None and "not bundled" in item["useLimitations"]
                for item in tools)
 
     topology = json.loads(entries["topology.json"])
@@ -220,7 +231,7 @@ def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
         "attemptId": attempt_id,
         "studyRevisionId": revision_id,
         "assessmentId": assessment_id,
-        "qualification": manifest["assessment"]["qualification"],
+        "checkStanding": manifest["assessment"]["checkStanding"],
         "atomCount": atom_count,
         "bondCount": len(bonds),
         "cifBondCount": len(cif_bonds),
@@ -239,5 +250,5 @@ def inspect(path: Path, stage_id: str, attempt_id: str, revision_id: str,
 
 
 if __name__ == "__main__":
-    result = inspect(Path(sys.argv[1]), *sys.argv[2:6])
+    result = inspect(Path(sys.argv[1]), *sys.argv[2:7])
     print(json.dumps(result))

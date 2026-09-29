@@ -75,37 +75,4 @@ public sealed class ConnectedStructuralInspection
         return BoundaryOutcome<InspectionAccount>.Success(_account);
     }
 
-    public bool HasRequiredEvidenceForApproval(
-        string subjectId,
-        string expectedStudyRevisionId,
-        ImmutableArray<string> requiredEvidenceIds,
-        out string reason)
-    {
-        if (_subject?.Id != subjectId || _account is null ||
-            _account.StudyRevisionId != expectedStudyRevisionId)
-        {
-            reason = "The exact current proposal has not been selected for inspection.";
-            return false;
-        }
-        if (requiredEvidenceIds.IsDefaultOrEmpty || string.IsNullOrWhiteSpace(_account.StructureUrl))
-        {
-            reason = "Required spatial and numerical evidence is not defined or available for this proposal.";
-            return false;
-        }
-        foreach (var id in requiredEvidenceIds)
-        {
-            if (!_account.Evidence.Any(item => item.Id == id) ||
-                !_account.Annotations.Any(annotation => annotation.EvidenceId == id &&
-                    annotation.GeometryFocus is not null &&
-                    _account.Metrics.Any(metric => metric.EvidenceId == id &&
-                        metric.SubjectPartId == annotation.SubjectPartId &&
-                        !string.IsNullOrWhiteSpace(metric.Value))))
-            {
-                reason = $"Evidence {id} is not connected in both the spatial and numerical account.";
-                return false;
-            }
-        }
-        reason = string.Empty;
-        return true;
-    }
 }

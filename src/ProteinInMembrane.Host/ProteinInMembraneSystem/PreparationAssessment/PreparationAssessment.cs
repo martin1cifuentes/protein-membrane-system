@@ -2,316 +2,325 @@ using System.Collections.Immutable;
 
 namespace ProteinInMembrane.Host.ProteinInMembraneSystem.PreparationAssessment;
 
-/// <summary>Judges an exact completed stage under its declared scientific policy.</summary>
+/// <summary>Interprets declared technical checks of one exact completed stage.</summary>
 public sealed class PreparationAssessment
 {
-    public PreparationAssessmentResult Assess(
-        CompletedStage stage,
-        ConstructedExplicitSystem constructed,
-        AssessedPreparedProtein protein,
-        AssessedMembraneModel membrane,
-        AssessedProteinMembranePlacement placement,
-        ApplicablePreparationPolicy policy,
+    public PreparationAssessmentResult Assess(CompletedStage stage, ConstructedExplicitSystem constructed,
+        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
+        AssessedProteinMembranePlacement placement, ApplicablePreparationPolicy policy,
         ImmutableArray<ScientificFinding> laterFindings)
     {
         ArgumentNullException.ThrowIfNull(stage);
         ArgumentNullException.ThrowIfNull(constructed);
+        ArgumentNullException.ThrowIfNull(protein);
+        ArgumentNullException.ThrowIfNull(membrane);
+        ArgumentNullException.ThrowIfNull(placement);
         ArgumentNullException.ThrowIfNull(policy);
 
-        var findings = stage.Findings.AddRange(laterFindings.IsDefault
-            ? ImmutableArray<ScientificFinding>.Empty : laterFindings);
-        var evidence = stage.Observation.Evidence;
-        // A later finding can invalidate this stage through the exact input it used,
-        // even when the finding is not addressed to the stage itself. Do not apply
-        // findings about other attempts or historical study subjects.
-        var applicableSubjects = new HashSet<string>(StringComparer.Ordinal)
+        var evidence = ImmutableArray.CreateBuilder<ScientificEvidence>();
+        if (!stage.Observation.Evidence.IsDefault) evidence.AddRange(stage.Observation.Evidence);
+        var findings = ImmutableArray.CreateBuilder<ScientificFinding>();
+        if (!stage.Findings.IsDefault) findings.AddRange(stage.Findings);
+        if (!laterFindings.IsDefault) findings.AddRange(laterFindings);
+        var issues = new List<string>();
+        var missing = new List<string>();
+        var applicable = Corresponds(stage, constructed, protein, membrane, placement, policy);
+        var relevantSubjects = new HashSet<string>(StringComparer.Ordinal)
         {
-            stage.Id, stage.Attempt.Id, constructed.Id, protein.Id, membrane.Id,
-            membrane.Intended.Id, placement.Id, placement.Proposal.Id
+            stage.Id, stage.Attempt.Id, constructed.Id, protein.Id,
+            membrane.Id, membrane.Intended.Id, placement.Id, placement.Proposal.Id
         };
-        PreparationQualification qualification;
-        string reason;
-        var currentlyApplicable = true;
-        var proteinGeometry = AssessStageProteinGeometry(stage, policy);
+        foreach (var finding in findings.Where(item => item.Material &&
+                     relevantSubjects.Contains(item.SubjectId)))
+        {
+            if (finding.Disposition == FindingDisposition.Disqualifies)
+                issues.Add($"Material finding: {finding.Meaning}");
+            else if (finding.Disposition == FindingDisposition.Challenges)
+                missing.Add($"Material finding requiring a check: {finding.Meaning}");
+        }
 
-        if (stage.Attempt.Id != constructed.Attempt.Id ||
-            stage.Attempt.StudyRevisionId != constructed.Attempt.StudyRevisionId ||
-            stage.Attempt.StudyRevisionId != protein.StudyRevisionId ||
-            stage.Attempt.StudyRevisionId != membrane.StudyRevisionId ||
-            stage.Attempt.StudyRevisionId != placement.StudyRevisionId ||
-            stage.PolicyId != policy.Id ||
-            !PreparationPolicyFingerprint.Matches(stage.Attempt, policy) ||
-            stage.Attempt.ProteinId != protein.Id || stage.Attempt.MembraneId != membrane.Id ||
-            stage.Attempt.PlacementId != placement.Id ||
-            placement.Standing != AssessmentStanding.Supported ||
-            !stage.Correspondence.Complete || !constructed.Correspondence.Complete ||
-            stage.Correspondence.ResultId != stage.Molecule.Id ||
-            stage.Correspondence.SourceId != constructed.Correspondence.SourceId ||
-            stage.Correspondence.Atoms.IsDefault || constructed.Correspondence.Atoms.IsDefault ||
-            !stage.Correspondence.Atoms.SequenceEqual(constructed.Correspondence.Atoms) ||
-            stage.Molecule.AtomCount != constructed.Molecule.AtomCount ||
-            stage.Molecule.Id != stage.Id ||
-            stage.Observation.StageId != stage.Id || stage.Observation.AttemptId != stage.Attempt.Id ||
-            stage.Observation.Kind != stage.Kind ||
-            stage.Kind == StageKind.Minimization && stage.Observation.Termination != StageTermination.Converged ||
-            stage.Kind == StageKind.Equilibration && stage.Observation.Termination != StageTermination.Completed ||
-            stage.Kind is not (StageKind.Minimization or StageKind.Equilibration))
+        void Report(string check, string detail, bool issue)
         {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "The completed stage no longer has an applicable, corresponding scientific basis.";
-            currentlyApplicable = false;
+            var description = $"{check}: {detail}";
+            (issue ? issues : missing).Add(description);
+            var observation = new ScientificEvidence(Guid.NewGuid().ToString("N"), stage.Id,
+                "Preparation Assessment", check, detail,
+                $"Stage {stage.Id}; attempt {stage.Attempt.Id}; policy {policy.Id} {policy.Version}",
+                issue ? "Observed technical condition." : "Required observation or rule unavailable.",
+                issue ? EvidenceBearing.Contradicts : EvidenceBearing.Unknown);
+            evidence.Add(observation);
+            findings.Add(new ScientificFinding(Guid.NewGuid().ToString("N"), stage.Id,
+                observation.Id, description,
+                issue ? "An observed technical issue remains for this stage." :
+                    "This required technical check remains incomplete.",
+                issue ? FindingDisposition.Disqualifies : FindingDisposition.Challenges,
+                true, DateTimeOffset.UtcNow));
         }
-        else if (findings.Any(finding => finding.Material && applicableSubjects.Contains(finding.SubjectId) &&
-                     finding.Disposition == FindingDisposition.Disqualifies))
-        {
-            qualification = PreparationQualification.NotQualified;
-            reason = "A material finding about this stage or one of its exact inputs disqualifies this prepared result.";
-        }
-        else if (findings.Any(finding => finding.Material && applicableSubjects.Contains(finding.SubjectId) &&
-                     finding.Disposition == FindingDisposition.Challenges))
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "A material finding challenges this stage or one of its exact inputs; required interpretation is unresolved.";
-        }
-        else if (proteinGeometry == PreparationQualification.NotQualified)
-        {
-            qualification = PreparationQualification.NotQualified;
-            reason = "The completed stage's measured protein intramolecular geometry falls outside its applicable stage-specific condition.";
-        }
-        else if (stage.Kind == StageKind.Equilibration &&
-                 (stage.Observation.ObservationAdequacy != EquilibrationObservationAdequacy.Adequate ||
-                  stage.Observation.EquilibrationAssessments.IsDefaultOrEmpty ||
-                  stage.Observation.EquilibrationAssessments.Any(item => !item.Sufficient)))
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "The completed optional procedure did not establish sufficient, policy-declared time-series observations; its actual state remains reviewable and exportable.";
-        }
-        else if (!LocalStateObserved(stage.Observation.LocalState, policy.LocalStateObservation))
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "The completed stage has no complete, attributable local contact and protein–bilayer observation under the applicable policy.";
-        }
-        else if (!ContactRulesAvailable(stage.Kind, policy))
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "No applicable exact protein–lipid contact interpretation was declared before this stage.";
-        }
-        else if (!ContactRulesMet(stage.Kind, stage.Observation.LocalState!, policy))
-        {
-            qualification = PreparationQualification.NotQualified;
-            reason = "An observed protein–lipid or other declared molecular contact falls outside the stage's qualified contact condition.";
-        }
-        else if (proteinGeometry != PreparationQualification.QualifiedPrepared)
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "The completed stage lacks corresponding measured protein geometry or applicable stage-specific integrity criteria.";
-        }
-        else if (string.IsNullOrWhiteSpace(policy.Version) || policy.EvidenceReferences.IsDefaultOrEmpty ||
-                 policy.AssessmentCriteria.IsDefaultOrEmpty)
-        {
-            qualification = PreparationQualification.Indeterminate;
-            reason = "No versioned, evidence-backed qualification criteria are declared for this stage.";
-        }
+
+        if (!applicable)
+            Report("Exact correspondence", "Stage, attempt, inputs, policy or molecular identity do not form one applicable account.", false);
         else
         {
-            var criteria = policy.AssessmentCriteria.Where(criterion => criterion.StageKind == stage.Kind).ToImmutableArray();
-            if (criteria.IsDefaultOrEmpty)
+            CheckLocal(stage, policy, Report);
+            CheckGeometry(stage, policy, Report);
+            CheckStageValues(stage, policy, Report);
+            if (policy.Construction.Route == ConstructionRouteKind.PackmolMemgen)
             {
-                qualification = PreparationQualification.Indeterminate;
-                reason = "The policy has no criteria for this kind of completed stage.";
+                var saltBranch = constructed.Derivation.Conditions?.SaltBranch;
+                if (saltBranch == "neutralizationOnly")
+                    Report("Nominal NaCl treatment",
+                        "The provider added neutralization only; no background salt pairs were established.", true);
+                else if (saltBranch != "chargeCompensated")
+                    Report("Nominal NaCl treatment", "The provider's actual salt branch is unavailable or unrecognized.", false);
             }
-            else
-            {
-                if (!HasOrganizationCriterion(criteria, "leafletHeadSeparationAngstrom",
-                        "bilayer", positiveMinimum: true) ||
-                    !HasOrganizationCriterion(criteria, "proteinBilayerMidplaneOffsetAngstrom",
-                        "proteinVsBilayer", positiveMinimum: false) ||
-                    criteria.Any(criterion => criterion.MeasurementName is
-                        "upperLipidHeadMeanZAngstrom" or "lowerLipidHeadMeanZAngstrom"))
-                {
-                    qualification = PreparationQualification.Indeterminate;
-                    reason = "The stage policy lacks qualified relative leaflet-order and protein–bilayer organization bounds, or relies on absolute leaflet z positions.";
-                    return new PreparationAssessmentResult(Guid.NewGuid().ToString("N"), stage.Id,
-                        qualification, reason, evidence, findings,
-                        policy.Limitations.IsDefault ? ImmutableArray<string>.Empty : policy.Limitations,
-                        DateTimeOffset.UtcNow, currentlyApplicable);
-                }
-                var stageValues = stage.Observation.Measurements.IsDefault
-                    ? ImmutableArray<MeasuredValue>.Empty : stage.Observation.Measurements;
-                var requiredValues = criteria.Select(criterion => new
-                {
-                    Criterion = criterion,
-                    Values = stageValues.Where(value => value.Name == criterion.MeasurementName).ToArray()
-                }).ToImmutableArray();
-                if (requiredValues.Any(entry => entry.Values.Length != 1 ||
-                    entry.Values[0].Unit != entry.Criterion.Unit ||
-                    entry.Values[0].Scope != entry.Criterion.Scope ||
-                    !double.IsFinite(entry.Values[0].Value)))
-                {
-                    qualification = PreparationQualification.Indeterminate;
-                    reason = "A required stage observation is missing, mismatched in unit/scope, or non-finite.";
-                }
-                else if (requiredValues.Any(entry =>
-                             entry.Criterion.Minimum.HasValue && entry.Values[0].Value < entry.Criterion.Minimum.Value ||
-                             entry.Criterion.Maximum.HasValue && entry.Values[0].Value > entry.Criterion.Maximum.Value))
-                {
-                    qualification = PreparationQualification.NotQualified;
-                    reason = "An observed stage value falls outside the declared qualification condition.";
-                }
-                else
-                {
-                    qualification = PreparationQualification.QualifiedPrepared;
-                    reason = "All applicable declared stage criteria are supported by corresponding observations.";
-                }
-            }
+            if (stage.Kind == StageKind.Equilibration &&
+                (stage.Observation.ObservationAdequacy != EquilibrationObservationAdequacy.Adequate ||
+                 stage.Observation.EquilibrationAssessments.IsDefaultOrEmpty ||
+                 stage.Observation.EquilibrationAssessments.Any(item => !item.Sufficient)))
+                Report("Optional procedure", "The declared time-series observations are absent or insufficient.", false);
         }
 
-        return new PreparationAssessmentResult(
-            Guid.NewGuid().ToString("N"), stage.Id, qualification, reason,
-            evidence, findings, policy.Limitations.IsDefault ? ImmutableArray<string>.Empty : policy.Limitations,
-            DateTimeOffset.UtcNow, currentlyApplicable);
+        // A known failure takes precedence, while each unavailable check remains visible.
+        var standing = issues.Count > 0 ? PreparationCheckStanding.IssuesFound :
+            missing.Count > 0 ? PreparationCheckStanding.ChecksIncomplete : PreparationCheckStanding.ChecksPassed;
+        var reason = standing switch
+        {
+            PreparationCheckStanding.IssuesFound => "Issues found: " + string.Join(" ", issues) +
+                (missing.Count == 0 ? string.Empty : " Checks incomplete: " + string.Join(" ", missing)),
+            PreparationCheckStanding.ChecksIncomplete => "Checks incomplete: " + string.Join(" ", missing),
+            _ => "All declared technical checks have corresponding observations and passed."
+        };
+        return new PreparationAssessmentResult(Guid.NewGuid().ToString("N"), stage.Id,
+            standing, reason, evidence.ToImmutable(), findings.ToImmutable(),
+            policy.Limitations.IsDefault ? ImmutableArray<string>.Empty : policy.Limitations,
+            DateTimeOffset.UtcNow, applicable);
     }
 
-    private static bool LocalStateObserved(LocalStateObservations? local,
-        LocalStateObservationSpec? spec)
+    private static bool Corresponds(CompletedStage stage, ConstructedExplicitSystem constructed,
+        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
+        AssessedProteinMembranePlacement placement, ApplicablePreparationPolicy policy)
     {
-        if (local is null || spec is null || local.Standing != ObservationStanding.Observed ||
-            local.Measurements.IsDefault || local.LocatedContacts.IsDefault ||
+        var attempt = stage.Attempt;
+        return attempt.Id == constructed.Attempt.Id &&
+            attempt.StudyRevisionId == constructed.Attempt.StudyRevisionId &&
+            attempt.StudyRevisionId == protein.StudyRevisionId &&
+            attempt.StudyRevisionId == membrane.StudyRevisionId &&
+            attempt.StudyRevisionId == placement.StudyRevisionId &&
+            stage.PolicyId == policy.Id && PreparationPolicyFingerprint.Matches(attempt, policy) &&
+            attempt.ProteinId == protein.Id && attempt.MembraneId == membrane.Id &&
+            attempt.PlacementId == placement.Id && placement.Standing == AssessmentStanding.Supported &&
+            stage.Correspondence.Complete && constructed.Correspondence.Complete &&
+            stage.Correspondence.ResultId == stage.Molecule.Id &&
+            stage.Correspondence.SourceId == constructed.Correspondence.SourceId &&
+            !stage.Correspondence.Atoms.IsDefault && !constructed.Correspondence.Atoms.IsDefault &&
+            stage.Correspondence.Atoms.SequenceEqual(constructed.Correspondence.Atoms) &&
+            stage.Molecule.AtomCount == constructed.Molecule.AtomCount &&
+            stage.Molecule.Id == stage.Id && stage.Observation.StageId == stage.Id &&
+            stage.Observation.AttemptId == attempt.Id && stage.Observation.Kind == stage.Kind &&
+            (stage.Kind == StageKind.Minimization && stage.Observation.Termination == StageTermination.Converged ||
+             stage.Kind == StageKind.Equilibration && stage.Observation.Termination == StageTermination.Completed);
+    }
+
+    private static void CheckLocal(CompletedStage stage, ApplicablePreparationPolicy policy,
+        Action<string, string, bool> report)
+    {
+        var spec = policy.LocalStateObservation;
+        var local = stage.Observation.LocalState;
+        if (spec is null || spec.ContactRolePairs.IsDefaultOrEmpty || spec.RequiredMetricNames.IsDefaultOrEmpty ||
+            spec.RequiredMetricNames.Distinct(StringComparer.Ordinal).Count() != spec.RequiredMetricNames.Length)
+        {
+            report("Local-state policy", "Required molecular coverage is not declared coherently.", false);
+            return;
+        }
+        if (local is null || local.Standing != ObservationStanding.Observed)
+        {
+            report("Stage local state", local?.UnavailableReason ?? "No observed completed-stage local state.", false);
+            return;
+        }
+        if (local.Measurements.IsDefault || local.LocatedContacts.IsDefault ||
             local.CoveredRolePairs.IsDefault || local.RolePairMeasurements.IsDefault ||
-            local.RolePairMeasurements.Any(item => !Enum.IsDefined(item.FirstMoleculeRole) ||
-                !Enum.IsDefined(item.SecondMoleculeRole)) ||
-            spec.ContactRolePairs.IsDefaultOrEmpty ||
-            spec.RequiredMetricNames.IsDefaultOrEmpty ||
-            !spec.RequiredMetricNames.Contains("leafletHeadSeparationAngstrom") ||
-            !spec.RequiredMetricNames.Contains("proteinBilayerMidplaneOffsetAngstrom") ||
-            spec.ContactRolePairs.Any(pair => !local.CoveredRolePairs.Contains(pair) ||
-                local.RolePairMeasurements.Count(item =>
-                    item.FirstMoleculeRole == pair.FirstMoleculeRole &&
-                    item.SecondMoleculeRole == pair.SecondMoleculeRole &&
-                    item.PairsWithinSearchRadius >= 0 &&
-                    (item.PairsWithinSearchRadius == 0 && item.MinimumDistanceAngstrom is null ||
-                     item.PairsWithinSearchRadius > 0 && item.MinimumDistanceAngstrom is double distance &&
-                     double.IsFinite(distance) && distance > 0)) != 1) ||
-            local.LocatedContacts.Any(contact => contact.FirstAtomIndex < 0 ||
-                contact.SecondAtomIndex < 0 || !Enum.IsDefined(contact.FirstMoleculeRole) ||
-                !Enum.IsDefined(contact.SecondMoleculeRole) || !double.IsFinite(contact.DistanceAngstrom) ||
-                !double.IsFinite(contact.RadiusSumAngstrom)))
-            return false;
-        return spec.RequiredMetricNames.All(name => local.Measurements.Count(value =>
-            value.Name == name && double.IsFinite(value.Value)) == 1);
+            local.CoveredRolePairs.Distinct().Count() != local.CoveredRolePairs.Length ||
+            local.RolePairMeasurements.Select(item => (item.FirstMoleculeRole,
+                item.SecondMoleculeRole)).Distinct().Count() != local.RolePairMeasurements.Length ||
+            local.LocatedContacts.Any(item => item.FirstAtomIndex < 0 || item.SecondAtomIndex < 0 ||
+                !Enum.IsDefined(item.FirstMoleculeRole) || !Enum.IsDefined(item.SecondMoleculeRole) ||
+                !double.IsFinite(item.DistanceAngstrom) || item.DistanceAngstrom < 0 ||
+                !double.IsFinite(item.RadiusSumAngstrom) || item.RadiusSumAngstrom <= 0))
+            report("Stage local state", "Measurement or located-contact coverage is incomplete or malformed.", false);
+
+        foreach (var name in spec.RequiredMetricNames)
+        {
+            var values = local.Measurements.IsDefault ? Array.Empty<MeasuredValue>() :
+                local.Measurements.Where(item => item.Name == name).ToArray();
+            var expectedScope = name switch
+            {
+                "minimumIntermolecularDistanceAngstrom" or
+                    "minimumIntermolecularHeavyAtomDistanceAngstrom" => "wholeSystem",
+                "upperLipidHeadMeanZAngstrom" => "upperLeaflet",
+                "lowerLipidHeadMeanZAngstrom" => "lowerLeaflet",
+                "leafletHeadSeparationAngstrom" => "bilayer",
+                "proteinBilayerMidplaneOffsetAngstrom" => "proteinVsBilayer",
+                _ => null
+            };
+            if (expectedScope is null || values.Length != 1 || !double.IsFinite(values[0].Value) ||
+                values[0].Unit != "angstrom" || values[0].Scope != expectedScope)
+                report($"Local measurement {name}",
+                    "One finite observation with the declared angstrom unit and molecular scope is required.", false);
+        }
+        foreach (var pair in spec.ContactRolePairs)
+        {
+            var values = local.RolePairMeasurements.IsDefault ? Array.Empty<LocalRolePairMeasurement>() :
+                local.RolePairMeasurements.Where(item => item.FirstMoleculeRole == pair.FirstMoleculeRole &&
+                    item.SecondMoleculeRole == pair.SecondMoleculeRole).ToArray();
+            if (local.CoveredRolePairs.IsDefault || !local.CoveredRolePairs.Contains(pair) ||
+                values.Length != 1 || !ValidPair(values[0]))
+                report($"Contact coverage {pair.FirstMoleculeRole}–{pair.SecondMoleculeRole}",
+                    "The declared role pair lacks one valid count and nearest distance.", false);
+        }
+        if (policy.ContactCriteria.IsDefault)
+        {
+            report("Stage contact criteria", "The technical contact-rule account is unavailable.", false);
+            return;
+        }
+        foreach (var rule in policy.ContactCriteria.Where(item => item.StageKind == stage.Kind))
+        {
+            var check = $"Contact {rule.FirstMoleculeRole}–{rule.SecondMoleculeRole}";
+            if (rule.MinimumPairsWithinSearchRadius < 0 ||
+                rule.MinimumNearestDistanceAngstrom is double minimum && (!double.IsFinite(minimum) || minimum <= 0) ||
+                rule.MaximumNearestDistanceAngstrom is double maximum && (!double.IsFinite(maximum) || maximum <= 0) ||
+                rule.MinimumNearestDistanceAngstrom is double lower &&
+                    rule.MaximumNearestDistanceAngstrom is double upper && lower > upper)
+            {
+                report(check, "The declared contact bound is invalid.", false);
+                continue;
+            }
+            var pair = new LocalContactRolePair(rule.FirstMoleculeRole, rule.SecondMoleculeRole);
+            var values = local.RolePairMeasurements.IsDefault ? Array.Empty<LocalRolePairMeasurement>() :
+                local.RolePairMeasurements.Where(item => item.FirstMoleculeRole == pair.FirstMoleculeRole &&
+                    item.SecondMoleculeRole == pair.SecondMoleculeRole).ToArray();
+            if (values.Length != 1 || !ValidPair(values[0]) || local.CoveredRolePairs.IsDefault ||
+                !local.CoveredRolePairs.Contains(pair))
+            {
+                report(check, "The corresponding role-pair observation is unavailable or malformed.", false);
+                continue;
+            }
+            var observed = values[0];
+            if (observed.PairsWithinSearchRadius < rule.MinimumPairsWithinSearchRadius ||
+                rule.MinimumNearestDistanceAngstrom is double min &&
+                    (observed.MinimumDistanceAngstrom is not double distance || distance < min) ||
+                rule.MaximumNearestDistanceAngstrom is double max &&
+                    (observed.MinimumDistanceAngstrom is not double distance2 || distance2 > max))
+                report(check, "Measured count or nearest distance violates its declared bound.", true);
+        }
     }
 
-    private static bool HasOrganizationCriterion(ImmutableArray<PreparationAssessmentCriterion> criteria,
-        string name, string scope, bool positiveMinimum)
+    private static bool ValidPair(LocalRolePairMeasurement item) =>
+        item.PairsWithinSearchRadius >= 0 &&
+        (item.PairsWithinSearchRadius == 0 && item.MinimumDistanceAngstrom is null ||
+         item.PairsWithinSearchRadius > 0 && item.MinimumDistanceAngstrom is double distance &&
+             double.IsFinite(distance) && distance > 0);
+
+    private static void CheckStageValues(CompletedStage stage, ApplicablePreparationPolicy policy,
+        Action<string, string, bool> report)
     {
-        var matching = criteria.Where(item => item.MeasurementName == name).ToArray();
-        return matching.Length == 1 && matching[0].Unit == "angstrom" && matching[0].Scope == scope &&
-               matching[0].Minimum is double minimum && double.IsFinite(minimum) &&
-               (!positiveMinimum || minimum > 0) &&
-               matching[0].Maximum is double maximum && double.IsFinite(maximum) &&
-               maximum >= minimum;
+        if (policy.AssessmentCriteria.IsDefault)
+        {
+            report("Stage measurement criteria", "The declared criterion account is unavailable.", false);
+            return;
+        }
+        foreach (var criterion in policy.AssessmentCriteria.Where(item => item.StageKind == stage.Kind))
+        {
+            var check = $"Stage measurement {criterion.MeasurementName}";
+            if (string.IsNullOrWhiteSpace(criterion.MeasurementName) ||
+                string.IsNullOrWhiteSpace(criterion.Unit) || string.IsNullOrWhiteSpace(criterion.Scope) ||
+                criterion.Minimum is null && criterion.Maximum is null ||
+                criterion.Minimum is double minimum && !double.IsFinite(minimum) ||
+                criterion.Maximum is double maximum && !double.IsFinite(maximum) ||
+                criterion.Minimum is double lower && criterion.Maximum is double upper && lower > upper)
+            {
+                report(check, "The declared measurement bound is invalid.", false);
+                continue;
+            }
+            var values = stage.Observation.Measurements.IsDefault ? Array.Empty<MeasuredValue>() :
+                stage.Observation.Measurements.Where(item => item.Name == criterion.MeasurementName).ToArray();
+            if (values.Length != 1 || values[0].Unit != criterion.Unit ||
+                values[0].Scope != criterion.Scope || !double.IsFinite(values[0].Value))
+            {
+                report(check, "One finite observation with the declared unit and scope is required.", false);
+                continue;
+            }
+            if (criterion.Minimum is double min && values[0].Value < min ||
+                criterion.Maximum is double max && values[0].Value > max)
+                report(check, $"Observed {values[0].Value:G17} {criterion.Unit} violates the declared bound.", true);
+        }
     }
 
-    private static PreparationQualification AssessStageProteinGeometry(CompletedStage stage,
-        ApplicablePreparationPolicy policy)
+    private static void CheckGeometry(CompletedStage stage, ApplicablePreparationPolicy policy,
+        Action<string, string, bool> report)
     {
         var spec = policy.StageProteinGeometryMeasurement;
         var observed = stage.Observation.ProteinGeometry;
-        var required = new[] { "covalentBond", "chainContinuity", "nonbondedDistance" };
         if (spec is null || spec.RequiredKinds.IsDefaultOrEmpty ||
-            required.Any(kind => !spec.RequiredKinds.Contains(kind)) ||
             spec.RequiredKinds.Distinct(StringComparer.Ordinal).Count() != spec.RequiredKinds.Length ||
-            spec.RequiredKinds.Any(kind => !required.Contains(kind)) ||
+            !new[] { "covalentBond", "chainContinuity", "nonbondedDistance" }.All(spec.RequiredKinds.Contains) ||
+            spec.RequiredKinds.Any(kind => kind is not ("covalentBond" or "chainContinuity" or "nonbondedDistance")) ||
             spec.AtomRadiusByElementAngstrom.IsEmpty ||
             spec.AtomRadiusByElementAngstrom.Any(item => string.IsNullOrWhiteSpace(item.Key) ||
                 !double.IsFinite(item.Value) || item.Value <= 0) ||
-            !double.IsFinite(spec.NeighborSearchRadiusAngstrom) ||
-            spec.NeighborSearchRadiusAngstrom <= 0 || spec.ExcludedBondHops < 0 ||
-            spec.MaximumReportedPairs <= 0 || policy.StageProteinGeometryCriteria.IsDefaultOrEmpty ||
-            observed is null || observed.Standing != ObservationStanding.Observed || observed.Kinds.IsDefault ||
-            observed.LocatedDistances.IsDefault ||
-            observed.Kinds.Select(item => item.Kind).Distinct(StringComparer.Ordinal).Count() != observed.Kinds.Length ||
+            !double.IsFinite(spec.NeighborSearchRadiusAngstrom) || spec.NeighborSearchRadiusAngstrom <= 0 ||
+            spec.ExcludedBondHops < 0 || spec.MaximumReportedPairs <= 0 ||
+            policy.StageProteinGeometryCriteria.IsDefault)
+        {
+            report("Protein geometry policy", "Required bond, chain and nonbonded checks are not declared coherently.", false);
+            return;
+        }
+        if (observed is null || observed.Standing != ObservationStanding.Observed ||
+            observed.Kinds.IsDefault || observed.LocatedDistances.IsDefault ||
             observed.LocatedDistances.Any(item => !double.IsFinite(item.DistanceAngstrom) ||
                 item.DistanceAngstrom < 0))
-            return PreparationQualification.Indeterminate;
-        foreach (var kindName in spec.RequiredKinds)
         {
-            var rules = policy.StageProteinGeometryCriteria.Where(item =>
-                item.StageKind == stage.Kind && item.Criterion?.Kind == kindName).ToArray();
-            if (rules.Length != 1)
-                return PreparationQualification.Indeterminate;
-            var criterion = rules[0].Criterion;
-            if ((criterion.MinimumObservedAngstrom is null && criterion.MaximumObservedAngstrom is null) ||
-                kindName == "covalentBond" && criterion.AllowNotApplicable ||
-                criterion.MinimumObservedAngstrom is double lower && !double.IsFinite(lower) ||
-                criterion.MaximumObservedAngstrom is double upper && !double.IsFinite(upper) ||
-                criterion.MinimumObservedAngstrom is double minimum &&
-                    criterion.MaximumObservedAngstrom is double maximum && minimum > maximum)
-                return PreparationQualification.Indeterminate;
-            var measurements = observed.Kinds.Where(item => item.Kind == kindName).ToArray();
-            if (measurements.Length != 1)
-                return PreparationQualification.Indeterminate;
-            var measure = measurements[0];
-            if (measure.Standing == GeometryKindStanding.NotApplicable && criterion.AllowNotApplicable &&
-                measure.EligibleCount == 0 && measure.MeasuredCount == 0 &&
-                measure.MinimumDistanceAngstrom is null && measure.MaximumDistanceAngstrom is null)
+            report("Stage protein geometry", "A complete stage-specific geometry observation is unavailable.", false);
+            return;
+        }
+        foreach (var kind in spec.RequiredKinds)
+        {
+            var check = $"Protein geometry {kind}";
+            var criteria = policy.StageProteinGeometryCriteria.Where(item =>
+                item.StageKind == stage.Kind && item.Criterion?.Kind == kind).ToArray();
+            if (criteria.Length != 1 || criteria[0].Criterion is not { } criterion ||
+                criterion.MinimumObservedAngstrom is null && criterion.MaximumObservedAngstrom is null ||
+                kind == "covalentBond" && criterion.AllowNotApplicable ||
+                criterion.MinimumObservedAngstrom is double minimum && !double.IsFinite(minimum) ||
+                criterion.MaximumObservedAngstrom is double maximum && !double.IsFinite(maximum) ||
+                criterion.MinimumObservedAngstrom is double lower &&
+                    criterion.MaximumObservedAngstrom is double upper && lower > upper)
+            {
+                report(check, "The stage-specific geometry condition is missing or invalid.", false);
                 continue;
-            if (measure.Standing != GeometryKindStanding.Observed || measure.EligibleCount <= 0 ||
-                measure.MeasuredCount != measure.EligibleCount ||
-                measure.MinimumDistanceAngstrom is not double observedMinimum ||
-                measure.MaximumDistanceAngstrom is not double observedMaximum ||
-                !double.IsFinite(observedMinimum) || !double.IsFinite(observedMaximum) ||
-                observedMinimum > observedMaximum)
-                return PreparationQualification.Indeterminate;
-            if (criterion.MinimumObservedAngstrom is double supportedMinimum &&
-                    observedMinimum < supportedMinimum ||
-                criterion.MaximumObservedAngstrom is double supportedMaximum &&
-                    observedMaximum > supportedMaximum)
-                return PreparationQualification.NotQualified;
+            }
+            var values = observed.Kinds.Where(item => item.Kind == kind).ToArray();
+            if (values.Length != 1)
+            {
+                report(check, "Exactly one geometry observation is required.", false);
+                continue;
+            }
+            var value = values[0];
+            if (value.Standing == GeometryKindStanding.NotApplicable && criterion.AllowNotApplicable &&
+                value.EligibleCount == 0 && value.MeasuredCount == 0 &&
+                value.MinimumDistanceAngstrom is null && value.MaximumDistanceAngstrom is null)
+                continue;
+            if (value.Standing != GeometryKindStanding.Observed || value.EligibleCount <= 0 ||
+                value.MeasuredCount != value.EligibleCount ||
+                value.MinimumDistanceAngstrom is not double observedMin ||
+                value.MaximumDistanceAngstrom is not double observedMax ||
+                !double.IsFinite(observedMin) || !double.IsFinite(observedMax) || observedMin > observedMax)
+            {
+                report(check, value.UnavailableReason ?? "The exact geometry measurement is incomplete.", false);
+                continue;
+            }
+            if (criterion.MinimumObservedAngstrom is double min && observedMin < min ||
+                criterion.MaximumObservedAngstrom is double max && observedMax > max)
+                report(check, $"Observed distance range {observedMin:G6}–{observedMax:G6} Å violates its declared bound.", true);
         }
-        return PreparationQualification.QualifiedPrepared;
-    }
-
-    private static bool ContactRulesAvailable(StageKind kind, ApplicablePreparationPolicy policy)
-    {
-        var rules = policy.ContactCriteria;
-        if (rules.IsDefaultOrEmpty ||
-            rules.Where(item => item.StageKind == kind)
-                .Select(item => (item.FirstMoleculeRole, item.SecondMoleculeRole))
-                .Distinct().Count() != rules.Count(item => item.StageKind == kind) ||
-            rules.Where(item => item.StageKind == kind).Any(item =>
-                item.MinimumPairsWithinSearchRadius < 0 ||
-                !policy.LocalStateObservation.ContactRolePairs.Any(pair =>
-                    pair.FirstMoleculeRole == item.FirstMoleculeRole &&
-                    pair.SecondMoleculeRole == item.SecondMoleculeRole) ||
-                item.MinimumNearestDistanceAngstrom is double minimum &&
-                    (!double.IsFinite(minimum) || minimum <= 0) ||
-                item.MaximumNearestDistanceAngstrom is double maximum &&
-                    (!double.IsFinite(maximum) || maximum <= 0 ||
-                     maximum > policy.LocalStateObservation.ContactSearchRadiusAngstrom) ||
-                item.MinimumNearestDistanceAngstrom is double minimum2 &&
-                    item.MaximumNearestDistanceAngstrom is double maximum2 && minimum2 > maximum2))
-            return false;
-        return rules.Any(item => item.StageKind == kind &&
-            item.FirstMoleculeRole == MoleculeRoleKind.Protein &&
-            item.SecondMoleculeRole == MoleculeRoleKind.Lipid);
-    }
-
-    private static bool ContactRulesMet(StageKind kind, LocalStateObservations observed,
-        ApplicablePreparationPolicy policy)
-    {
-        foreach (var rule in policy.ContactCriteria.Where(item => item.StageKind == kind))
-        {
-            var pair = observed.RolePairMeasurements.FirstOrDefault(item =>
-                item.FirstMoleculeRole == rule.FirstMoleculeRole &&
-                item.SecondMoleculeRole == rule.SecondMoleculeRole);
-            if (pair is null || pair.PairsWithinSearchRadius < rule.MinimumPairsWithinSearchRadius ||
-                rule.MinimumNearestDistanceAngstrom is double minimum &&
-                    (pair.MinimumDistanceAngstrom is not double distance || distance < minimum) ||
-                rule.MaximumNearestDistanceAngstrom is double maximum &&
-                    (pair.MinimumDistanceAngstrom is not double distance2 || distance2 > maximum))
-                return false;
-        }
-        return true;
     }
 }

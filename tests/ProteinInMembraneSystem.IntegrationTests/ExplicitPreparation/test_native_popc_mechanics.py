@@ -7,7 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 import unittest
 
 
@@ -18,7 +17,6 @@ sys.path.insert(0, str(SOURCE_ROOT))
 from ProteinInMembraneSystem.ExplicitPreparation.worker.construction import (
     _native_atom_name, _native_lipid_side, _native_molecule_bonds,
     _native_molecule_matches, _native_provider_identity,
-    _native_verified_custom_popc_patch,
 )
 from ProteinInMembraneSystem.worker.exchange import WorkError
 
@@ -120,37 +118,11 @@ class NativePopcMechanics(unittest.TestCase):
                 _native_provider_identity(changed)
             self.assertEqual(reason, refused.exception.code)
 
-    def test_identified_custom_patch_is_exact_balanced_deletion_only(self) -> None:
-        from openmm import Vec3, unit
-        from openmm.app import PDBFile
+    def test_superseded_custom_provider_is_not_selectable(self) -> None:
+        import openmm
 
         self.assertEqual("92a19c3470605d44ca779772f306ad693afdd11f1f78176655a3f1d2ee3a77b4",
                          hashlib.sha256(self.custom_path.read_bytes()).hexdigest())
-        custom = PDBFile(str(self.custom_path))
-        _native_verified_custom_popc_patch(self.patch, custom, self.reference,
-                                           self.lipid["stereoChecks"], ["62", "109"])
-        self.assertEqual(Counter({"POP": 126, "HOH": 5120}),
-                         Counter(residue.name for residue in custom.topology.residues()))
-        shifted = list(custom.positions)
-        shifted[0] = shifted[0] + Vec3(1, 0, 0) * unit.angstrom
-        with self.assertRaises(WorkError) as altered:
-            _native_verified_custom_popc_patch(self.patch,
-                SimpleNamespace(topology=custom.topology, positions=shifted),
-                self.reference, self.lipid["stereoChecks"], ["62", "109"])
-        self.assertEqual("providerMismatch", altered.exception.code)
-
-        changed_cell = PDBFile(str(self.custom_path))
-        vectors = changed_cell.topology.getPeriodicBoxVectors()
-        changed_cell.topology.setPeriodicBoxVectors(
-            (vectors[0], vectors[1], vectors[2] + Vec3(1, 0, 0) * unit.angstrom))
-        with self.assertRaises(WorkError) as angle:
-            _native_verified_custom_popc_patch(self.patch, changed_cell,
-                self.reference, self.lipid["stereoChecks"], ["62", "109"])
-        self.assertEqual("providerMismatch", angle.exception.code)
-
-    def test_custom_provider_binds_installed_source_and_separate_derived_digest(self) -> None:
-        import openmm
-
         payload = {"providerName": "OpenMM Modeller.addMembrane",
                    "providerVersion": openmm.version.full_version,
                    "lipidTypeArgument": "POPC", "nativePatchMode": "popc-62-109-deletion",
@@ -159,17 +131,9 @@ class NativePopcMechanics(unittest.TestCase):
                    "nativePatchPath": str(self.custom_path),
                    "nativePatchSha256": "92a19c3470605d44ca779772f306ad693afdd11f1f78176655a3f1d2ee3a77b4",
                    "removedNativeLipidResidueIds": ["62", "109"]}
-        observed_path, observed_sha, _ = _native_provider_identity(payload)
-        self.assertEqual(self.custom_path.resolve(), observed_path)
-        self.assertEqual(payload["nativePatchSha256"], observed_sha)
-        for changed, reason in ((dict(payload, nativeSourcePatchSha256="0" * 64), "inputMismatch"),
-                                (dict(payload, nativeSourcePatchPath=str(self.custom_path)), "providerMismatch"),
-                                (dict(payload, nativePatchSha256="0" * 64), "inputMismatch"),
-                                (dict(payload, nativePatchMode="other"), "unsupportedPolicy"),
-                                (dict(payload, removedNativeLipidResidueIds=["109"]), "unsupportedPolicy")):
-            with self.subTest(changed=changed), self.assertRaises(WorkError) as refused:
-                _native_provider_identity(changed)
-            self.assertEqual(reason, refused.exception.code)
+        with self.assertRaises(WorkError) as refused:
+            _native_provider_identity(payload)
+        self.assertEqual("unsupportedPolicy", refused.exception.code)
 
 
 if __name__ == "__main__":

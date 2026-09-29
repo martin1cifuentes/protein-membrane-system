@@ -36,7 +36,7 @@ LAUNCHER = ROOT / "scripts" / "start-local.sh"
 SOURCE = ROOT / "config" / "policies" / "source-assets" / "6QWR.pdb"
 POLICY = Path(os.environ.get(
     "PIM_PLACEMENT_POLICY_CATALOGUE",
-    str(ROOT / "config" / "policies" / "protein-membrane-slice3.json"),
+    str(ROOT / "config" / "policies" / "protein-membrane-current.json"),
 )).resolve()
 PPM = Path(os.environ.get("PIM_PPM_EXECUTABLE", str(ROOT / "out" / "ppm2" / "immers"))).resolve()
 ARTIFACTS = ROOT / "out" / "browser-acceptance" / "slice3"
@@ -139,48 +139,15 @@ def prepare_exact_protein(page):
     page.locator("#assembly-choice").select_option("deposited")
     page.get_by_label("Chain A").check()
     page.get_by_role("button", name="Assess selected protein").click()
-    assessed_or_changes = await_state(page,
-        lambda state: state["protein"] is not None and (
-            state["protein"]["status"] == "assessed" or state["protein"]["changes"]),
-        "assessed protein or located change proposals")
-    changes = assessed_or_changes["protein"]["changes"]
-    for residue_number, expected_change in ((108, "HID"), (211, "OXT")):
-        if not any(item["residue"]["residue"] == residue_number and
-                   expected_change.lower() in (item["proposedChange"] + " " + item["rationale"]).lower()
-                   for item in changes):
-            raise AssertionError(f"Expected {expected_change} at residue {residue_number}: " +
-                                 str([(item["kind"], item["residue"]["residue"], item["proposedChange"])
-                                      for item in changes]))
-    for decision in assessed_or_changes["preparationReview"]["decisions"]:
-        if decision["standing"] != "pending":
-            continue
-        kind = decision["kind"]
-        address = decision["residue"]
-        site = f"{address['residue']} · Chain {address['chain']}"
-        if kind in ("residueState", "alternateLocation"):
-            page.locator(".review-site-list .review-site").filter(has_text=site).click()
-            option = next((item for item in decision["options"]
-                           if item["proposedChange"] == "HID"), decision["options"][0])
-            page.locator(".review-option").filter(has_text=option["proposedChange"])\
-                .locator("input").check()
-            button = "Confirm state" if kind == "residueState" else "Confirm conformer"
-        elif kind in ("heavyAtom", "disulfide"):
-            if page.locator(".review-other").get_attribute("open") is None:
-                page.locator(".review-other summary").click()
-            page.locator(".review-other .review-site").filter(has_text=site).click()
-            option = decision["options"][0]
-            page.locator(".review-option").filter(has_text=option["proposedChange"])\
-                .locator("input").check()
-            button = "Approve repair" if kind == "heavyAtom" else "Confirm possible bond"
-        else:
-            raise AssertionError(f"Unexpected preparation decision kind: {kind}")
-        expect(page.get_by_role("button", name=button)).to_be_enabled()
-        page.get_by_role("button", name=button).click()
-        await_state(page, lambda state: next((item["standing"] for item in
-                    state["preparationReview"]["decisions"] if item["id"] == decision["id"]), None)
-                    == "confirmed", f"recorded {kind} at {site}")
-    assessed = await_state(page, lambda state: state["protein"] is not None and
-                           state["protein"]["status"] == "assessed", "assessed prepared protein")
+    ready = await_state(page, lambda state: (state.get("preparationPlan") or {}).get(
+        "standing") in ("ready", "failed", "partial"), "checked protein recommendation")
+    if ready["preparationPlan"]["standing"] != "ready":
+        raise AssertionError(f"No complete checked protein recommendation: {ready['preparationPlan']}")
+    page.get_by_role("button", name="Prepare with recommendations").click()
+    assessed = await_state(page, lambda state: (state.get("proteinTask") or {}).get(
+        "standing") in ("assessed", "failed", "unavailable"), "prepared protein outcome")
+    if assessed["proteinTask"]["standing"] != "assessed":
+        raise AssertionError(f"Preparation did not establish the exact protein: {assessed['proteinTask']}")
     if page.locator(".workspace.workflow-closed").count():
         page.get_by_role("button", name="Show inputs").click()
     return assessed
@@ -192,31 +159,25 @@ def choose_exact_membrane(page, species_id="DMPC"):
     for side in ("Upper", "Lower"):
         page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option(species_id)
         page.get_by_label(f"{side} leaflet percentage 1", exact=True).fill("100")
-    page.get_by_role("button", name="Propose membrane model").click()
-    proposed = await_state(page, lambda state: state["membrane"] is not None and
-                           state["membrane"]["status"] == "proposed" and
-                           all(fraction["speciesId"] == species_id for fraction in
-                               state["membrane"]["upper"] + state["membrane"]["lower"]),
-                           f"proposed {species_id} membrane")
-    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
+    page.get_by_role("button", name="Use this membrane").click()
     assessed = await_state(page, lambda state: state["membrane"] is not None and
                            state["membrane"]["status"] == "assessed" and
                            state["membrane"]["policyId"] and
-                           state["membrane"]["modelId"] == proposed["membrane"]["modelId"],
+                           all(fraction["speciesId"] == species_id for fraction in
+                               state["membrane"]["upper"] + state["membrane"]["lower"]),
                            f"assessed {species_id} membrane")
-    assert assessed["membrane"]["modelId"] == proposed["membrane"]["modelId"]
     return assessed
 
 
 def request_placement(page):
     page.get_by_role("navigation", name="Research work areas")\
         .get_by_role("button", name="Placement").click()
+    page.locator("#orientation-route").select_option("ppm")
     page.locator("#topology-kind").select_option("membrane-spanning")
     page.locator("#ppm-nterminal-side").select_option("in")
-    page.locator("#biological-sidedness").fill("extracellular-upper; periplasmic-lower")
-    expect(page.get_by_role("button", name="Obtain and assess position")).to_be_enabled()
+    expect(page.get_by_role("button", name="Calculate orientation estimate")).to_be_enabled()
     before = current_state(page)
-    page.get_by_role("button", name="Obtain and assess position").click()
+    page.get_by_role("button", name="Calculate orientation estimate").click()
     state = await_state(page, lambda account:
                         account["placement"] is not None and
                         account["placement"]["status"] not in ("proposed", "Proposed")
@@ -336,18 +297,14 @@ class BrowserPlacementTests(unittest.TestCase):
                     self.assertEqual(placement["preparedProteinId"], protein)
                     self.assertEqual(placement["membraneModelId"], membrane)
                     self.assertEqual(placement["physicalSide"], "both")
-                    self.assertEqual(placement["policyId"], "alkl-6qwr-dmpc-spanning-placement")
-                    self.assertEqual(placement["policyVersion"], "1.0.0")
-                    self.assertEqual(placement["witnessId"],
-                                     "alkl-6qwr-model1-dmpc-regional-topology")
+                    self.assertEqual(placement["policyId"], "general-technical-placement")
+                    self.assertEqual(placement["policyVersion"], "2.0.0")
                     self.assertIsNotNone(placement["midplaneAngstrom"])
-                    self.assertGreater(placement["thicknessAngstrom"], 0)
+                    self.assertAlmostEqual(placement["thicknessAngstrom"], 46.0)
                     self.assertTrue(placement["evidence"])
                     self.assertTrue(any("PPM" in item["source"] for item in placement["evidence"]))
-                    self.assertTrue(any(item["bearing"].lower() == "supports" and
-                                        item["method"] == "Independently witnessed placement relationship"
-                                        for item in placement["evidence"]),
-                                    "PPM context alone cannot establish support")
+                    self.assertTrue(any(item["method"] == "Measured placement geometry"
+                                        for item in placement["evidence"]))
                     self.assertTrue(any("implicit" in item["uncertainty"].lower()
                                         for item in placement["evidence"]))
                     self.assertEqual(state["stages"], [])
@@ -382,10 +339,10 @@ class BrowserPlacementTests(unittest.TestCase):
                     expect(panel).to_contain_text("DOPC")
                     expect(panel).to_contain_text("physical", ignore_case=True)
                     expect(panel).to_contain_text("supported", ignore_case=True)
-                    expect(page.get_by_role("button", name="Adopt supported position")).to_be_enabled()
+                    expect(page.get_by_role("button", name="Use this position")).to_be_enabled()
                     capture_review(self, page, "supported", 1672, 941)
                     capture_review(self, page, "supported", 820, 760)
-                    page.get_by_role("button", name="Adopt supported position").click()
+                    page.get_by_role("button", name="Use this position").click()
                     adopted = await_state(page, lambda value: value["study"]["number"] ==
                                           state["study"]["number"] + 1 and value["placement"] is not None and
                                           value["study"]["adoptedPlacementProposalId"] == placement["proposalId"],
@@ -401,7 +358,7 @@ class BrowserPlacementTests(unittest.TestCase):
                     self.assertEqual(adopted["stages"], [])
                     self.assertEqual(adopted["inspection"]["subjectId"], placement["proposalId"])
                     expect(page.get_by_label("Position proposal and scientific support"))\
-                        .to_contain_text("Adopted in the current study revision")
+                        .to_contain_text("Selected in the current study revision")
                     capture_review(self, page, "adopted", 1672, 941)
                     capture_review(self, page, "adopted", 820, 760)
                     page.set_viewport_size({"width": 1672, "height": 941})
@@ -412,11 +369,11 @@ class BrowserPlacementTests(unittest.TestCase):
                     self.assertFalse(next(item["enabled"] for item in changed["actions"]
                                           if item["kind"] == "adoptPlacement"))
                     self.assertFalse(next(item["enabled"] for item in changed["actions"]
-                                          if item["kind"] == "startPreparation"))
+                                          if item["kind"] == "buildAndMinimize"))
                 finally:
                     browser.close()
 
-    def test_real_reoriented_candidate_contradicts_exact_witness_and_withdraws_old_support(self):
+    def test_reorientation_gets_a_fresh_technical_check_without_a_topology_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             with running_host(directory / "workspace", POLICY) as base, sync_playwright() as playwright:
@@ -438,33 +395,33 @@ class BrowserPlacementTests(unittest.TestCase):
                                           state["placement"]["status"] not in ("proposed", "Proposed"),
                                           "freshly assessed reversed placement", timeout=300)
                     placement = revised["placement"]
-                    self.assertEqual(placement["status"], "unsupported", placement["reason"])
+                    self.assertEqual(placement["status"], "supported", placement["reason"])
                     self.assertEqual(placement["preparedProteinId"], original["preparedProteinId"])
                     self.assertEqual(placement["membraneModelId"], original["membraneModelId"])
                     self.assertEqual(revised["study"]["number"], before["study"]["number"])
-                    self.assertTrue(any(item["bearing"].lower() == "contradicts"
+                    self.assertTrue(any(item["method"] == "Measured placement geometry"
                                         for item in placement["evidence"]))
                     self.assertTrue(set(item["id"] for item in placement["evidence"]) -
                                     set(item["id"] for item in original["evidence"]),
                                     "The revised relationship needs fresh observed evidence")
+                    self.assertTrue(next(item["enabled"] for item in revised["actions"]
+                                         if item["kind"] == "adoptPlacement"))
                     self.assertFalse(next(item["enabled"] for item in revised["actions"]
-                                          if item["kind"] == "adoptPlacement"))
-                    self.assertFalse(next(item["enabled"] for item in revised["actions"]
-                                          if item["kind"] == "startPreparation"))
+                                          if item["kind"] == "buildAndMinimize"))
                     inspect_placement(page, placement["proposalId"])
                     self.assertNotEqual(current_state(page)["inspection"]["structureUrl"], original_url)
                     panel = page.locator(".evidence-panel")
-                    expect(panel).to_contain_text("Unsupported", ignore_case=True)
+                    expect(panel).to_contain_text("Supported", ignore_case=True)
                     expect(panel).to_contain_text(placement["reason"])
                     expect(panel).to_contain_text("physical", ignore_case=True)
                     expect(page.get_by_role("button", name="Reassess corrected placement"))\
                         .to_be_visible()
-                    capture_review(self, page, "unsupported", 1672, 941)
-                    capture_review(self, page, "unsupported", 820, 760)
+                    capture_review(self, page, "reoriented-supported", 1672, 941)
+                    capture_review(self, page, "reoriented-supported", 820, 760)
                 finally:
                     browser.close()
 
-    def test_real_candidate_without_placement_policy_is_inspectable_not_established(self):
+    def test_missing_placement_frame_refuses_position_without_losing_selected_pair(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             no_policy = directory / "without-placement-policy.json"
@@ -476,31 +433,26 @@ class BrowserPlacementTests(unittest.TestCase):
                     page.goto(base, wait_until="domcontentloaded")
                     protein = prepare_exact_protein(page)["protein"]["subjectId"]
                     membrane = choose_exact_membrane(page)["membrane"]["modelId"]
-                    state = request_placement(page)
-                    placement = state["placement"]
-                    self.assertEqual(placement["status"], "notEstablished", placement["reason"])
-                    self.assertEqual(placement["preparedProteinId"], protein)
-                    self.assertEqual(placement["membraneModelId"], membrane)
-                    self.assertRegex(placement["reason"], r"(?i)policy|witness")
+                    page.get_by_role("navigation", name="Research work areas")\
+                        .get_by_role("button", name="Placement").click()
+                    page.get_by_role("button", name="Check position now").click()
+                    expect(page.locator("#placement-workflow .action-feedback"))\
+                        .to_contain_text("no unique declared placement frame")
+                    state = current_state(page)
+                    self.assertIsNone(state["placement"])
+                    self.assertEqual(state["protein"]["subjectId"], protein)
+                    self.assertEqual(state["membrane"]["modelId"], membrane)
                     self.assertFalse(next(item["enabled"] for item in state["actions"]
                                           if item["kind"] == "adoptPlacement"))
                     self.assertFalse(next(item["enabled"] for item in state["actions"]
-                                          if item["kind"] == "startPreparation"))
+                                          if item["kind"] == "buildAndMinimize"))
                     self.assertEqual(state["stages"], [])
-                    inspect_placement(page, placement["proposalId"])
-                    panel = page.locator(".evidence-panel")
-                    expect(panel).to_contain_text("not established", ignore_case=True)
-                    expect(panel).to_contain_text(placement["reason"])
-                    expect(panel).to_contain_text("PPM")
-                    expect(panel).to_contain_text("DOPC")
-                    expect(page.get_by_role("button", name="Reassess corrected placement"))\
-                        .to_be_visible()
-                    capture_review(self, page, "not-established", 1672, 941)
-                    capture_review(self, page, "not-established", 820, 760)
+                    expect(page.locator("#placement-workflow"))\
+                        .to_contain_text("Position the complete prepared construct")
                 finally:
                     browser.close()
 
-    def test_missing_local_ppm_does_not_claim_a_position_or_support(self):
+    def test_missing_local_ppm_leaves_researcher_position_available(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             missing_binary = directory / "unavailable-immers"
@@ -513,21 +465,29 @@ class BrowserPlacementTests(unittest.TestCase):
                     choose_exact_membrane(page)
                     page.get_by_role("navigation", name="Research work areas")\
                         .get_by_role("button", name="Placement").click()
+                    page.locator("#orientation-route").select_option("ppm")
                     page.locator("#topology-kind").select_option("membrane-spanning")
                     page.locator("#ppm-nterminal-side").select_option("in")
-                    page.locator("#biological-sidedness").fill(
-                        "extracellular-upper; periplasmic-lower")
-                    state = current_state(page)
-                    self.assertIsNone(state["placement"])
-                    self.assertFalse(next(item["enabled"] for item in state["actions"]
-                                          if item["kind"] == "proposePlacement"))
-                    self.assertFalse(next(item["enabled"] for item in state["actions"]
-                                          if item["kind"] == "adoptPlacement"))
-                    self.assertFalse(next(item["enabled"] for item in state["actions"]
-                                          if item["kind"] == "startPreparation"))
-                    expect(page.get_by_role("button", name="Obtain and assess position"))\
+                    expect(page.get_by_role("button", name="Calculate orientation estimate"))\
                         .to_be_disabled()
-                    expect(page.locator("#placement-workflow")).to_contain_text("hash-verified PPM")
+                    expect(page.locator("#placement-workflow")).to_contain_text("local PPM")
+                    page.locator("#orientation-route").select_option("manual")
+                    page.get_by_role("button", name="Check position now").click()
+                    state = await_state(page, lambda account: (account.get("placement") or {}).get(
+                        "status") == "supported", "manual position without PPM")
+                    self.assertEqual(state["placement"]["transform"]["startingPosition"], "center")
+                    self.assertEqual(next(item["standing"] for item in state["placementMethods"]
+                                          if item["method"] == "PPM"), "unavailable")
+                    self.assertTrue(next(item["enabled"] for item in state["actions"]
+                                         if item["kind"] == "adoptPlacement"))
+                    self.assertFalse(next(item["enabled"] for item in state["actions"]
+                                          if item["kind"] == "buildAndMinimize"))
+                    page.get_by_role("button", name="Use this position").click()
+                    adopted = await_state(page, lambda account: account["study"].get(
+                        "adoptedPlacementProposalId") == state["placement"]["proposalId"],
+                        "adopted manual position without PPM")
+                    self.assertTrue(any(item["kind"] == "buildAndMinimize" and item["enabled"]
+                                        for item in adopted["actions"]))
                     expect(page.locator(".stage-strip")).to_contain_text("None")
                 finally:
                     browser.close()

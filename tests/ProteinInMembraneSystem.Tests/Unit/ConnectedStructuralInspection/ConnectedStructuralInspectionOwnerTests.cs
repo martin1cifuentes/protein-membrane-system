@@ -77,38 +77,6 @@ public sealed class ConnectedStructuralInspectionOwnerTests
     }
 
     [Fact]
-    public void Approval_requires_current_revision_rendered_subject_and_same_part_spatial_numerical_link()
-    {
-        var revision = Revision("current", 4);
-        var valid = Subject("proposal", revision.Id, "required", "A:10", 10);
-        var unrelated = Evidence("unrelated", valid.Id);
-        valid = valid with { Evidence = valid.Evidence.Add(unrelated) };
-        var required = ImmutableArray.Create("required");
-        var inspection = new InspectionOwner();
-
-        Assert.True(inspection.Select(revision, valid).Established);
-        Assert.True(inspection.HasRequiredEvidenceForApproval(valid.Id, revision.Id, required, out _));
-        Assert.False(inspection.HasRequiredEvidenceForApproval(valid.Id, "older", required, out _));
-        Assert.False(inspection.HasRequiredEvidenceForApproval("other-proposal", revision.Id, required, out _));
-
-        var incomplete = new[]
-        {
-            valid with { StructureUrl = null },
-            valid with { Annotations = ImmutableArray<InspectionAnnotation>.Empty },
-            valid with { Annotations = ImmutableArray.Create(valid.Annotations[0] with { GeometryFocus = null }) },
-            valid with { Metrics = ImmutableArray<InspectionMetric>.Empty },
-            valid with { Metrics = ImmutableArray.Create(valid.Metrics[0] with { SubjectPartId = "B:11" }) },
-            valid with { Metrics = ImmutableArray.Create(valid.Metrics[0] with { Value = "" }) },
-        };
-        foreach (var subject in incomplete)
-        {
-            Assert.True(inspection.Select(revision, subject).Established);
-            Assert.False(inspection.HasRequiredEvidenceForApproval(valid.Id, revision.Id, required, out _));
-            Assert.Contains(inspection.Current!.Evidence, item => item.Id == "unrelated");
-        }
-    }
-
-    [Fact]
     public void An_annotation_without_verified_structure_and_location_cannot_claim_spatial_focus()
     {
         var inspection = new InspectionOwner();
@@ -139,7 +107,7 @@ public sealed class ConnectedStructuralInspectionOwnerTests
             FindingDisposition.Context, false, DateTimeOffset.UtcNow);
 
     private static PreparationAssessmentResult Assessment(string stageId) =>
-        new("assessment-" + stageId, stageId, PreparationQualification.Indeterminate,
+        new("assessment-" + stageId, stageId, PreparationCheckStanding.ChecksIncomplete,
             "An exact stage assessment.", ImmutableArray<ScientificEvidence>.Empty,
             ImmutableArray<ScientificFinding>.Empty, ImmutableArray.Create("Scope is limited."),
             DateTimeOffset.UtcNow, true);

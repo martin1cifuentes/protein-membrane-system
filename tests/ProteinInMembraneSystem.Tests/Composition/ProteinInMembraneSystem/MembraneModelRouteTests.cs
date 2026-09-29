@@ -33,30 +33,24 @@ public sealed class MembraneModelRouteTests
     }
 
     [Fact]
-    public async Task A_proposal_becomes_a_chosen_and_assessed_model_only_after_explicit_adoption()
+    public async Task One_explicit_use_adopts_the_exact_composition_and_starts_its_check()
     {
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker();
         var product = Product(directory.Path, worker);
         var initial = product.Snapshot();
 
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
-            Composition(("POPC", 1.0), ("POPC", 1.0)));
-
-        Assert.True(proposed.Established, proposed.Reason);
-        Assert.Equal(initial.Study!.Id, proposed.Value!.Study!.Id);
-        Assert.Equal("proposed", proposed.Value.Membrane!.Status);
+        Assert.Null(initial.Membrane);
         Assert.Empty(worker.MembraneRequests);
-        Assert.Equal(0.15, proposed.Value.Study.Conditions.TargetNaClMolar);
-        Assert.Equal(303, proposed.Value.Study.Conditions.OptionalTemperatureKelvin);
-
         var adopted = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value.Membrane.ModelId });
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
 
         Assert.True(adopted.Established, adopted.Reason);
         Assert.Equal("assessed", adopted.Value!.Membrane!.Status);
-        Assert.NotEqual(initial.Study.Id, adopted.Value.Study!.Id);
+        Assert.NotEqual(initial.Study!.Id, adopted.Value.Study!.Id);
         Assert.Equal(initial.Study.Number + 1, adopted.Value.Study.Number);
+        Assert.Equal(0.15, adopted.Value.Study.Conditions.TargetNaClMolar);
+        Assert.Equal(303, adopted.Value.Study.Conditions.OptionalTemperatureKelvin);
         Assert.Single(worker.MembraneRequests);
         Assert.Equal(adopted.Value.Study.Id, worker.MembraneRequests[0].Payload.StudyRevisionId);
         Assert.Equal(adopted.Value.Membrane.ModelId, worker.MembraneRequests[0].Payload.MembraneModelId);
@@ -81,6 +75,10 @@ public sealed class MembraneModelRouteTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var released = new TaskCompletionSource<WorkerResult<MembraneAssessmentObservations>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryEntered = new TaskCompletionSource<ScientificWorkRequest<MembraneAssessmentPayload>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryReleased = new TaskCompletionSource<WorkerResult<MembraneAssessmentObservations>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
         var worker = new MembraneRouteWorker
         {
@@ -91,32 +89,49 @@ public sealed class MembraneModelRouteTests
                     entered.TrySetResult(request);
                     return released.Task;
                 }
-                return Task.FromResult(MembraneRouteWorker.Observed(request, true));
+                retryEntered.TrySetResult(request);
+                return retryReleased.Task;
             }
         };
         var product = Product(directory.Path, worker);
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
+        var initial = product.Snapshot();
+        var adoption = Command(product, ActorActionKind.AdoptMembrane,
             Composition(("POPC", 1.0), ("POPC", 1.0)));
-        var modelId = proposed.Value!.Membrane!.ModelId;
-        var adoption = Command(product, ActorActionKind.AdoptMembrane, new { modelId });
         var request = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         var during = product.Snapshot();
         Assert.Equal("assessing", during.Membrane!.Status);
-        Assert.Equal(modelId, during.Membrane.ModelId);
-        Assert.NotEqual(proposed.Value.Study!.Id, during.Study!.Id);
+        var modelId = during.Membrane.ModelId;
+        Assert.NotEqual(initial.Study!.Id, during.Study!.Id);
         Assert.Contains(during.Actions, item => item.Kind == ActorActionKind.AdoptMembrane && !item.Enabled);
+        Assert.Contains(during.Actions, item => item.Kind == ActorActionKind.RetryMembraneCheck && !item.Enabled);
 
         released.SetException(new IOException("controlled membrane provider interruption"));
         var unavailable = await adoption;
         Assert.True(unavailable.Established, unavailable.Reason);
         Assert.Equal("unavailable", unavailable.Value!.Membrane!.Status);
         Assert.Contains("interruption", unavailable.Value.Membrane.Reason);
-        Assert.Contains(unavailable.Value.Actions, item => item.Kind == ActorActionKind.AdoptMembrane && item.Enabled);
+        Assert.Contains(unavailable.Value.Actions, item => item.Kind == ActorActionKind.RetryMembraneCheck && item.Enabled);
+        Assert.Contains(unavailable.Value.Notices, item =>
+            item.ConditionKey?.StartsWith("membrane-check:", StringComparison.Ordinal) == true);
         var adoptedRevision = unavailable.Value.Study!.Id;
-        var retry = await Command(product, ActorActionKind.AdoptMembrane, new { modelId });
+        var retryOperation = Command(product, ActorActionKind.RetryMembraneCheck, new { modelId });
+        var retryRequest = await retryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        var retryPending = product.Snapshot();
+        Assert.Equal("assessing", retryPending.Membrane!.Status);
+        Assert.Equal(modelId, retryPending.Membrane.ModelId);
+        Assert.Contains(retryPending.Notices, item =>
+            item.ConditionKey?.StartsWith("membrane-check:", StringComparison.Ordinal) == true &&
+            item.Message.Contains("interruption", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(retryPending.Actions, item =>
+            item.Kind == ActorActionKind.BuildAndMinimize && item.Enabled);
+        retryReleased.SetResult(MembraneRouteWorker.Observed(retryRequest, true));
+        var retry = await retryOperation;
         Assert.True(retry.Established, retry.Reason);
         Assert.Equal("assessed", retry.Value!.Membrane!.Status);
+        Assert.DoesNotContain(retry.Value.Notices, item =>
+            item.ConditionKey?.StartsWith("membrane-check:", StringComparison.Ordinal) == true);
         Assert.Equal(adoptedRevision, retry.Value.Study!.Id);
         Assert.Equal([adoptedRevision, adoptedRevision],
             worker.MembraneRequests.Select(item => item.Payload.StudyRevisionId));
@@ -129,12 +144,8 @@ public sealed class MembraneModelRouteTests
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker();
         var product = Product(directory.Path, worker);
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
-            Composition(("POPC", 1.0), ("UNSELECTED", 0.0), ("POPC", 1.0)));
-        Assert.True(proposed.Established, proposed.Reason);
-
         var adopted = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value!.Membrane!.ModelId });
+            Composition(("POPC", 1.0), ("UNSELECTED", 0.0), ("POPC", 1.0)));
 
         Assert.True(adopted.Established, adopted.Reason);
         Assert.Equal("assessed", adopted.Value!.Membrane!.Status);
@@ -148,18 +159,13 @@ public sealed class MembraneModelRouteTests
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker { CombinedParameterizationObserved = false };
         var product = Product(directory.Path, worker);
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
+        var adopted = await Command(product, ActorActionKind.AdoptMembrane,
             Composition(("POPC", 1.0), ("POPC", 1.0)));
-        Assert.True(proposed.Established, proposed.Reason);
-        var modelId = proposed.Value!.Membrane!.ModelId;
-
-        var adopted = await Command(product, ActorActionKind.AdoptMembrane, new { modelId });
         Assert.True(adopted.Established, adopted.Reason);
         Assert.Equal("notEstablished", adopted.Value!.Membrane!.Status);
-        Assert.Equal(modelId, adopted.Value.Membrane.ModelId);
-        Assert.Contains(adopted.Value.Notices, notice => notice.SubjectId == modelId &&
-            notice.Message.Contains("combination", StringComparison.OrdinalIgnoreCase) &&
-            notice.Message.Contains("parameterization", StringComparison.OrdinalIgnoreCase));
+        var modelId = adopted.Value.Membrane.ModelId;
+        Assert.Contains("combination", adopted.Value.Membrane.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("parameterization", adopted.Value.Membrane.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Null(adopted.Value.Placement);
 
         var inspected = await Command(product, ActorActionKind.SelectInspectionSubject, new { subjectId = modelId });
@@ -175,11 +181,10 @@ public sealed class MembraneModelRouteTests
     {
         using var directory = new TemporaryDirectory();
         var product = Product(directory.Path, new MembraneRouteWorker());
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
+        var adopted = await Command(product, ActorActionKind.AdoptMembrane,
             Composition(("POPC", 1.0), ("POPC", 1.0)));
-        var modelId = proposed.Value!.Membrane!.ModelId;
-        var adopted = await Command(product, ActorActionKind.AdoptMembrane, new { modelId });
         Assert.Equal("assessed", adopted.Value!.Membrane!.Status);
+        var modelId = adopted.Value.Membrane.ModelId;
 
         var inspected = await Command(product, ActorActionKind.SelectInspectionSubject, new { subjectId = modelId });
 
@@ -199,27 +204,19 @@ public sealed class MembraneModelRouteTests
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker();
         var product = Product(directory.Path, worker);
-        var firstProposal = await Command(product, ActorActionKind.ProposeMembrane,
-            Composition(("POPC", 1.0), ("POPC", 1.0)));
-        var firstModelId = firstProposal.Value!.Membrane!.ModelId;
         var original = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = firstModelId });
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
         Assert.Equal("assessed", original.Value!.Membrane!.Status);
+        var firstModelId = original.Value.Membrane.ModelId;
         Assert.Single(worker.MembraneRequests);
 
-        var changedProposal = await Command(product, ActorActionKind.ProposeMembrane,
-            Composition(("EXACT-OTHER", 1.0), ("EXACT-OTHER", 1.0)));
-        Assert.True(changedProposal.Established, changedProposal.Reason);
-        Assert.Equal(original.Value.Study!.Id, changedProposal.Value!.Study!.Id);
-        Assert.Equal("proposed", changedProposal.Value.Membrane!.Status);
-        Assert.NotEqual(firstModelId, changedProposal.Value.Membrane.ModelId);
-
         var changed = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = changedProposal.Value.Membrane.ModelId });
+            Composition(("EXACT-OTHER", 1.0), ("EXACT-OTHER", 1.0)));
         Assert.True(changed.Established, changed.Reason);
-        Assert.NotEqual(original.Value.Study.Id, changed.Value!.Study!.Id);
+        Assert.NotEqual(original.Value.Study!.Id, changed.Value!.Study!.Id);
         Assert.Equal(original.Value.Study.Number + 1, changed.Value.Study.Number);
         Assert.Equal("notEstablished", changed.Value.Membrane!.Status);
+        Assert.NotEqual(firstModelId, changed.Value.Membrane.ModelId);
         Assert.Equal("EXACT-OTHER", changed.Value.Membrane.Upper.Single().SpeciesId);
         Assert.Equal("assessed", original.Value.Membrane.Status);
         Assert.Equal(firstModelId, original.Value.Membrane.ModelId);
@@ -228,14 +225,14 @@ public sealed class MembraneModelRouteTests
     }
 
     [Fact]
-    public async Task Incoherent_proposal_does_not_change_study_or_chosen_membrane()
+    public async Task Incoherent_use_does_not_change_study_or_chosen_membrane()
     {
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker();
         var product = Product(directory.Path, worker);
         var initial = product.Snapshot();
 
-        var refused = await Command(product, ActorActionKind.ProposeMembrane,
+        var refused = await Command(product, ActorActionKind.AdoptMembrane,
             Composition(("POPC", 0.4), ("POPC", 1.0)));
 
         Assert.False(refused.Established);
@@ -251,24 +248,95 @@ public sealed class MembraneModelRouteTests
         using var directory = new TemporaryDirectory();
         var worker = new MembraneRouteWorker();
         var product = Product(directory.Path, worker);
-        Assert.True(product.Snapshot().Actions.Single(item => item.Kind == ActorActionKind.ProposeMembrane).Enabled);
-
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
+        Assert.True(product.Snapshot().Actions.Single(item => item.Kind == ActorActionKind.AdoptMembrane).Enabled);
+        var adopted = await Command(product, ActorActionKind.AdoptMembrane,
             Composition(("EXACT-OTHER", 1.0), ("EXACT-OTHER", 1.0)));
-        Assert.True(proposed.Established, proposed.Reason);
-        var modelId = proposed.Value!.Membrane!.ModelId;
-        Assert.Equal("proposed", proposed.Value.Membrane.Status);
-
-        var adopted = await Command(product, ActorActionKind.AdoptMembrane, new { modelId });
 
         Assert.True(adopted.Established, adopted.Reason);
         Assert.Equal("notEstablished", adopted.Value!.Membrane!.Status);
         Assert.Equal("EXACT-OTHER", adopted.Value.Membrane.Upper.Single().SpeciesId);
-        Assert.Contains(adopted.Value.Notices, notice => notice.SubjectId == modelId &&
-            notice.Message.Contains("EXACT-OTHER", StringComparison.Ordinal) &&
-            notice.Message.Contains("representation", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("EXACT-OTHER", adopted.Value.Membrane.Reason, StringComparison.Ordinal);
+        Assert.Contains("representation", adopted.Value.Membrane.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(worker.MembraneRequests);
         Assert.Null(adopted.Value.Placement);
+    }
+
+    [Fact]
+    public async Task Invalid_draft_and_duplicate_use_neither_adopt_nor_start_another_check()
+    {
+        using var directory = new TemporaryDirectory();
+        var worker = new MembraneRouteWorker();
+        var product = Product(directory.Path, worker);
+        var initial = product.Snapshot();
+        using var nonfinite = JsonDocument.Parse("""{"upper":[{"speciesId":"POPC","fraction":1e999}],"lower":[{"speciesId":"POPC","fraction":1.0}]}""");
+        var invalid = new object[]
+        {
+            new { upper = new[] { new { speciesId = "", fraction = 1.0 } },
+                lower = new[] { new { speciesId = "POPC", fraction = 1.0 } } },
+            Composition(("POPC", -0.2), ("POPC", 1.2), ("POPC", 1.0)),
+            Composition(("POPC", 0.5), ("POPC", 0.5), ("POPC", 1.0)),
+            Composition(("POPC", 0.4), ("POPC", 1.0)),
+            nonfinite.RootElement
+        };
+        foreach (var draft in invalid)
+        {
+            var refused = await Command(product, ActorActionKind.AdoptMembrane, draft);
+            Assert.False(refused.Established);
+            Assert.Equal(initial.Study!.Id, product.Snapshot().Study!.Id);
+            Assert.Null(product.Snapshot().Membrane);
+        }
+        Assert.Empty(worker.MembraneRequests);
+
+        var chosen = await Command(product, ActorActionKind.AdoptMembrane,
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
+        Assert.True(chosen.Established, chosen.Reason);
+        var revision = chosen.Value!.Study!.Id;
+        var modelId = chosen.Value.Membrane!.ModelId;
+        var duplicate = await Command(product, ActorActionKind.AdoptMembrane,
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
+        Assert.False(duplicate.Established);
+        Assert.Equal(revision, product.Snapshot().Study!.Id);
+        Assert.Equal(modelId, product.Snapshot().Membrane!.ModelId);
+        Assert.Single(worker.MembraneRequests);
+    }
+
+    [Fact]
+    public async Task Pending_check_retains_its_exact_snapshot_when_a_later_edit_was_submitted_stale()
+    {
+        using var directory = new TemporaryDirectory();
+        var entered = new TaskCompletionSource<ScientificWorkRequest<MembraneAssessmentPayload>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource<WorkerResult<MembraneAssessmentObservations>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = new MembraneRouteWorker
+        {
+            AssessResponseAsync = (request, _) =>
+            {
+                entered.TrySetResult(request);
+                return released.Task;
+            }
+        };
+        var product = Product(directory.Path, worker);
+        var selected = Command(product, ActorActionKind.AdoptMembrane,
+            Composition(("POPC", 1.0), ("POPC", 1.0)));
+        var request = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        var during = product.Snapshot();
+        Assert.Equal("assessing", during.Membrane!.Status);
+        Assert.Equal("POPC", during.Membrane.Upper.Single().SpeciesId);
+
+        var later = Command(product, ActorActionKind.AdoptMembrane,
+            Composition(("EXACT-OTHER", 1.0), ("EXACT-OTHER", 1.0)));
+        released.SetResult(MembraneRouteWorker.Observed(request, true));
+        var established = await selected;
+        var stale = await later;
+
+        Assert.True(established.Established, established.Reason);
+        Assert.False(stale.Established);
+        Assert.Contains("workspace changed", stale.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(during.Membrane.ModelId, product.Snapshot().Membrane!.ModelId);
+        Assert.Equal("assessed", product.Snapshot().Membrane!.Status);
+        Assert.Single(worker.MembraneRequests);
     }
 
     private static object Composition((string Species, double Fraction) firstUpper,

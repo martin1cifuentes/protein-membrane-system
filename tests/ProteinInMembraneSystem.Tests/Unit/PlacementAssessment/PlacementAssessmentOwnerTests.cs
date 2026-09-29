@@ -11,18 +11,18 @@ public sealed class PlacementAssessmentOwnerTests
     [Fact]
     public void Opm_context_is_corresponding_only_for_the_exact_identified_construct_and_membrane()
     {
-        using var artifact = new IdentifiedArtifact();
+        using var artifact = new IdentifiedArtifact(includeDum: true);
         using var fixture = new PlacementFixture();
         var owner = new PlacementOwner(new PlacementWorkerStub());
         var reference = new OpmReferenceRecord("6QWR", "https://opm.example/6qwr", artifact.Path,
             artifact.Sha256, "assembly-1", fixture.Protein.Intended.Chains,
-            ImmutableArray<string>.Empty, ImmutableArray.Create("atom-1", "atom-2", "atom-3"),
-            "symmetric POPC", 22, 8, "POPC", true, 0);
+            ImmutableArray<string>.Empty, fixture.Protein.Correspondence.Atoms.Select(item => item.SourceAtomId!).ToImmutableArray(),
+            "symmetric POPC", 20, 8, "POPC", true, 0);
 
         var matching = owner.ReviewOpmReference(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
             reference with { MembraneContext = "symmetric POPC" });
         Assert.True(matching.Established, matching.Reason);
-        Assert.True(matching.Value!.CorrespondsToSelectedConstruct);
+        Assert.True(matching.Value!.CorrespondsToSelectedConstruct, string.Join(" | ", matching.Value.Limitations));
         Assert.True(matching.Value.MembraneContextApplicable);
         Assert.All(matching.Value.Evidence, evidence => Assert.Equal(EvidenceBearing.Context, evidence.Bearing));
 
@@ -32,9 +32,10 @@ public sealed class PlacementAssessmentOwnerTests
             (reference with { BiologicalAssemblyId = "assembly-2" }, "assembly"),
             (reference with { ChainCopies = ImmutableArray.Create(new ChainSelection("B", "other")) }, "chain"),
             (reference with { RetainedPartnerSourceIds = ImmutableArray.Create("partner-x") }, "partners"),
-            (reference with { SourceAtomIds = ImmutableArray.Create("atom-1", "atom-2", "other") }, "atoms"),
-            (reference with { OrientedCoordinateSha256 = new string('0', 64) }, "hash"),
-            (reference with { OrientedCoordinatePath = artifact.Path + ".absent" }, "artifact")
+            (reference with { SourceAtomIds = ImmutableArray.Create(fixture.Protein.Correspondence.Atoms[0].SourceAtomId!,
+                fixture.Protein.Correspondence.Atoms[1].SourceAtomId!, "other") }, "atoms"),
+            (reference with { OrientedCoordinateSha256 = new string('0', 64) }, "coordinate bytes"),
+            (reference with { OrientedCoordinatePath = artifact.Path + ".absent" }, "coordinate bytes")
         };
         foreach (var (changed, expected) in mismatches)
         {
@@ -57,8 +58,7 @@ public sealed class PlacementAssessmentOwnerTests
             Assert.True(reviewed.Established, reviewed.Reason);
             Assert.True(reviewed.Value!.CorrespondsToSelectedConstruct);
             Assert.False(reviewed.Value.MembraneContextApplicable);
-            Assert.Contains(reviewed.Value.Limitations, limitation =>
-                limitation.Contains("membrane", StringComparison.OrdinalIgnoreCase));
+            Assert.Empty(reviewed.Value.Limitations);
         }
     }
 
@@ -78,6 +78,10 @@ public sealed class PlacementAssessmentOwnerTests
         Assert.Equal(fixture.Membrane.Intended.Id, valid.Value.MembraneModelId);
         Assert.Equal(3, valid.Value.OrientedProtein.AtomCount);
         Assert.Equal(PlacementPhysicalSide.Both, valid.Value.PhysicalSide);
+        Assert.Equal(fixture.Policy.Id, valid.Value.FramePolicyId);
+        Assert.Equal(fixture.Policy.Version, valid.Value.FramePolicyVersion);
+        Assert.Equal(0, valid.Value.MidplaneAngstrom);
+        Assert.Equal(46, valid.Value.ThicknessAngstrom);
         Assert.Contains("symmetric DOPC", valid.Value.Evidence.Single().Applicability,
             StringComparison.OrdinalIgnoreCase);
         Assert.Single(ownerWorker.PpmRequests);
@@ -115,15 +119,15 @@ public sealed class PlacementAssessmentOwnerTests
             Assert.Single(worker.PpmRequests);
         }
         var invalidSide = await owner.ProposeWithPpmAsync(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Upper,
+            fixture.Membrane.Intended, fixture.Policy, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Upper,
             "extracellular upper", PpmNterminalSide.Out, "/identified/immers", "2.0",
-            new string('a', 64), "/tmp/placement-unit", TestContext.Current.CancellationToken);
+            new string('a', 64), System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken);
         Assert.False(invalidSide.Established);
         Assert.Single(ownerWorker.PpmRequests);
         var unidentified = await owner.ProposeWithPpmAsync(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
+            fixture.Membrane.Intended, fixture.Policy, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
             "extracellular upper", PpmNterminalSide.Out, "", "2.0", new string('a', 64),
-            "/tmp/placement-unit", TestContext.Current.CancellationToken,
+            System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken,
             "/identified/res.lib", new string('f', 64));
         Assert.False(unidentified.Established);
         Assert.Single(ownerWorker.PpmRequests);
@@ -133,36 +137,33 @@ public sealed class PlacementAssessmentOwnerTests
     public void Opm_only_proposal_needs_the_exact_prepared_bytes_and_observed_frame_bounds()
     {
         using var fixture = new PlacementFixture();
-        using var artifact = new IdentifiedArtifact();
-        fixture.Protein = fixture.Protein with { Molecule = fixture.Protein.Molecule with
-        { CoordinatePath = artifact.Path, CoordinateSha256 = artifact.Sha256 } };
+        using var artifact = new IdentifiedArtifact(includeDum: true);
         var reference = new OpmReferenceRecord("6QWR", "controlled exact OPM reference",
             artifact.Path, artifact.Sha256, "assembly-1", fixture.Protein.Intended.Chains,
-            ImmutableArray<string>.Empty, ImmutableArray.Create("atom-1", "atom-2", "atom-3"),
+            ImmutableArray<string>.Empty, fixture.Protein.Correspondence.Atoms.Select(item => item.SourceAtomId!).ToImmutableArray(),
             "implicit symmetric POPC", 20, 8, "POPC", true, 0);
         var owner = new PlacementOwner(new PlacementWorkerStub());
         var review = owner.ReviewOpmReference(fixture.Revision, fixture.Protein,
             fixture.Membrane.Intended, reference);
-        Assert.True(review.Value!.CorrespondsToSelectedConstruct);
+        Assert.True(review.Value!.CorrespondsToSelectedConstruct, string.Join(" | ", review.Value.Limitations));
         Assert.True(review.Value.MembraneContextApplicable);
         var proposed = owner.ProposeFromOpmReference(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, reference, review.Value,
+            fixture.Membrane.Intended, fixture.Policy, reference, review.Value,
             ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
             "extracellular upper");
         Assert.True(proposed.Established, proposed.Reason);
-        Assert.Equal(artifact.Sha256, proposed.Value!.OrientedProtein.CoordinateSha256);
+        Assert.NotEqual(artifact.Sha256, proposed.Value!.OrientedProtein.CoordinateSha256);
         Assert.Equal(0, proposed.Value.MidplaneAngstrom);
-        Assert.Equal(20, proposed.Value.ThicknessAngstrom);
+        Assert.Equal(46, proposed.Value.ThicknessAngstrom);
         Assert.All(proposed.Value.Evidence, item => Assert.Equal(EvidenceBearing.Context, item.Bearing));
         foreach (var invalid in new[]
                  {
                      reference with { MidplaneAngstrom = null },
                      reference with { HydrophobicThicknessAngstrom = double.NaN },
-                     reference with { OrientedCoordinateSha256 = new string('0', 64) },
-                     reference with { AssumedMembraneSpeciesId = "DOPC" }
+                     reference with { OrientedCoordinateSha256 = new string('0', 64) }
                  })
             Assert.False(owner.ProposeFromOpmReference(fixture.Revision, fixture.Protein,
-                fixture.Membrane.Intended, invalid, review.Value,
+                fixture.Membrane.Intended, fixture.Policy, invalid, review.Value,
                 ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
                 "extracellular upper").Established);
     }
@@ -186,6 +187,32 @@ public sealed class PlacementAssessmentOwnerTests
             worker.MeasurementRequests[0].Payload.ExpectedResultAtomIdsInOrder);
         Assert.Equal(fixture.Proposal.OrientedProtein.CoordinateSha256,
             worker.MeasurementRequests[0].Payload.OrientedPdbSha256);
+    }
+
+    [Fact]
+    public async Task Changed_frame_policy_identity_or_envelope_withholds_a_prior_geometric_check()
+    {
+        using var fixture = new PlacementFixture();
+        var worker = new PlacementWorkerStub { MeasurementReply = request => Measured(request, fixture) };
+        var owner = new PlacementOwner(worker);
+        var measured = (await Measure(owner, fixture)).Value!;
+        Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured).Standing);
+
+        foreach (var changed in new[]
+                 {
+                     fixture.Proposal with { FramePolicyId = "other-frame" },
+                     fixture.Proposal with { FramePolicyVersion = "2" },
+                     fixture.Proposal with { MidplaneAngstrom = 1 },
+                     fixture.Proposal with { ThicknessAngstrom = 20 }
+                 })
+            Assert.Equal(AssessmentStanding.NotEstablished,
+                owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
+                    changed, fixture.Policy, measured, fixture.Witness, measured.Evidence,
+                    ImmutableArray<ScientificFinding>.Empty).Standing);
+        Assert.Equal(AssessmentStanding.NotEstablished,
+            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
+                fixture.Proposal, fixture.Policy with { Version = "2" }, measured,
+                fixture.Witness, measured.Evidence, ImmutableArray<ScientificFinding>.Empty).Standing);
     }
 
     [Fact]
@@ -243,7 +270,7 @@ public sealed class PlacementAssessmentOwnerTests
             "Topology context does not qualify this technical position.", EvidenceBearing.Context));
         var owner = new PlacementOwner(new PlacementWorkerStub());
         AssessmentStanding Standing(PlacementStructuralWitness witness, PlacementMeasurementReport measured) =>
-            owner.Assess(revision, protein, fixture.Membrane, proposal, fixture.Policy,
+            owner.Assess(revision, protein, fixture.Membrane.Intended, proposal, fixture.Policy,
                 measured, witness, evidence, ImmutableArray<ScientificFinding>.Empty).Standing;
 
         Assert.Equal(AssessmentStanding.Supported, Standing(completeWitness, report));
@@ -258,89 +285,9 @@ public sealed class PlacementAssessmentOwnerTests
                   AtomsAboveCore = 1, AtomsBelowCore = 0 }) };
         Assert.Equal(AssessmentStanding.Supported, Standing(completeWitness, reversedB));
         Assert.Equal(AssessmentStanding.NotEstablished,
-            owner.Assess(revision, protein, fixture.Membrane, proposal,
+            owner.Assess(revision, protein, fixture.Membrane.Intended, proposal,
                 fixture.Policy, null, completeWitness, evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
-    }
-
-    [Fact]
-    public async Task Pure_lipid_core_reframe_keeps_the_exact_PPM_proposal_and_distinct_boundary_provenance()
-    {
-        using var fixture = new PlacementFixture();
-        var citation = "https://doi.org/10.1016/j.bbamem.2011.07.022";
-        var review = "review:popc-reference-to-target";
-        var frame = new PlacementPureLipidCoreFrame("popc-core-reference", "1", "POPC",
-            28.8, 0.6, 303.15, "protein-free fully hydrated H2O/D2O vesicles; no stated NaCl treatment",
-            citation, fixture.Membrane.Intended.Conditions, 1.5, review,
-            "The 0.15 K and salt/protein-context differences are disclosed for policy review.");
-        var policy = fixture.Policy with
-        {
-            EvidenceReferences = fixture.Policy.EvidenceReferences.Add(citation).Add(review),
-            PureLipidCoreFrame = frame
-        };
-        var owner = new PlacementOwner(new PlacementWorkerStub());
-        var proposed = owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal, policy);
-
-        Assert.True(proposed.Established, proposed.Reason);
-        Assert.NotEqual(fixture.Proposal.Id, proposed.Value!.Id);
-        Assert.Equal(fixture.Proposal.OrientedProtein.CoordinateSha256,
-            proposed.Value.OrientedProtein.CoordinateSha256);
-        Assert.Equal(20, fixture.Proposal.ThicknessAngstrom);
-        Assert.Equal(28.8, proposed.Value.ThicknessAngstrom);
-        Assert.Equal(1.5, proposed.Value.MidplaneAngstrom);
-        Assert.Contains(proposed.Value.Evidence, item =>
-            item.Method == "PPM orientation candidate" && item.Bearing == EvidenceBearing.Context &&
-            item.Observation.Contains(fixture.Proposal.Id, StringComparison.Ordinal));
-        Assert.Contains(proposed.Value.Evidence, item =>
-            item.Method == "pure-lipid hydrocarbon core reference" &&
-            item.Source == citation && item.Bearing == EvidenceBearing.Context &&
-            item.Uncertainty.Contains(review, StringComparison.Ordinal));
-        Assert.All(proposed.Value.Evidence, item => Assert.Equal(proposed.Value.Id, item.SubjectId));
-        Assert.DoesNotContain(fixture.Proposal.Evidence, item =>
-            item.Method == "pure-lipid hydrocarbon core reference");
-        var measuringWorker = new PlacementWorkerStub
-        { MeasurementReply = request => Measured(request, fixture) };
-        var measurement = await new PlacementOwner(measuringWorker).MeasureAgainstMembraneAsync(
-            fixture.Revision, fixture.Protein, fixture.Membrane, proposed.Value,
-            policy, fixture.Witness, "/tmp/placement-unit", TestContext.Current.CancellationToken);
-        Assert.True(measurement.Established, measurement.Reason);
-        Assert.Single(measuringWorker.MeasurementRequests);
-        Assert.Equal(-12.9, measuringWorker.MeasurementRequests[0].Payload.CoreLowerZAngstrom, 6);
-        Assert.Equal(15.9, measuringWorker.MeasurementRequests[0].Payload.CoreUpperZAngstrom, 6);
-
-        PlacementSupportPolicy WithFrame(PlacementPureLipidCoreFrame changed) =>
-            policy with { PureLipidCoreFrame = changed };
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            policy with { PureLipidCoreFrame = null }).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal, WithFrame(frame with { SpeciesId = "DOPC" })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal, WithFrame(frame with { ReferenceCitation = "" })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { SourceToTargetReviewRationale = "" })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { SourceToTargetReviewReference = "unidentified-review" })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { IntendedConditions = frame.IntendedConditions with
-                { OptionalTemperatureKelvin = 310 } })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { HydrocarbonThicknessAngstrom = double.NaN })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { ReferenceTemperatureKelvin = double.NaN })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended, fixture.Proposal,
-            WithFrame(frame with { MidplaneOffsetFromPpmAngstrom = double.PositiveInfinity })).Established);
-        Assert.False(owner.ReframePpmProposalWithPolicy(fixture.Revision, fixture.Protein,
-            fixture.Membrane.Intended,
-            fixture.Proposal with { OrientedProtein = fixture.Proposal.OrientedProtein with
-                { CoordinateSha256 = new string('a', 64) } }, policy).Established);
     }
 
     [Fact]
@@ -376,7 +323,7 @@ public sealed class PlacementAssessmentOwnerTests
         Assert.Equal(EvidenceBearing.Context, measured.Value!.Evidence.Single().Bearing);
         Assert.Equal(AssessmentStanding.Supported, Assess(owner, fixture, measured.Value).Standing);
         Assert.Equal(AssessmentStanding.Supported,
-            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
+            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended, fixture.Proposal,
                 fixture.Policy, measured.Value, null, measured.Value.Evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
     }
@@ -536,8 +483,8 @@ public sealed class PlacementAssessmentOwnerTests
         var worker = new PlacementWorkerStub { MeasurementReply = request => Measured(request, fixture) };
         var owner = new PlacementOwner(worker);
         var measured = (await Measure(owner, fixture)).Value!;
-        Assert.Equal(AssessmentStanding.Supported,
-            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
+        Assert.Equal(AssessmentStanding.NotEstablished,
+            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended, fixture.Proposal,
                 null, measured, fixture.Witness, measured.Evidence,
                 ImmutableArray<ScientificFinding>.Empty).Standing);
         Assert.Equal(AssessmentStanding.NotEstablished,
@@ -550,22 +497,23 @@ public sealed class PlacementAssessmentOwnerTests
             fixture.Membrane.Intended.Id, "Exact observed region.", EvidenceBearing.Contradicts);
         Assert.Equal(AssessmentStanding.Unsupported,
             Assess(owner, fixture, measured, additional: ImmutableArray.Create(contradiction)).Standing);
-        var refusals = new (PlacementSupportPolicy Policy, PlacementStructuralWitness Witness)[]
+        var cases = new (PlacementSupportPolicy Policy, PlacementStructuralWitness Witness,
+            AssessmentStanding Expected)[]
         {
-            (fixture.Policy with { GeometryCriteria = ImmutableArray<PlacementMeasurementCriterion>.Empty }, fixture.Witness),
+            (fixture.Policy with { GeometryCriteria = ImmutableArray<PlacementMeasurementCriterion>.Empty }, fixture.Witness, AssessmentStanding.Supported),
             (fixture.Policy with { GeometryCriteria = ImmutableArray.Create(
-                new PlacementMeasurementCriterion("atomsWithinCore", "atoms", 2, null)) }, fixture.Witness),
-            (fixture.Policy with { CoveredSpeciesIds = ImmutableArray.Create("DOPC") }, fixture.Witness),
+                new PlacementMeasurementCriterion("atomsWithinCore", "atoms", 2, null)) }, fixture.Witness, AssessmentStanding.Supported),
+            (fixture.Policy with { CoveredSpeciesIds = ImmutableArray.Create("DOPC") }, fixture.Witness, AssessmentStanding.NotEstablished),
             (fixture.Policy, fixture.Witness with { Upper = fixture.Witness.Upper with
-                { Fractions = ImmutableArray.Create(new LipidFraction("DOPC", 1)) } }),
-            (fixture.Policy, fixture.Witness with { ChainCopies = ImmutableArray.Create(new ChainSelection("B", "other")) }),
-            (fixture.Policy, fixture.Witness with { RetainedPartnerSourceIds = ImmutableArray.Create("unselected") }),
+                { Fractions = ImmutableArray.Create(new LipidFraction("DOPC", 1)) } }, AssessmentStanding.Supported),
+            (fixture.Policy, fixture.Witness with { ChainCopies = ImmutableArray.Create(new ChainSelection("B", "other")) }, AssessmentStanding.Supported),
+            (fixture.Policy, fixture.Witness with { RetainedPartnerSourceIds = ImmutableArray.Create("unselected") }, AssessmentStanding.Supported),
             (fixture.Policy, fixture.Witness with { Residues = fixture.Witness.Residues.SetItem(2,
-                fixture.Witness.Residues[2] with { Residue = new ResidueAddress(1, "A", 99, "", "copy-A") }) })
+                fixture.Witness.Residues[2] with { Residue = new ResidueAddress(1, "A", 99, "", "copy-A") }) }, AssessmentStanding.Supported)
         };
-        foreach (var (policy, witness) in refusals)
-            Assert.Equal(AssessmentStanding.Supported,
-                owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
+        foreach (var (policy, witness, expected) in cases)
+            Assert.Equal(expected,
+                owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended, fixture.Proposal,
                     policy, measured, witness, measured.Evidence,
                     ImmutableArray<ScientificFinding>.Empty).Standing);
     }
@@ -598,12 +546,12 @@ public sealed class PlacementAssessmentOwnerTests
         var finding = new ScientificFinding("later", fixture.Proposal.Id, measured.Evidence[0].Id,
             "New spatial finding", "Reconsider the placement premise", FindingDisposition.Challenges,
             true, DateTimeOffset.UtcNow);
-        var challenged = owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane,
+        var challenged = owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
             fixture.Proposal, fixture.Policy, measured, fixture.Witness,
             measured.Evidence, ImmutableArray.Create(finding));
         Assert.Equal(AssessmentStanding.NotEstablished, challenged.Standing);
         Assert.Equal(AssessmentStanding.Supported, prior.Standing);
-        var disqualified = owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane,
+        var disqualified = owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
             fixture.Proposal, fixture.Policy, measured, fixture.Witness,
             measured.Evidence, ImmutableArray.Create(finding with
             { Disposition = FindingDisposition.Disqualifies }));
@@ -639,8 +587,8 @@ public sealed class PlacementAssessmentOwnerTests
         Assert.Equal(AssessmentStanding.NotEstablished, Assess(owner, fixture, missing).Standing);
         var wrongSourceWitness = fixture.Witness with { SourceCoordinateSha256 = new string('0', 64) };
         var wrongSource = await owner.MeasureAgainstMembraneAsync(fixture.Revision, fixture.Protein,
-            fixture.Membrane, fixture.Proposal, fixture.Policy, wrongSourceWitness,
-            "/tmp/placement-unit", TestContext.Current.CancellationToken);
+            fixture.Membrane.Intended, fixture.Proposal, fixture.Policy, wrongSourceWitness,
+            System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken);
         Assert.True(wrongSource.Established, wrongSource.Reason);
         Assert.DoesNotContain(wrongSource.Value!.Evidence, item => item.Bearing == EvidenceBearing.Contradicts);
     }
@@ -657,23 +605,23 @@ public sealed class PlacementAssessmentOwnerTests
             new ProviderIdentity("controlled rigid transformation", "1"), null, null) };
         var owner = new PlacementOwner(worker);
         var revised = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
-            1, 2, 0, 5, "/tmp/placement-unit",
+            1, 2, 0, 5, System.IO.Path.GetTempPath(),
             TestContext.Current.CancellationToken);
         Assert.True(revised.Established, revised.Reason);
         Assert.NotEqual(fixture.Proposal.Id, revised.Value!.Id);
         Assert.Equal(fixture.Proposal.OrientedProtein.AtomCount, revised.Value.OrientedProtein.AtomCount);
         Assert.Null(revised.Value.TiltDegrees);
-        Assert.Equal(1, revised.Value.MidplaneAngstrom);
+        Assert.Equal(0, revised.Value.MidplaneAngstrom);
         Assert.Contains(revised.Value.Evidence, item => item.Observation.Contains("Depth 1 Å"));
         Assert.Equal(AssessmentStanding.NotEstablished,
-            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane,
+            owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended,
                 revised.Value, fixture.Policy, null, fixture.Witness,
                 ImmutableArray<ScientificEvidence>.Empty, ImmutableArray<ScientificFinding>.Empty).Standing);
         var bad = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
-            double.NaN, 0, 0, 0, "/tmp/placement-unit", TestContext.Current.CancellationToken);
+            double.NaN, 0, 0, 0, System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken);
         Assert.False(bad.Established);
         var noChange = await owner.ReviseProposalAsync(fixture.Revision, fixture.Proposal,
-            0, 0, 0, 0, "/tmp/placement-unit", TestContext.Current.CancellationToken);
+            0, 0, 0, 0, System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken);
         Assert.False(noChange.Established);
         Assert.Contains("Change at least one", noChange.Reason);
         Assert.Single(worker.AdjustmentRequests);
@@ -681,20 +629,20 @@ public sealed class PlacementAssessmentOwnerTests
 
     private static Task<BoundaryOutcome<PlacementProposal>> Propose(PlacementOwner owner,
         PlacementFixture fixture) => owner.ProposeWithPpmAsync(fixture.Revision, fixture.Protein,
-        fixture.Membrane.Intended, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
+        fixture.Membrane.Intended, fixture.Policy, ProteinTopologyKind.MembraneSpanning, PlacementPhysicalSide.Both,
         "extracellular upper", PpmNterminalSide.Out, "/identified/immers", "2.0",
-        new string('a', 64), "/tmp/placement-unit", TestContext.Current.CancellationToken,
+        new string('a', 64), System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken,
         "/identified/res.lib", new string('f', 64));
 
     private static Task<BoundaryOutcome<PlacementMeasurementReport>> Measure(PlacementOwner owner,
         PlacementFixture fixture) => owner.MeasureAgainstMembraneAsync(fixture.Revision, fixture.Protein,
-        fixture.Membrane, fixture.Proposal, fixture.Policy, fixture.Witness,
-        "/tmp/placement-unit", TestContext.Current.CancellationToken);
+        fixture.Membrane.Intended, fixture.Proposal, fixture.Policy, fixture.Witness,
+        System.IO.Path.GetTempPath(), TestContext.Current.CancellationToken);
 
     private static AssessedProteinMembranePlacement Assess(PlacementOwner owner, PlacementFixture fixture,
         PlacementMeasurementReport measurement, PlacementSupportPolicy? policy = null,
         PlacementStructuralWitness? witness = null, ImmutableArray<ScientificEvidence> additional = default) =>
-        owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Proposal,
+        owner.Assess(fixture.Revision, fixture.Protein, fixture.Membrane.Intended, fixture.Proposal,
             policy ?? fixture.Policy, measurement, witness ?? fixture.Witness,
             additional.IsDefault ? measurement.Evidence : additional,
             ImmutableArray<ScientificFinding>.Empty);
@@ -728,6 +676,7 @@ public sealed class PlacementAssessmentOwnerTests
     private sealed class PlacementFixture : IDisposable
     {
         private readonly IdentifiedArtifact _orientedArtifact = new();
+        private readonly IdentifiedArtifact _preparedArtifact = new();
         public ImmutableArray<ResidueAddress> Residues { get; } =
             ImmutableArray.Create(new ResidueAddress(1, "A", 1, "", "copy-A"),
                 new ResidueAddress(1, "A", 2, "", "copy-A"),
@@ -743,17 +692,17 @@ public sealed class PlacementAssessmentOwnerTests
         {
             var source = new StructuralSource("6QWR", SourceRouteKind.Rcsb, "RCSB experimental",
                 "/identified/6qwr.pdb", new string('b', 64), "6QWR", "model 1");
-            var intended = new IntendedProteinModel("intended", source, 1, "assembly-1",
+            var intended = new IntendedProteinModel("intended", source, 0, "assembly-1",
                 ImmutableArray.Create(new ChainSelection("A", "copy-A")),
                 ImmutableArray<PartnerSelection>.Empty, ImmutableArray<AlternateLocationChoice>.Empty);
             var atoms = Residues.Select((address, index) => new AtomCorrespondence(index,
-                $"{index}:A:{address.Residue}::CA", "atom-" + (index + 1), AtomOriginKind.Source,
+                $"{index}:A:{address.Residue}::CA", "0:A:copy-A:" + address.Residue + "::CA", AtomOriginKind.Source,
                 MoleculeRoleKind.Protein, AtomRoleKind.Backbone, "C", address, null)).ToImmutableArray();
-            var molecule = new MolecularArtifact("prepared", "/identified/prepared.pdb", new string('c', 64),
+            var molecule = new MolecularArtifact("prepared", _preparedArtifact.Path, _preparedArtifact.Sha256,
                 "/identified/prepared-topology.json", null, null, 3, null, new string('d', 64));
             Protein = new AssessedPreparedProtein("protein", "revision", intended, molecule, "chemical-policy",
                 ImmutableArray<ResidueVariantChoice>.Empty, ImmutableArray<PreparationChangeProposal>.Empty,
-                new SourceToResultCorrespondence(source.Id, molecule.Id, atoms, true),
+                new SourceToResultCorrespondence(source.Id, molecule.CoordinateSha256, atoms, true),
                 ImmutableArray<ScientificEvidence>.Empty, ImmutableArray<ScientificFinding>.Empty,
                 ImmutableArray<string>.Empty);
             var upper = new LeafletComposition(LeafletSide.Upper, mixed
@@ -771,12 +720,12 @@ public sealed class PlacementAssessmentOwnerTests
                 ProteinTopologyKind.MembraneSpanning,
                 new MolecularArtifact("oriented", _orientedArtifact.Path, _orientedArtifact.Sha256,
                     molecule.TopologyPath, null, null, 3, null, molecule.TopologySha256),
-                0, 20, 8, PlacementPhysicalSide.Both, "extracellular upper",
+                0, 46, 8, PlacementPhysicalSide.Both, "extracellular upper",
                 ImmutableArray<string>.Empty,
                 ImmutableArray.Create(new ScientificEvidence("ppm", "proposal", "PPM 2.0",
                     "PPM orientation candidate", "midplane 0 Å", "symmetric DOPC",
                     "Implicit symmetric membrane only.", EvidenceBearing.Context)),
-                ImmutableArray<string>.Empty);
+                ImmutableArray<string>.Empty, FramePolicyId: "placement-policy", FramePolicyVersion: "1");
             Policy = new PlacementSupportPolicy("placement-policy", "1",
                 ImmutableArray.Create(ProteinTopologyKind.MembraneSpanning),
                 mixed ? ImmutableArray.Create("POPC", "DOPC") : ImmutableArray.Create("POPC"),
@@ -784,7 +733,7 @@ public sealed class PlacementAssessmentOwnerTests
                 ImmutableArray.Create("Independently witnessed placement relationship"),
                 ImmutableArray.Create(new PlacementMeasurementCriterion("atomsWithinCore", "atoms", 1, null)),
                 3, null, ImmutableArray.Create("independent published topology"),
-                ImmutableArray<string>.Empty);
+                ImmutableArray<string>.Empty, OuterLeafletEnvelopeAngstrom: 23);
             Witness = new PlacementStructuralWitness("witness", "1", source.Sha256, 1, "assembly-1",
                 intended.Chains, ImmutableArray<string>.Empty, null, molecule.TopologySha256,
                 upper, lower, membrane.Conditions, ProteinTopologyKind.MembraneSpanning,
@@ -802,7 +751,7 @@ public sealed class PlacementAssessmentOwnerTests
                 ImmutableArray<string>.Empty);
         }
 
-        public void Dispose() => _orientedArtifact.Dispose();
+        public void Dispose() { _orientedArtifact.Dispose(); _preparedArtifact.Dispose(); }
     }
 
     private sealed class PlacementWorkerStub : IPlacementAssessmentWork
@@ -849,9 +798,16 @@ public sealed class PlacementAssessmentOwnerTests
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
             "placement-owner-" + Guid.NewGuid().ToString("N") + ".pdb");
         public string Sha256 { get; }
-        public IdentifiedArtifact()
+        public IdentifiedArtifact(bool includeDum = false)
         {
-            File.WriteAllText(Path, "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C\nEND\n");
+            File.WriteAllText(Path,
+                "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C\n" +
+                "ATOM      2  CA  ALA A   2       3.000   0.000   0.000  1.00 50.00           C\n" +
+                "ATOM      3  CA  ALA A   3       0.000   3.000   0.000  1.00 50.00           C\n" +
+                (includeDum ?
+                    "HETATM    4  O   DUM A   4       0.000   0.000 -10.000  1.00  0.00           O\n" +
+                    "HETATM    5  O   DUM A   5       0.000   0.000  10.000  1.00  0.00           O\n" : "") +
+                "END\n");
             Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path)));
         }
         public void Dispose() => File.Delete(Path);

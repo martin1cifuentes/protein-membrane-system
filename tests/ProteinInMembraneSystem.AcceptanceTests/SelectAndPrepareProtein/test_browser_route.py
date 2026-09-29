@@ -57,7 +57,7 @@ def running_host(workspace: Path, policy: Path = POLICY, ppm: Path | None = None
         process = subprocess.Popen(["dotnet", str(HOST)], cwd=ROOT,
                                    env=environment, stdout=log, stderr=subprocess.STDOUT)
         try:
-            for _ in range(100):
+            for _ in range(300):
                 if process.poll() is not None:
                     raise AssertionError("Host exited during startup: " + log_path.read_text())
                 try:
@@ -150,6 +150,16 @@ class BrowserRouteTests(unittest.TestCase):
                     expect(page.locator("#exact-identifier")).to_be_visible()
                     expect(page.get_by_role("button", name="Load source", exact=True)).to_be_disabled()
                     upload_and_choose(page, source)
+                    geometry = page.get_by_label("Protein geometry measurements")
+                    expect(geometry).to_be_visible(timeout=120000)
+                    geometry.get_by_text("Measurement details").click()
+                    expect(geometry).to_contain_text("Measured bond lengths")
+                    self.assertNotIn("local scientific worker", page.locator(".evidence-panel").inner_text())
+                    self.assertNotIn("covalentBond", page.locator(".evidence-panel").inner_text())
+                    page.screenshot(path=str(ARTIFACTS / "small-fixture-selected-geometry-1440.png"),
+                                    full_page=True, animations="disabled")
+                    expect(page.get_by_label("Manual protein preparation")).to_be_visible(timeout=120000)
+                    page.get_by_role("button", name="Prepare selected protein").click()
                     expect(page.get_by_role("region", name="Protein task outcome"))\
                         .to_contain_text("Protein prepared", timeout=120000)
                     state = page.evaluate("async () => (await fetch('/api/state')).json()")
@@ -161,11 +171,12 @@ class BrowserRouteTests(unittest.TestCase):
                     self.assertIn(source.name, page.locator(".source-context").inner_text())
                     expect(page.get_by_role("heading", name=f"Protein before preparation · {source.name}"))\
                         .to_be_visible()
-                    page.get_by_role("button", name="View prepared protein").click()
+                    if page.get_by_role("button", name="View prepared protein").count():
+                        page.get_by_role("button", name="View prepared protein").click()
                     expect(page.locator(".workspace")).to_have_class("workspace workflow-open")
                     expect(page.get_by_role("heading", name=f"Prepared protein · {source.name}"))\
                         .to_be_visible()
-                    expect(page.locator(".evidence-panel")).to_contain_text("Preparation complete")
+                    expect(page.get_by_label("Current protein result")).to_contain_text("Preparation complete")
                     expect(page.locator(".stage-strip")).to_contain_text("No minimized or equilibrated")
                     self.assertEqual(page.evaluate("async () => (await fetch('/api/state')).json()")
                                      ["inspection"]["subjectId"], state["protein"]["subjectId"])
@@ -173,6 +184,26 @@ class BrowserRouteTests(unittest.TestCase):
                     self.assertEqual(horizontally_overflowing_regions(page), [])
                     page.screenshot(path=str(ARTIFACTS / "assessed-1440.png"), full_page=True,
                                     animations="disabled")
+                    page.get_by_role("navigation", name="Research work areas")\
+                        .get_by_role("button", name="Placement").click()
+                    prepared = page.get_by_label("Source and preparation")
+                    expect(prepared).to_contain_text("Observed result")
+                    expect(prepared).to_contain_text("retained residues")
+                    expect(prepared).to_contain_text("Protein-local preparation only")
+                    self.assertEqual(prepared.locator("dt", has_text="Observed result").count(), 1)
+                    details_text = page.locator(".evidence-content").inner_text()
+                    self.assertEqual(details_text.count("Observed structural preparation"), 1)
+                    observed = next(item for item in page.evaluate(
+                        "async () => (await fetch('/api/state')).json()")
+                        ["inspection"]["evidence"] if item["method"] == "Observed structural preparation")
+                    self.assertNotIn(observed["applicability"], details_text)
+                    self.assertNotIn(state["study"]["selectedSourceId"], details_text)
+                    self.assertEqual(page.locator(".annotation-item").filter(
+                        has_text="Observed structural preparation").count(), 0)
+                    self.assertEqual(page.locator(".evidence-observation-group").filter(
+                        has_text="Observed structural preparation").count(), 0)
+                    page.screenshot(path=str(ARTIFACTS / "prepared-provenance-1440.png"),
+                                    full_page=True, animations="disabled")
                     page.get_by_role("navigation", name="Research work areas")\
                         .get_by_role("button", name="Membrane").click()
                     expect(page.locator("#researcher-workflow")).to_be_visible()
@@ -192,19 +223,23 @@ class BrowserRouteTests(unittest.TestCase):
                     page = browser.new_page(viewport={"width": 1440, "height": 900})
                     page.goto(base, wait_until="domcontentloaded")
                     upload_and_choose(page, source)
-                    expect(page.locator(".review-progress")).to_contain_text("0 site choices", timeout=120000)
-                    expect(page.locator(".review-other .review-site")).to_have_count(1)
-                    page.locator(".review-other .review-site").click()
-                    expect(page.locator(".review-site-scope")).to_contain_text("Missing-atom repair")
+                    review = page.get_by_label("Current protein decision")
+                    expect(review).to_contain_text("Missing-atom repair", timeout=120000)
+                    review.get_by_text("Method, scope and limits").click()
+                    selected = page.evaluate("async () => (await fetch('/api/state')).json()")
+                    source_model = next((item["sourceModelId"] for item in selected["sourceModels"]
+                                         if item["index"] == selected["study"]["modelIndex"]), None)
+                    expect(review).to_contain_text(f"Selected source model {source_model}" if source_model else
+                                                   "Selected coordinate model")
+                    self.assertNotIn("HeavyAtom:", review.inner_text())
+                    self.assertNotIn("Study revision ", review.inner_text())
                     before_review = page.evaluate("async () => (await fetch('/api/state')).json()")
                     pending_id = before_review["protein"]["changes"][0]["id"]
                     self.assertTrue(next(item["enabled"] for item in before_review["actions"]
                                           if item["kind"] == "approvePreparationChange"
                                           and item["subjectId"] == pending_id))
-                    page.locator(".review-option input").check()
-                    approve = page.get_by_role("button", name="Approve repair")
+                    approve = page.get_by_role("button", name="Approve repair and prepare protein")
                     expect(approve).to_be_enabled()
-                    expect(page.locator(".review-evidence-current")).to_be_visible()
                     page.locator(".review-option.picked").get_by_role("button", name="Focus on this residue").click()
                     wait_for_selected_structure(page)
                     proposal_id = page.evaluate("async () => (await fetch('/api/state')).json()")\

@@ -14,24 +14,42 @@ namespace ProteinInMembraneSystem.Tests;
 public sealed class RetainedWorkspaceRouteTests
 {
     [Fact]
+    public void Historical_origin_label_uses_the_selected_sources_model_number()
+    {
+        using var fixture = new ConstructionFixture();
+        using var http = new HttpClient();
+        var root = Product(fixture, new AttemptRouteWorker(fixture), http);
+        var origin = fixture.Revision with
+        {
+            Id = "numbered-origin",
+            IntendedProtein = fixture.Protein.Intended with { SourceModelId = "5" }
+        };
+        var revisions = (Dictionary<string, StudyRevision>)typeof(ProductRoot)
+            .GetField("_revisions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(root)!;
+        revisions.Add(origin.Id, origin);
+        var label = (string)typeof(ProductRoot).GetMethod("StageProteinLabelLocked",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(root, [origin.Id])!;
+        Assert.Contains("coordinate model 5", label, StringComparison.Ordinal);
+        Assert.DoesNotContain("coordinate model 1", label, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Completed_optional_stage_account_identifies_the_exact_earlier_minimized_stage()
     {
         using var fixture = new ConstructionFixture();
         using var http = new HttpClient();
         var worker = new AttemptRouteWorker(fixture);
         var root = Product(fixture, worker, http);
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var ready = root.Snapshot().Attempt!;
-        Assert.True((await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId,
-                constructedSubjectId = ready.Constructed!.SubjectId })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         worker.ReleaseMinimization();
         await Until(() => root.Snapshot().Stages.Length == 1);
         await Until(() => root.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
 
         var stages = (Dictionary<string, CompletedStage>)typeof(ProductRoot)
             .GetField("_stages", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(root)!;
@@ -114,17 +132,15 @@ public sealed class RetainedWorkspaceRouteTests
         var witnessed = new List<WorkspaceState>();
         root.Changed += () => witnessed.Add(root.Snapshot());
 
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var ready = root.Snapshot();
         var retainedReady = Workspace(root).Snapshot();
         Assert.Equal(ready.Attempt!.AttemptId, retainedReady.CurrentAttempt?.Id);
-        Assert.Equal(StageExecutionStanding.ReadyForMinimization, retainedReady.CurrentExecution?.Standing);
+        Assert.Equal(StageExecutionStanding.Running, retainedReady.CurrentExecution?.Standing);
         Assert.Empty(retainedReady.CompletedStages);
 
-        Assert.True((await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.Attempt.AttemptId,
-                constructedSubjectId = ready.Attempt.Constructed!.SubjectId })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         var running = root.Snapshot();
@@ -187,8 +203,8 @@ public sealed class RetainedWorkspaceRouteTests
 
         worker.BlockConstruction = true;
         await Until(() => root.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
         await Until(() => root.Snapshot().Attempt is { Status: "running" } next &&
             next.AttemptId != completed.Attempt.AttemptId);
         var later = root.Snapshot();
@@ -209,29 +225,27 @@ public sealed class RetainedWorkspaceRouteTests
         var worker = new AttemptRouteWorker(fixture);
         var root = Product(fixture, worker, http);
 
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var ready = root.Snapshot().Attempt!;
-        Assert.True((await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId,
-                constructedSubjectId = ready.Constructed!.SubjectId })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         worker.ReleaseMinimization();
         await Until(() => root.Snapshot().Stages.Length == 1);
         var original = Assert.Single(root.Snapshot().Stages);
+        Assert.Contains("6QWR · coordinate model 1", original.OriginProteinLabel, StringComparison.Ordinal);
+        Assert.Contains("chains A", original.OriginProteinLabel, StringComparison.Ordinal);
+        Assert.StartsWith("OpenMM native construction ", original.OriginMethodLabel, StringComparison.Ordinal);
+        Assert.NotNull(original.RunStartedAt);
         await Until(() => root.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
 
-        var proposed = await Command(root, ActorActionKind.ProposeMembrane, new
+        var changed = await Command(root, ActorActionKind.AdoptMembrane, new
         {
-            upper = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            lower = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            scientificPurpose = "A revised membrane premise"
+            upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
+            lower = new[] { new { speciesId = "POPC", fraction = 1.0 } }
         });
-        Assert.True(proposed.Established, proposed.Reason);
-        var changed = await Command(root, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value!.Membrane!.ModelId });
         Assert.True(changed.Established, changed.Reason);
         var current = root.Snapshot();
         Assert.NotEqual(original.StudyRevisionId, current.Study!.Id);
@@ -239,6 +253,9 @@ public sealed class RetainedWorkspaceRouteTests
         Assert.Equal(original.StageId, historical.StageId);
         Assert.Equal(original.AttemptId, historical.AttemptId);
         Assert.Equal(original.StudyRevisionId, historical.StudyRevisionId);
+        Assert.Equal(original.OriginProteinLabel, historical.OriginProteinLabel);
+        Assert.Equal(original.OriginMethodLabel, historical.OriginMethodLabel);
+        Assert.Equal(original.RunStartedAt, historical.RunStartedAt);
         Assert.Equal(original.Assessment?.Id, historical.Assessment?.Id);
         Assert.Contains("Historical", historical.Summary, StringComparison.Ordinal);
         Assert.Equal(historical.StageId, Assert.Single(Workspace(root).Snapshot().CompletedStages).Id);
@@ -260,26 +277,21 @@ public sealed class RetainedWorkspaceRouteTests
         using var http = new HttpClient();
         var worker = new AttemptRouteWorker(fixture);
         var root = Product(fixture, worker, http);
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var ready = root.Snapshot().Attempt!;
-        Assert.True((await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId,
-                constructedSubjectId = ready.Constructed!.SubjectId })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         var running = root.Snapshot();
         Assert.Equal("running", running.Attempt?.Status);
 
-        var proposed = await Command(root, ActorActionKind.ProposeMembrane, new
+        var changed = await Command(root, ActorActionKind.AdoptMembrane, new
         {
-            upper = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            lower = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            scientificPurpose = "A changed premise during surviving work"
+            upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
+            lower = new[] { new { speciesId = "POPC", fraction = 1.0 } }
         });
-        Assert.True(proposed.Established, proposed.Reason);
-        Assert.True((await Command(root, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value!.Membrane!.ModelId })).Established);
+        Assert.True(changed.Established, changed.Reason);
         Assert.NotEqual(running.Study!.Id, root.Snapshot().Study!.Id);
         Assert.Equal(running.Attempt!.AttemptId, root.Snapshot().Attempt?.AttemptId);
         Assert.Equal("running", root.Snapshot().Attempt?.Status);
@@ -304,12 +316,10 @@ public sealed class RetainedWorkspaceRouteTests
         using var http = new HttpClient();
         var worker = new AttemptRouteWorker(fixture);
         var root = Product(fixture, worker, http);
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var ready = root.Snapshot().Attempt!;
-        Assert.True((await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId,
-                constructedSubjectId = ready.Constructed!.SubjectId })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         worker.ReleaseMinimization();
@@ -326,15 +336,12 @@ public sealed class RetainedWorkspaceRouteTests
         var repeated = Assert.IsType<InspectionAccount>(second.Value!.Inspection);
         AssertStableDerivedAccount(original, repeated);
 
-        var proposed = await Command(root, ActorActionKind.ProposeMembrane, new
+        var changed = await Command(root, ActorActionKind.AdoptMembrane, new
         {
-            upper = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            lower = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            scientificPurpose = "A later study premise"
+            upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
+            lower = new[] { new { speciesId = "POPC", fraction = 1.0 } }
         });
-        Assert.True(proposed.Established, proposed.Reason);
-        Assert.True((await Command(root, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value!.Membrane!.ModelId })).Established);
+        Assert.True(changed.Established, changed.Reason);
         var historical = await Command(root, ActorActionKind.SelectInspectionSubject,
             new { subjectId = stage.StageId });
         Assert.True(historical.Established, historical.Reason);
@@ -363,7 +370,7 @@ public sealed class RetainedWorkspaceRouteTests
             later.Metrics.Where(item => item.EvidenceId is not null &&
                 ids.Contains(item.EvidenceId)).ToArray());
         Assert.Equal(original.Assessment?.Id, later.Assessment?.Id);
-        Assert.Equal(original.Assessment?.Qualification, later.Assessment?.Qualification);
+        Assert.Equal(original.Assessment?.CheckStanding, later.Assessment?.CheckStanding);
         Assert.Equal(original.Assessment?.Reason, later.Assessment?.Reason);
     }
 
@@ -396,13 +403,37 @@ public sealed class RetainedWorkspaceRouteTests
         using var http = new HttpClient();
         var worker = new AttemptRouteWorker(fixture);
         var root = Product(fixture, worker, http);
-        Assert.True((await Command(root, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => root.Snapshot().Attempt?.Status == "readyForMinimization");
+        Assert.True((await Command(root, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
         var constructed = root.Snapshot().Attempt!.Constructed!;
         var selected = await Command(root, ActorActionKind.SelectInspectionSubject,
             new { subjectId = constructed.SubjectId });
         Assert.True(selected.Established, selected.Reason);
         var token = Token(selected.Value!.Inspection!.StructureUrl!);
+
+        var components = root.ResolveInspectionComponents(constructed.SubjectId, token);
+        Assert.NotNull(components);
+        Assert.Equal(constructed.SubjectId, components.SubjectId);
+        Assert.Equal(constructed.AtomCount, components.AtomCount);
+        Assert.Equal(0, components.Runs[0].Start);
+        Assert.Equal(constructed.AtomCount, components.Runs[^1].EndExclusive);
+        Assert.True(components.Runs.Zip(components.Runs.Skip(1),
+            (first, next) => first.EndExclusive == next.Start).All(value => value));
+        Assert.Contains(components.Runs, run => run.Role == MoleculeRoleKind.Protein &&
+            run.SourceChain == "A");
+        Assert.Contains(components.Runs, run => run.Role == MoleculeRoleKind.Lipid);
+        foreach (var run in components.Runs)
+        {
+            Assert.True(run.Start < run.EndExclusive);
+            for (var index = run.Start; index < run.EndExclusive; index++)
+            {
+                var row = root.ResolveInspectionAtom(constructed.SubjectId, token, index);
+                Assert.Equal(run.Role, row?.Atom.MoleculeRole);
+                Assert.Equal(run.SourceChain, row?.Atom.SourceResidue?.Chain);
+                Assert.Equal(run.CopyId, row?.Atom.SourceResidue?.CopyId);
+            }
+        }
 
         var protein = root.ResolveInspectionAtom(constructed.SubjectId, token, 0);
         Assert.Equal(AtomOriginKind.Source, protein?.Atom.Role);
@@ -418,11 +449,9 @@ public sealed class RetainedWorkspaceRouteTests
         Assert.Null(root.ResolveInspectionAtom("another-subject", token, 3));
         Assert.Null(root.ResolveInspectionAtom(constructed.SubjectId, "another-token", 3));
         Assert.Null(root.ResolveInspectionAtom(constructed.SubjectId, token, constructed.AtomCount));
+        Assert.Null(root.ResolveInspectionComponents("another-subject", token));
+        Assert.Null(root.ResolveInspectionComponents(constructed.SubjectId, "another-token"));
 
-        var stageReady = await Command(root, ActorActionKind.ContinueMinimization,
-            new { attemptId = root.Snapshot().Attempt!.AttemptId,
-                constructedSubjectId = constructed.SubjectId });
-        Assert.True(stageReady.Established, stageReady.Reason);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         worker.ReleaseMinimization();
@@ -432,16 +461,23 @@ public sealed class RetainedWorkspaceRouteTests
             new { subjectId = stage.StageId });
         Assert.True(stageSelected.Established, stageSelected.Reason);
         var stageToken = Token(stageSelected.Value!.Inspection!.StructureUrl!);
+        var stageComponents = root.ResolveInspectionComponents(stage.StageId, stageToken);
+        Assert.NotNull(stageComponents);
+        Assert.Equal(stage.StageId, stageComponents.SubjectId);
+        Assert.Equal(constructed.AtomCount, stageComponents.AtomCount);
         Assert.Equal(stage.StageId, root.ResolveInspectionAtom(stage.StageId, stageToken, 3)?.SubjectId);
         Assert.Equal(LeafletSide.Upper,
             root.ResolveInspectionAtom(stage.StageId, stageToken, 3)?.Atom.PhysicalSide);
         Assert.Null(root.ResolveInspectionAtom(constructed.SubjectId, token, 3));
         Assert.Null(root.ResolveInspectionAtom(stage.StageId, token, 3));
+        Assert.Null(root.ResolveInspectionComponents(constructed.SubjectId, token));
+        Assert.Null(root.ResolveInspectionComponents(stage.StageId, token));
         var retainedStages = (Dictionary<string, CompletedStage>)typeof(ProductRoot)
             .GetField("_stages", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(root)!;
         File.AppendAllText(retainedStages[stage.StageId].Molecule.CoordinatePath,
             "changed after inspection selection");
         Assert.Null(root.ResolveInspectionAtom(stage.StageId, stageToken, 3));
+        Assert.Null(root.ResolveInspectionComponents(stage.StageId, stageToken));
     }
 
     private static string Token(string url) => url.Split('/')[3].Split('?')[0];
@@ -482,7 +518,7 @@ public sealed class RetainedWorkspaceRouteTests
         revisions.Add(revision.Id, revision);
         Workspace(root).RetainStudy(revision);
         Assert.True(root.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         return root;
     }
 

@@ -43,8 +43,7 @@ public sealed class LocalRunWorkspace
                 throw new InvalidOperationException("The attempt's originating study revision is not retained.");
             if (_currentAttempt?.Id == attempt.Id ||
                 _currentAttempt is not null && _currentExecution?.Standing is
-                    StageExecutionStanding.Pending or StageExecutionStanding.Running or
-                    StageExecutionStanding.ReadyForMinimization)
+                    StageExecutionStanding.Pending or StageExecutionStanding.Running)
                 throw new InvalidOperationException("A surviving unfinished attempt cannot be replaced by reattachment.");
             _currentAttempt = attempt;
             _currentExecution = new StageExecutionState(
@@ -81,8 +80,6 @@ public sealed class LocalRunWorkspace
                 }
                 if (previous.Kind == StageKind.Equilibration && execution.Kind == StageKind.Minimization ||
                     previous.Kind == StageKind.Minimization && execution.Kind is null ||
-                    previous.Standing == StageExecutionStanding.ReadyForMinimization &&
-                        execution.Kind is null && execution.Standing == StageExecutionStanding.Running ||
                     previous.StageId is not null && execution.StageId is not null &&
                         previous.StageId != execution.StageId && previous.Standing is
                             StageExecutionStanding.Pending or StageExecutionStanding.Running)

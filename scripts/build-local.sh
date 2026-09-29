@@ -61,6 +61,38 @@ then
 fi
 "$worker_python" -m pip freeze --all > "$output_root/python-resolved-requirements.txt"
 
+ambertools_root="${PIM_AMBERTOOLS_HOME:-$output_root/ambertools26}"
+ambertools_manifest="$app_root/config/providers/ambertools-environment.yml"
+if [[ ! -x "$ambertools_root/bin/packmol-memgen" ]]; then
+    if command -v micromamba >/dev/null 2>&1; then
+        if ! micromamba create --yes --prefix "$ambertools_root" --file "$ambertools_manifest" --strict-channel-priority; then
+            echo "Memgen runtime could not be prepared; its route will be reported unavailable." >&2
+        fi
+    else
+        echo "Memgen runtime unavailable: micromamba is needed to prepare $ambertools_manifest" >&2
+    fi
+fi
+if [[ -x "$ambertools_root/bin/python" ]]; then
+    if ! "$ambertools_root/bin/python" - "$ambertools_root" <<'PY'
+import importlib.metadata as metadata
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+if metadata.version("packmol-memgen") != "2026.3.25":
+    raise SystemExit("Memgen runtime version differs from pinned 2026.3.25")
+if not all((root / "bin" / name).is_file() for name in
+           ("packmol-memgen", "packmol", "tleap", "sander", "ambpdb")):
+    raise SystemExit("Memgen runtime lacks a required CPU executable")
+PY
+    then
+        echo "Installed Memgen runtime does not match the selected route; other routes remain independent." >&2
+    fi
+    if command -v micromamba >/dev/null 2>&1; then
+        micromamba list --prefix "$ambertools_root" --json > "$output_root/ambertools26-resolved-packages.json"
+    fi
+fi
+
 if [[ ! -f "$output_root/host/wwwroot/index.html" ]]; then
     echo "The browser bundle was not included in the published host." >&2
     exit 1

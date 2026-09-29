@@ -14,11 +14,17 @@ public sealed class MinimizationOwnerTests
         using var fixture = new MinimizationFixture();
         var worker = new MinimizationWorker(fixture);
         var owner = new MinimizationOwner(worker);
+        var progress = new CapturingStageProgress();
 
         var result = await owner.RunAsync(fixture.Constructed, fixture.Policy, fixture.Directory,
-            null, TestContext.Current.CancellationToken);
+            progress, TestContext.Current.CancellationToken);
 
         Assert.Equal(StageExecutionStanding.Completed, result.State.Standing);
+        var running = Assert.Single(progress.States, state =>
+            state.Standing == StageExecutionStanding.Running);
+        Assert.Equal(StageExecutionStanding.Running, running.Standing);
+        Assert.Equal(PreparationPhase.FinalMinimization, running.Phase);
+        Assert.Equal(fixture.Attempt.Id, running.AttemptId);
         var stage = Assert.IsType<CompletedStage>(result.CompletedStage);
         Assert.Equal(StageKind.Minimization, stage.Kind);
         Assert.Equal(fixture.Attempt.Id, stage.Attempt.Id);
@@ -41,6 +47,67 @@ public sealed class MinimizationOwnerTests
             worker.ObservationRequests[0].Payload.StageId);
         Assert.Equal(fixture.MinimizedCoordinateSha,
             worker.ObservationRequests[0].Payload.TopologyCifSha256);
+    }
+
+    [Fact]
+    public async Task Memgen_final_observation_uses_the_checked_output_frame_without_changing_the_bound_policy()
+    {
+        using var fixture = new MinimizationFixture();
+        var assets = ImmutableArray.Create(new ProviderAsset("memgen", "2026.3.25",
+            "/selected/memgen", new string('a', 64)));
+        var settings = new MemgenConstructionSettings("sander", "ff19SB", "lipid21", "tip3p",
+            15, 17.5, 23, 20, 100, 20, 2, 250, 250, 10, 2,
+            true, true, true, true, true, true, true, true, true, true, true);
+        var construction = fixture.Policy.Construction with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            ProviderName = "PACKMOL-Memgen",
+            ProviderVersion = "2026.3.25",
+            NativePatchPath = null,
+            NativePatchSha256 = null,
+            LipidTypeArgument = null,
+            ProviderAssets = assets,
+            Memgen = settings
+        };
+        var policy = fixture.Policy with
+        {
+            Construction = construction,
+            LocalStateObservation = fixture.Policy.LocalStateObservation with
+                { ReferenceMidplaneZAngstrom = 0 }
+        };
+        var attempt = fixture.Attempt with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            NativePatchSha256 = null,
+            ConstructionProviderVersion = construction.ProviderVersion,
+            ProviderAssets = assets,
+            PolicyFingerprintSha256 = PreparationPolicyFingerprint.Compute(policy)
+        };
+        var constructed = fixture.Constructed with
+        {
+            Attempt = attempt,
+            OutputFrameMidplaneZAngstrom = 42.5545
+        };
+        var worker = new MinimizationWorker(fixture);
+        var result = await new MinimizationOwner(worker).RunAsync(constructed, policy,
+            fixture.Directory, null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(StageExecutionStanding.Completed, result.State.Standing);
+        Assert.Equal(42.5545,
+            Assert.Single(worker.ObservationRequests).Payload.LocalObservationSpec.ReferenceMidplaneZAngstrom);
+        Assert.Equal(0, policy.LocalStateObservation.ReferenceMidplaneZAngstrom);
+
+        foreach (var absent in new double?[] { null, double.NaN })
+        {
+            var rejectedWorker = new MinimizationWorker(fixture);
+            var rejected = await new MinimizationOwner(rejectedWorker).RunAsync(
+                constructed with { OutputFrameMidplaneZAngstrom = absent }, policy,
+                fixture.Directory, null, TestContext.Current.CancellationToken);
+            Assert.Null(rejected.CompletedStage);
+            Assert.Empty(rejectedWorker.MinimizationRequests);
+        }
     }
 
     [Fact]
@@ -268,7 +335,7 @@ internal sealed class MinimizationFixture : IDisposable
             ImmutableArray<AtomCorrespondence>.Empty, true);
         Policy = new ApplicablePreparationPolicy("preparation-policy-1", "1",
             "canonical-amino-acid-assembly", ImmutableArray.Create("controlled policy evidence"),
-            ImmutableArray<ForceFieldAsset>.Empty, 100, 10, 0.01, 0.01, 0.01,
+            ImmutableArray<ForceFieldAsset>.Empty, 20000, 10, 0.01, 0.01, 0.01,
             new MolecularDynamicsSystemSettings("PME", 1, "HBonds", true, 0.0005, null, true, true, null),
             new ConstructionPolicy("construction-1", "1", ImmutableArray.Create("controlled evidence"),
                 ImmutableArray.Create(ProteinTopologyKind.MembraneSpanning), ImmutableArray.Create("DMPC"),
@@ -286,11 +353,13 @@ internal sealed class MinimizationFixture : IDisposable
         Attempt = new PreparationAttempt("attempt-1", "revision-1", "protein-1", "membrane-1",
             "placement-1", Policy.Id, DateTimeOffset.UtcNow, Policy.Version,
             PreparationPolicyFingerprint.Compute(Policy), Policy.ForceFieldFiles,
-            Policy.Construction.ProviderVersion, Policy.Construction.NativePatchSha256);
+            Policy.Construction.ProviderVersion, Policy.Construction.NativePatchSha256,
+            ProviderAssets: ImmutableArray<ProviderAsset>.Empty);
         Constructed = new ConstructedExplicitSystem(artifact.Id, Attempt, artifact,
             new ConstructionDerivation(Attempt.Id, ImmutableArray<SpeciesCount>.Empty,
                 ImmutableArray.Create(20.0, 20.0, 40.0),
-                0, 0, 0, 0, 0.15, 0, 0, ImmutableArray<string>.Empty, ImmutableArray<string>.Empty),
+                0, 0, 0, 0, 0.15, 0, 0, ImmutableArray<string>.Empty, ImmutableArray<string>.Empty,
+                Trials: ImmutableArray<ConstructionTrialSummary>.Empty),
             mapping, ImmutableArray<SpeciesCount>.Empty, ImmutableArray<ScientificEvidence>.Empty,
             ImmutableArray<ScientificFinding>.Empty, "untreated");
     }

@@ -9,13 +9,125 @@ namespace ProteinInMembrane.Host.ProteinInMembraneSystem.CompletedStageExport;
 /// <summary>Delivers one already completed stage with its own current assessment.</summary>
 public sealed class CompletedStageExport
 {
-    private const string Qualified6QwrSourceSha256 =
-        "f4c1503a60321c0cfe513e8211e43e20e2199aa5f71f22429e0e0ae8c97b0779";
     private const string OpenMmTermsUri =
         "https://docs.openmm.org/latest/userguide/library/01_introduction.html#license";
     private readonly ICompletedStageExportWork _worker;
 
     public CompletedStageExport(ICompletedStageExportWork worker) => _worker = worker;
+
+    private sealed record FinalAtomIdentity(string Name, string Element);
+
+    private static string? ExactApprovedHeavyAtomName(AtomCorrespondence atom,
+        AssessedPreparedProtein protein, FinalAtomIdentity? finalAtom)
+    {
+        if (atom.ApprovedChangeId is null ||
+            atom.Role != AtomOriginKind.Generated || atom.MoleculeRole != MoleculeRoleKind.Protein ||
+            atom.SourceAtomId is not null || atom.SourceResidue is null || finalAtom is null ||
+            atom.Element.Equals("H", StringComparison.OrdinalIgnoreCase) ||
+            atom.Element.Equals("D", StringComparison.OrdinalIgnoreCase) ||
+            finalAtom.Element != atom.Element ||
+            string.IsNullOrWhiteSpace(finalAtom.Name) ||
+            !protein.Correspondence.Complete ||
+            protein.Correspondence.ResultId != protein.Molecule.CoordinateSha256 ||
+            protein.Correspondence.Atoms.IsDefaultOrEmpty)
+            return null;
+        // Construction checks the retained atom multiset; Memgen may reorder
+        // it. Exact source provenance plus the hash-verified final atom name
+        // identifies one prepared atom without relying on display labels.
+        var matching = protein.Correspondence.Atoms.Where(prepared =>
+            prepared.ApprovedChangeId == atom.ApprovedChangeId &&
+            prepared.Role == atom.Role && prepared.MoleculeRole == atom.MoleculeRole &&
+            prepared.AtomRole == atom.AtomRole &&
+            prepared.SourceAtomId == atom.SourceAtomId &&
+            prepared.SourceResidue == atom.SourceResidue &&
+            prepared.Element == atom.Element && prepared.ResultAtomId.EndsWith(
+                ":" + finalAtom.Name, StringComparison.Ordinal)).ToArray();
+        return matching.Length == 1 ? finalAtom.Name : null;
+    }
+
+    private static bool AuthorizedProteinChange(AtomCorrespondence atom,
+        AssessedPreparedProtein protein, ImmutableArray<ResearcherDecision> decisions,
+        FinalAtomIdentity? finalAtom)
+    {
+        if (atom.ApprovedChangeId is null)
+            return atom.Role != AtomOriginKind.Generated ||
+                atom.MoleculeRole != MoleculeRoleKind.Protein ||
+                atom.Element.Equals("H", StringComparison.OrdinalIgnoreCase) ||
+                atom.Element.Equals("D", StringComparison.OrdinalIgnoreCase);
+        var atomName = ExactApprovedHeavyAtomName(atom, protein, finalAtom);
+        if (atomName is null) return false;
+        if (atom.ApprovedChangeId != "recommendation-plan-only")
+            return decisions.Any(decision => decision.Id == atom.ApprovedChangeId &&
+                decision.Kind == ResearcherDecisionKind.ApprovePreparationChange &&
+                decision.ChosenValue == ResearcherDecisionValue.Approved &&
+                protein.Changes.Any(change => change.Id == decision.SubjectId &&
+                    change.Kind == PreparationChangeKind.HeavyAtom &&
+                    change.Residue == atom.SourceResidue &&
+                    change.ProposedChange == atomName &&
+                    change.StudyRevisionId == decision.StudyRevisionId &&
+                    change.StudyRevisionId == protein.PreparationStudyRevisionId &&
+                    change.IntendedProteinId == protein.Intended.Id));
+
+        var plan = protein.RecommendationPlan;
+        if (plan is null || plan.PlanSha256.Length != 64 || !plan.PlanSha256.All(Uri.IsHexDigit) ||
+            !plan.CheckedCandidateSha256.Equals(protein.Molecule.CoordinateSha256,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(protein.PreparationStudyRevisionId) ||
+            atom.SourceResidue is null)
+            return false;
+
+        // A checked plan's candidate uses this marker for a proposed heavy atom.
+        // Bind it back to the exact prepared atom and the approved proposal;
+        // the marker alone is never an authorization.
+        if (plan.ProposedHeavyAtoms.IsDefaultOrEmpty ||
+            plan.ProposedHeavyAtoms.Count(item => item.Residue == atom.SourceResidue &&
+                item.AtomName == atomName) != 1)
+            return false;
+        var proposed = protein.Changes.Where(change =>
+            change.Kind == PreparationChangeKind.HeavyAtom &&
+            change.Residue == atom.SourceResidue && change.ProposedChange == atomName &&
+            change.StudyRevisionId == protein.PreparationStudyRevisionId &&
+            change.IntendedProteinId == protein.Intended.Id).ToArray();
+        return proposed.Length == 1 && decisions.Count(decision =>
+            decision.Kind == ResearcherDecisionKind.ApprovePreparationChange &&
+            decision.ChosenValue == ResearcherDecisionValue.Approved &&
+            decision.SubjectId == proposed[0].Id &&
+            decision.StudyRevisionId == proposed[0].StudyRevisionId) == 1;
+    }
+
+    private static async Task<Dictionary<int, FinalAtomIdentity>> ReadApprovedHeavyAtomsAsync(
+        MolecularArtifact molecule, SourceToResultCorrespondence correspondence,
+        CancellationToken cancellationToken)
+    {
+        var indices = correspondence.Atoms.Where(item =>
+            item.ApprovedChangeId is not null && item.Role == AtomOriginKind.Generated &&
+            item.MoleculeRole == MoleculeRoleKind.Protein &&
+            !item.Element.Equals("H", StringComparison.OrdinalIgnoreCase) &&
+            !item.Element.Equals("D", StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.ResultAtomIndex).ToArray();
+        var result = new Dictionary<int, FinalAtomIdentity>();
+        if (indices.Length == 0) return result;
+        var bytes = await File.ReadAllBytesAsync(molecule.TopologyPath!, cancellationToken);
+        if (!Convert.ToHexString(SHA256.HashData(bytes)).Equals(molecule.TopologySha256,
+            StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The stage topology changed from its recorded digest.");
+        using var document = JsonDocument.Parse(bytes);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("atoms", out var atoms) || atoms.ValueKind != JsonValueKind.Array ||
+            atoms.GetArrayLength() != correspondence.Atoms.Length)
+            throw new InvalidDataException("The stage topology lacks its exact atom index.");
+        foreach (var index in indices)
+        {
+            var item = atoms[index];
+            if (item.ValueKind != JsonValueKind.Object ||
+                !item.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String ||
+                !item.TryGetProperty("element", out var element) ||
+                element.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("An approved heavy atom has incomplete final topology identity.");
+            result[index] = new FinalAtomIdentity(name.GetString() ?? "", element.GetString() ?? "");
+        }
+        return result;
+    }
 
     public async Task<BoundaryOutcome<CompletedStageBundle>> ExportAsync(
         CompletedStage stage,
@@ -37,22 +149,24 @@ public sealed class CompletedStageExport
         var equilibrated = stage.Kind == StageKind.Equilibration;
         if (stage.Kind is not (StageKind.Minimization or StageKind.Equilibration) ||
             stage.Observation.Kind != stage.Kind ||
+            stage.Kind == StageKind.Minimization && stage.Observation.Termination != StageTermination.Converged ||
             assessment.StageId != stage.Id || !assessment.CurrentlyApplicable ||
             stage.Attempt.StudyRevisionId != originatingRevision.Id || stage.Observation.StageId != stage.Id ||
             stage.Observation.AttemptId != stage.Attempt.Id ||
-            stage.PolicyId != policy.Id || stage.Attempt.PolicyId != policy.Id ||
-            stage.Attempt.PolicyVersion != policy.Version ||
-            stage.Attempt.PolicyFingerprintSha256 != PreparationPolicyFingerprint.Compute(policy) ||
+            stage.PolicyId != policy.Id ||
+            !PreparationPolicyFingerprint.Matches(stage.Attempt, policy) ||
+            !PreparationPolicyFingerprint.Matches(constructed.Attempt, policy) ||
             stage.Attempt.ProteinId != protein.Id || protein.StudyRevisionId != originatingRevision.Id ||
+            string.IsNullOrWhiteSpace(protein.PreparationStudyRevisionId) ||
+            protein.Intended.Id != originatingRevision.IntendedProtein?.Id ||
             stage.Attempt.MembraneId != membrane.Id || membrane.StudyRevisionId != originatingRevision.Id ||
             stage.Attempt.PlacementId != placement.Id || placement.StudyRevisionId != originatingRevision.Id ||
             placement.Proposal.PreparedProteinId != protein.Id ||
             placement.Proposal.MembraneModelId != membrane.Intended.Id ||
             constructed.Attempt.Id != stage.Attempt.Id ||
+            stage.Kind == StageKind.Minimization &&
+                stage.Molecule.TopologySha256 != constructed.Molecule.TopologySha256 ||
             derivation.AttemptId != stage.Attempt.Id || constructed.Derivation != derivation ||
-            stage.Attempt.NativePatchSha256 != policy.Construction.NativePatchSha256 ||
-            stage.Attempt.ConstructionProviderVersion != policy.Construction.ProviderVersion ||
-            !stage.Attempt.ForceFieldFiles.SequenceEqual(policy.ForceFieldFiles) ||
             !double.IsFinite(policy.ExportCoordinateReadBackToleranceAngstrom) ||
             policy.ExportCoordinateReadBackToleranceAngstrom < 0 ||
             !double.IsFinite(policy.ExportCellLengthReadBackToleranceAngstrom) ||
@@ -60,6 +174,7 @@ public sealed class CompletedStageExport
             !double.IsFinite(policy.ExportCellAngleReadBackToleranceDegrees) ||
             policy.ExportCellAngleReadBackToleranceDegrees < 0 ||
             stage.Correspondence.Atoms.IsDefaultOrEmpty || !stage.Correspondence.Complete ||
+            stage.Molecule.Id != stage.Id ||
             stage.Correspondence.ResultId != stage.Molecule.Id ||
             stage.Correspondence.Atoms.Length != stage.Molecule.AtomCount ||
             stage.Correspondence.Atoms.Where((atom, index) => atom.ResultAtomIndex != index ||
@@ -67,12 +182,8 @@ public sealed class CompletedStageExport
             stage.Correspondence.Atoms.Select(atom => atom.ResultAtomId)
                 .Distinct(StringComparer.Ordinal).Count() != stage.Molecule.AtomCount ||
             stage.Correspondence.SourceId != constructed.Correspondence.SourceId ||
-            stage.Correspondence.Atoms.Any(atom => atom.ApprovedChangeId is not null &&
-                !decisions.Any(decision => decision.Id == atom.ApprovedChangeId &&
-                    decision.Kind == ResearcherDecisionKind.ApprovePreparationChange &&
-                    decision.ChosenValue == ResearcherDecisionValue.Approved &&
-                    protein.Changes.Any(change => change.Id == decision.SubjectId &&
-                        change.StudyRevisionId == decision.StudyRevisionId))) ||
+            constructed.Correspondence.Atoms.IsDefault ||
+            !stage.Correspondence.Atoms.SequenceEqual(constructed.Correspondence.Atoms) ||
             string.IsNullOrWhiteSpace(stage.Molecule.CoordinateSha256) ||
             string.IsNullOrWhiteSpace(stage.Molecule.CoordinatePath) ||
             string.IsNullOrWhiteSpace(stage.Molecule.TopologySha256) ||
@@ -93,11 +204,34 @@ public sealed class CompletedStageExport
             return BoundaryOutcome<CompletedStageBundle>.Unavailable(
                 "The selected equilibrated stage has no completed source-bound procedure and exact optional protocol.");
 
+        if (policy.Construction.Route == ConstructionRouteKind.PackmolMemgen &&
+            !await VerifiedMemgenConstructionProvenanceAsync(constructed, derivation,
+                cancellationToken))
+            return BoundaryOutcome<CompletedStageBundle>.Unavailable(
+                "The selected Memgen construction's checked Amber artifacts or retained atom correspondence are unavailable or changed.");
+
         var molecule = stage.Molecule;
         if (string.IsNullOrWhiteSpace(molecule.TopologyPath) || string.IsNullOrWhiteSpace(molecule.SystemXmlPath) ||
             string.IsNullOrWhiteSpace(molecule.StateXmlPath) || !File.Exists(molecule.TopologyPath) ||
             !File.Exists(molecule.SystemXmlPath) || !File.Exists(molecule.StateXmlPath))
             return BoundaryOutcome<CompletedStageBundle>.Unavailable("The completed stage's corresponding topology, System and State are unavailable.");
+
+        Dictionary<int, FinalAtomIdentity> approvedHeavyAtoms;
+        try
+        {
+            approvedHeavyAtoms = await ReadApprovedHeavyAtomsAsync(molecule, stage.Correspondence,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or
+                                         InvalidDataException or UnauthorizedAccessException)
+        {
+            return BoundaryOutcome<CompletedStageBundle>.Unavailable(
+                $"The completed stage's exact approved heavy atom identity is unavailable: {exception.Message}");
+        }
+        if (stage.Correspondence.Atoms.Any(atom => !AuthorizedProteinChange(atom, protein,
+                decisions, approvedHeavyAtoms.GetValueOrDefault(atom.ResultAtomIndex))))
+            return BoundaryOutcome<CompletedStageBundle>.Unavailable(
+                "A generated protein atom does not correspond to an exact approved preparation change or checked recommendation plan.");
 
         FinalCell? finalCell = null;
         if (equilibrated)
@@ -186,13 +320,14 @@ public sealed class CompletedStageExport
                         protein.Id, protein.StudyRevisionId,
                         source = new { protein.Intended.Source.Id, protein.Intended.Source.Kind,
                             protein.Intended.Source.Provenance,
-                            accession = SourceAccession(protein, policy),
+                            accession = protein.Intended.Source.Accession,
                             protein.Intended.Source.Sha256,
                             protein.Intended.Source.SourceModelDescription,
                             protein.Intended.Source.UploadProvenance,
                             protein.Intended.Source.UploadProvenanceNote },
                         protein.Intended.ModelIndex,
-                        sourceModelNumber = protein.Intended.ModelIndex + 1,
+                        protein.Intended.SourceModelId,
+                        sourceModelNumber = SourceModelNumber(protein.Intended),
                         protein.Intended.BiologicalAssemblyId,
                         protein.Intended.Chains, protein.Intended.Partners,
                         protein.Intended.AlternateLocations,
@@ -225,12 +360,20 @@ public sealed class CompletedStageExport
                             orientedTopologySha256 = placement.Proposal.OrientedProtein.TopologySha256 } },
                     construction = new { constructed.Id, constructed.ConditionsTreatment,
                         constructed.AchievedComposition, constructed.ActualCellAngstrom,
+                        constructed.MaximumProteinCoordinateDeviationAngstrom,
                         constructed.Evidence, constructed.Findings,
                         constructed.LocalState, derivation,
                         constructedCoordinateSha256 = constructed.Molecule.CoordinateSha256,
                         constructedTopologySha256 = constructed.Molecule.TopologySha256,
                         provider = new { policy.Construction.ProviderName,
                             policy.Construction.ProviderVersion,
+                            policy.Construction.Route, policy.Construction.SaltConvention,
+                            assets = (policy.Construction.ProviderAssets.IsDefault
+                                ? ImmutableArray<ProviderAsset>.Empty
+                                : policy.Construction.ProviderAssets).Select(asset => new
+                            {
+                                asset.Id, asset.Version, asset.Sha256
+                            }).ToArray(),
                             policy.Construction.NativePatchSha256,
                             policy.Construction.LipidTypeArgument,
                             policy.Construction.PositiveIonArgument,
@@ -272,10 +415,11 @@ public sealed class CompletedStageExport
                     lineage = new
                     {
                         sourceId = protein.Intended.Source.Id,
-                        sourceAccession = SourceAccession(protein, policy),
+                        sourceAccession = protein.Intended.Source.Accession,
                         sourceCoordinateSha256 = protein.Intended.Source.Sha256,
                         sourceModelIndex = protein.Intended.ModelIndex,
-                        sourceModelNumber = protein.Intended.ModelIndex + 1,
+                        sourceModelId = protein.Intended.SourceModelId,
+                        sourceModelNumber = SourceModelNumber(protein.Intended),
                         sourceBiologicalAssemblyId = protein.Intended.BiologicalAssemblyId,
                         intendedProteinId = protein.Intended.Id,
                         preparedProteinId = protein.Id,
@@ -337,6 +481,87 @@ public sealed class CompletedStageExport
             {
                 // A leftover temporary file is never a published bundle.
             }
+        }
+    }
+
+    private static int SourceModelNumber(IntendedProteinModel intended) =>
+        int.TryParse(intended.SourceModelId, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var observed) && observed > 0
+            ? observed : intended.ModelIndex + 1;
+
+    private static async Task<bool> VerifiedMemgenConstructionProvenanceAsync(
+        ConstructedExplicitSystem constructed, ConstructionDerivation derivation,
+        CancellationToken cancellationToken)
+    {
+        var molecule = constructed.Molecule;
+        if (derivation.Trials.IsDefaultOrEmpty ||
+            string.IsNullOrWhiteSpace(derivation.SelectedTrialId) ||
+            derivation.AmberImport is not { } import ||
+            import.AmberAtomCount != molecule.AtomCount ||
+            import.ImportedAtomCount != molecule.AtomCount ||
+            !import.AtomOrderPreserved || !import.BondedTermsPreserved ||
+            !import.NonbondedTermsPreserved || !import.ExclusionsPreserved ||
+            !import.UnitsPreserved || !import.ParameterComparisonPerformed ||
+            import.ParameterCorrespondenceSha256 is not { Length: 64 } parameterSha ||
+            !parameterSha.All(Uri.IsHexDigit) ||
+            string.IsNullOrWhiteSpace(molecule.CorrespondencePath) ||
+            molecule.CorrespondenceSha256 is not { Length: 64 } mappingSha ||
+            !mappingSha.All(Uri.IsHexDigit) || !constructed.Correspondence.Complete)
+            return false;
+        var selected = derivation.Trials.Where(trial =>
+            trial.TrialId == derivation.SelectedTrialId).Take(2).ToArray();
+        if (selected.Length != 1 || selected[0].Standing != ConstructionTrialStanding.Checked ||
+            selected[0].DiagnosticArtifacts.IsDefaultOrEmpty)
+            return false;
+
+        foreach (var role in new[] { "amberTopology", "amberFinalRestart" })
+        {
+            var artifacts = selected[0].DiagnosticArtifacts.Where(artifact =>
+                artifact.Role == role).Take(2).ToArray();
+            if (artifacts.Length != 1 || artifacts[0].LocalPath is not { Length: > 0 } path ||
+                artifacts[0].Sha256.Length != 64 || !artifacts[0].Sha256.All(Uri.IsHexDigit) ||
+                !artifacts[0].Sha256.Equals(role == "amberTopology" ? import.PrmtopSha256 :
+                    import.FinalRestartSha256, StringComparison.OrdinalIgnoreCase) ||
+                !await FileMatchesAsync(path, artifacts[0].Sha256,
+                    cancellationToken))
+                return false;
+        }
+
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(molecule.CorrespondencePath,
+                cancellationToken);
+            if (!Convert.ToHexString(SHA256.HashData(bytes)).Equals(mappingSha,
+                    StringComparison.OrdinalIgnoreCase))
+                return false;
+            var mapped = JsonSerializer.Deserialize<SourceToResultCorrespondence>(bytes,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return mapped is { Complete: true } &&
+                mapped.SourceId == constructed.Correspondence.SourceId &&
+                mapped.ResultId == constructed.Correspondence.ResultId &&
+                mapped.ResultId == molecule.CoordinateSha256 &&
+                !mapped.Atoms.IsDefault &&
+                mapped.Atoms.SequenceEqual(constructed.Correspondence.Atoms);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                         JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> FileMatchesAsync(string path, string expectedSha256,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            var actual = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken));
+            return actual.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
@@ -455,10 +680,8 @@ public sealed class CompletedStageExport
         string? ppmVersion, string? ppmExecutableSha256)
     {
         var source = protein.Intended.Source;
-        var exactQualified6Qwr = IsQualified6Qwr(protein, policy);
-        var rcsb = source.Kind == SourceRouteKind.Rcsb && !string.IsNullOrWhiteSpace(source.Accession) ||
-            exactQualified6Qwr;
-        var sourceAccession = exactQualified6Qwr ? "6QWR" : source.Accession;
+        var rcsb = source.Kind == SourceRouteKind.Rcsb && !string.IsNullOrWhiteSpace(source.Accession);
+        var sourceAccession = source.Accession;
         var incorporated = new List<AttributionEntry>
         {
             new("protein source coordinates", sourceAccession ?? source.Id,
@@ -467,13 +690,27 @@ public sealed class CompletedStageExport
                 source.Sha256,
                 rcsb ? "RCSB PDB archive data: CC0" : "Source-specific rights were not established by this record",
                 rcsb ? "https://www.rcsb.org/pages/usage-policy" : source.Provenance,
-                exactQualified6Qwr
-                    ? "10.2210/pdb6QWR/pdb; Schubeis et al., PNAS 2020, 10.1073/pnas.2002598117"
-                    : sourceAccession ?? source.Provenance,
+                sourceAccession ?? source.Provenance,
                 "Derived coordinates are included; the original source file is identified by digest but is not bundled.",
                 "incorporated and transformed"),
         };
-        if (policy.Construction.NativePatchMode == "mapped-lipid21-zenodo-popc")
+        if (policy.Construction.Route == ConstructionRouteKind.PackmolMemgen)
+        {
+            foreach (var asset in (policy.Construction.ProviderAssets.IsDefault
+                         ? ImmutableArray<ProviderAsset>.Empty
+                         : policy.Construction.ProviderAssets).Where(asset =>
+                asset.Id.EndsWith("pdbs.tar.gz", StringComparison.Ordinal) ||
+                asset.Id.EndsWith("memgen.parm", StringComparison.Ordinal) ||
+                asset.Id.Contains("leaprc.", StringComparison.Ordinal)))
+                incorporated.Add(new AttributionEntry("provider molecular input asset",
+                    asset.Id, asset.Version, "https://ambermd.org/",
+                    asset.Sha256,
+                    "The installed AmberTools asset's redistribution terms are not asserted by this record",
+                    "https://ambermd.org/", "PACKMOL-Memgen 2026.3.25; AmberTools26",
+                    "The identified provider asset supplied molecular templates, population data or parameter selection; its original file is not bundled.",
+                    "incorporated through the constructed system"));
+        }
+        else if (policy.Construction.NativePatchMode == "mapped-lipid21-zenodo-popc")
         {
             const string record = "https://doi.org/10.5281/zenodo.14776136";
             const string rights = "https://creativecommons.org/licenses/by/4.0/";
@@ -505,13 +742,16 @@ public sealed class CompletedStageExport
         foreach (var representation in membrane.SpeciesRepresentations)
             references.Add(new AttributionEntry("assessed molecular reference", representation.SpeciesId,
                 representation.ForceFieldVersion,
-                "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "https://ambermd.org/" :
+                    "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
                 representation.CoordinateTemplateSha256,
-                "OpenMM application package terms; no separate coordinate template terms are asserted",
-                OpenMmTermsUri,
+                "The identified asset's redistribution terms are not asserted by this record",
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "https://ambermd.org/" : OpenMmTermsUri,
                 representation.ForceFieldFamily,
-                "One-molecule assessment template identified by digest. Construction used the native full membrane patch instead; this reference template was not inserted into the resulting system or bundled.",
-                "used as assessment reference, not incorporated"));
+                "One-molecule assessment template identified by digest; its role in construction is reported by the selected recipe and provider-asset account.",
+                "used as assessment reference"));
         foreach (var asset in attempt.ForceFieldFiles)
             incorporated.Add(new AttributionEntry("force-field parameter contribution", asset.Id,
                 asset.Version, "https://ambermd.org/AmberModels.php", asset.Sha256,
@@ -523,11 +763,19 @@ public sealed class CompletedStageExport
         {
             new("construction tool", policy.Construction.ProviderName,
                 attempt.ConstructionProviderVersion,
-                "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "https://ambermd.org/" :
+                    "https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html#openmm.app.modeller.Modeller.addMembrane",
                 null,
-                "OpenMM application layer MIT terms", OpenMmTermsUri,
-                "OpenMM: Eastman et al., PLoS Computational Biology 2017, 10.1371/journal.pcbi.1005659",
-                "The tool executable is not bundled and its code digest was not recorded. Its exact full build is stated; the native patch has its own digest under incorporated data.",
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "Installed AmberTools terms; executable is not bundled" :
+                    "OpenMM application layer MIT terms",
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "https://ambermd.org/" : OpenMmTermsUri,
+                policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ?
+                    "PACKMOL-Memgen, Journal of Chemical Information and Modeling 2019, 10.1021/acs.jcim.9b00269" :
+                    "OpenMM: Eastman et al., PLoS Computational Biology 2017, 10.1371/journal.pcbi.1005659",
+                "The tool executable is not bundled. The exact provider version and available asset digests are recorded with the construction account.",
                 "used to produce, not incorporated as code")
         };
         if (!string.IsNullOrWhiteSpace(ppmVersion) && !string.IsNullOrWhiteSpace(ppmExecutableSha256))
@@ -556,20 +804,6 @@ public sealed class CompletedStageExport
         options.Converters.Add(new JsonStringEnumConverter());
         return options;
     }
-
-    private static string? SourceAccession(AssessedPreparedProtein protein,
-        ApplicablePreparationPolicy policy)
-    {
-        return IsQualified6Qwr(protein, policy) ? "6QWR" : protein.Intended.Source.Accession;
-    }
-
-    private static bool IsQualified6Qwr(AssessedPreparedProtein protein,
-        ApplicablePreparationPolicy policy) =>
-        protein.Intended.Source.Sha256.Equals(Qualified6QwrSourceSha256,
-            StringComparison.OrdinalIgnoreCase) &&
-        policy.Scope?.SourceCoordinateSha256.Equals(Qualified6QwrSourceSha256,
-            StringComparison.OrdinalIgnoreCase) == true &&
-        protein.Intended.ModelIndex == 0;
 
     private sealed record BundleEntry(string Name, string Path, string Sha256);
     private sealed record FinalCell(double[][] BoxVectorsAngstrom,

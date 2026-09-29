@@ -133,12 +133,49 @@ static ConstructionProviderInstallation? ProbeConstructionProvider(string python
             .Where(item => item.Hash is not null)
             .Select(item => new NativePatchInstallation(item.Species, item.Path, item.Hash!))
             .ToImmutableArray();
+        var amberHome = Environment.GetEnvironmentVariable("PIM_AMBERTOOLS_HOME");
+        var resolvedAmberHome = string.IsNullOrWhiteSpace(amberHome) ? null : Path.GetFullPath(amberHome);
+        var memgenPython = resolvedAmberHome is null ? null : Path.Combine(resolvedAmberHome, "bin", "python3.12");
+        var memgenVersion = memgenPython is not null && File.Exists(memgenPython)
+            ? ProbeMemgenVersion(memgenPython) : null;
         return new ConstructionProviderInstallation(version, dmpcPath,
-            PatchHash(dmpcPath) ?? string.Empty, additional);
+            PatchHash(dmpcPath) ?? string.Empty, additional, memgenVersion, resolvedAmberHome);
     }
     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
         System.ComponentModel.Win32Exception or InvalidOperationException or JsonException or
         KeyNotFoundException or OperationCanceledException)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) { }
+        return null;
+    }
+}
+
+static string? ProbeMemgenVersion(string python)
+{
+    using var process = new Process();
+    process.StartInfo = new ProcessStartInfo
+    {
+        FileName = python,
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true
+    };
+    process.StartInfo.ArgumentList.Add("-c");
+    process.StartInfo.ArgumentList.Add("import importlib.metadata as m; from scipy.io import netcdf_file; print(m.version('packmol-memgen'))");
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    try
+    {
+        process.Start();
+        var output = process.StandardOutput.ReadToEndAsync(deadline.Token);
+        var errors = process.StandardError.ReadToEndAsync(deadline.Token);
+        process.WaitForExitAsync(deadline.Token).GetAwaiter().GetResult();
+        _ = errors.GetAwaiter().GetResult();
+        return process.ExitCode == 0 ? output.GetAwaiter().GetResult().Trim() : null;
+    }
+    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+        System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
         catch (InvalidOperationException) { }

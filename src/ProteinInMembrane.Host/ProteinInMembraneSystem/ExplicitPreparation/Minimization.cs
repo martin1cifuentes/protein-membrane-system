@@ -25,9 +25,18 @@ public sealed class Minimization
             source.Molecule.StateXmlPath is null || source.Molecule.TopologySha256 is null ||
             source.Molecule.SystemXmlSha256 is null || source.Molecule.StateXmlSha256 is null ||
             source.Molecule.CorrespondencePath is null || source.Molecule.CorrespondenceSha256 is null ||
-            policy.MaximumMinimizationIterations <= 0 ||
+            source.Attempt.Route == ConstructionRouteKind.PackmolMemgen &&
+                (source.OutputFrameMidplaneZAngstrom is not double outputMidplane ||
+                 !double.IsFinite(outputMidplane)) ||
+            policy.MaximumMinimizationIterations != 20000 ||
             !double.IsFinite(policy.FinalUnrestrainedRmsForceTargetKjMolNm) ||
-            policy.FinalUnrestrainedRmsForceTargetKjMolNm != 10.0)
+            policy.FinalUnrestrainedRmsForceTargetKjMolNm != 10.0 ||
+            policy.SystemSettings is not
+                { NonbondedMethod: "PME", NonbondedCutoffNanometers: 1.0,
+                  Constraints: "HBonds", RigidWater: true,
+                  EwaldErrorTolerance: 0.0005, SwitchDistanceNanometers: null,
+                  UseDispersionCorrection: true, RemoveCMMotion: true,
+                  HydrogenMassDaltons: null })
             return new StageOperationResult(null,
                 State(source.Attempt.Id, stageId, StageExecutionStanding.Failed,
                     "The exact constructed system or declared required minimization policy is unavailable."),
@@ -90,6 +99,10 @@ public sealed class Minimization
                     "Final unrestrained convergence, numerical finiteness or molecular correspondence was not observed."),
                 ImmutableArray<ScientificFinding>.Empty);
 
+        var localObservation = source.Attempt.Route == ConstructionRouteKind.PackmolMemgen
+            ? policy.LocalStateObservation with
+                { ReferenceMidplaneZAngstrom = source.OutputFrameMidplaneZAngstrom }
+            : policy.LocalStateObservation;
         var observationRequest = new ScientificWorkRequest<StageObservationPayload>(
             Guid.NewGuid().ToString("N"), workingDirectory,
             new StageObservationPayload(source.Attempt.StudyRevisionId, source.Attempt.Id, stageId,
@@ -98,7 +111,7 @@ public sealed class Minimization
                 source.Molecule.SystemXmlPath, source.Molecule.SystemXmlSha256,
                 minimizedState.Path, minimizedState.Sha256,
                 StageKind.Minimization, source.Molecule.CorrespondencePath,
-                source.Molecule.CorrespondenceSha256, policy.LocalStateObservation,
+                source.Molecule.CorrespondenceSha256, localObservation,
                 policy.StageProteinGeometryMeasurement));
         WorkerResult<StageObservationObservations> stageResult;
         try
@@ -153,6 +166,30 @@ public sealed class Minimization
         var local = stageResult.Observations.LocalState;
         if (local is not null && !local.Measurements.IsDefault)
             measurements = measurements.AddRange(local.Measurements);
+        var sourceFindings = source.Findings.IsDefault
+            ? ImmutableArray<ScientificFinding>.Empty : source.Findings;
+        var sourceEvidence = source.Evidence.IsDefault
+            ? ImmutableArray<ScientificEvidence>.Empty : source.Evidence;
+        if (sourceFindings.Any(finding =>
+                finding.SubjectId != source.Id && finding.SubjectId != source.Molecule.Id ||
+                sourceEvidence.Count(item => item.Id == finding.EvidenceId &&
+                    (item.SubjectId == source.Id || item.SubjectId == source.Molecule.Id)) != 1))
+            return new StageOperationResult(null,
+                State(source.Attempt.Id, stageId, StageExecutionStanding.Unobserved,
+                    "The constructed condition findings lack exact attributable evidence."),
+                ImmutableArray<ScientificFinding>.Empty);
+        var carriedEvidence = sourceEvidence
+            .Where(item => (item.SubjectId == source.Id || item.SubjectId == source.Molecule.Id) &&
+                sourceFindings.Any(finding => finding.EvidenceId == item.Id))
+            .Select(item => item with
+            {
+                Id = Guid.NewGuid().ToString("N"), SubjectId = stageId
+            }).ToImmutableArray();
+        var carriedEvidenceIds = sourceEvidence
+            .Where(item => (item.SubjectId == source.Id || item.SubjectId == source.Molecule.Id) &&
+                sourceFindings.Any(finding => finding.EvidenceId == item.Id))
+            .Zip(carriedEvidence, (original, carried) => (original.Id, carried.Id))
+            .ToDictionary(item => item.Item1, item => item.Item2, StringComparer.Ordinal);
         var evidence = ImmutableArray.Create(new ScientificEvidence(
             Guid.NewGuid().ToString("N"), stageId, result.Provider?.Name ?? "OpenMM",
             "Observed final unrestrained minimization",
@@ -162,7 +199,7 @@ public sealed class Minimization
             $"requested iteration cap {policy.MaximumMinimizationIterations}; exact provider stop reason and iteration count are not exposed.",
             $"Attempt {source.Attempt.Id}; policy {policy.Id}",
             "Completion does not establish suitable membrane phase, thermal equilibration or scientific qualification.",
-            EvidenceBearing.Context));
+            EvidenceBearing.Context)).AddRange(carriedEvidence);
         var observation = new StageObservation(stageId, source.Attempt.Id, StageKind.Minimization,
             measurements, evidence, observed.Termination, result.Provider?.Version ?? "unknown", DateTimeOffset.UtcNow,
             EquilibrationAssessments: ImmutableArray<EquilibrationObservationAssessment>.Empty,
@@ -175,7 +212,11 @@ public sealed class Minimization
                 Guid.NewGuid().ToString("N"), stageId, evidence[0].Id, warning,
                 "Requires stage-specific preparation assessment.", FindingDisposition.Challenges,
                 true, DateTimeOffset.UtcNow))
-            .ToImmutableArray();
+            .ToImmutableArray().AddRange(sourceFindings.Select(finding => finding with
+            {
+                Id = Guid.NewGuid().ToString("N"), SubjectId = stageId,
+                EvidenceId = carriedEvidenceIds[finding.EvidenceId]
+            }));
         var completed = new CompletedStage(stageId, source.Attempt, StageKind.Minimization,
             molecule, observation, source.Correspondence with { ResultId = stageId },
             policy.Id, null, findings, DateTimeOffset.UtcNow);
@@ -186,7 +227,8 @@ public sealed class Minimization
 
     private static StageExecutionState State(string attemptId, string stageId, StageExecutionStanding standing,
         string message, double? progress = null)
-        => new(attemptId, stageId, StageKind.Minimization, standing, message, progress, DateTimeOffset.UtcNow);
+        => new(attemptId, stageId, StageKind.Minimization, standing, message, progress, DateTimeOffset.UtcNow,
+            standing == StageExecutionStanding.Running ? PreparationPhase.FinalMinimization : null);
 
     private static StageExecutionState FailureState(string attemptId, string stageId,
         WorkerResultStanding standing, string message)

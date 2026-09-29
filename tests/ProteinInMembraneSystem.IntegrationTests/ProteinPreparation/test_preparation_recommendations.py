@@ -18,20 +18,27 @@ from test_worker_exchange import ROOT, atom_line, invoke, two_alanines
 CATALOGUE = json.loads((ROOT / "config/policies/protein-membrane-current.json").read_text())
 
 
-def fixture_payload(directory: Path, source: Path) -> dict:
+def fixture_payload(directory: Path, source: Path, include_solvent: bool = False) -> dict:
     chemical = CATALOGUE["proteinChemicalStates"][0]
     asset = dict(chemical["forceFieldFiles"][0])
     installed = (ROOT / "config/policies" / asset["path"]).resolve()
     staged = directory / "protein.ff19SB.xml"
     shutil.copyfile(installed, staged)
     asset["path"] = str(staged)
+    assets = [asset]
+    if include_solvent:
+        solvent = dict(chemical["forceFieldFiles"][1])
+        solvent_path = directory / "tip3p.xml"
+        shutil.copyfile((ROOT / "config/policies" / solvent["path"]).resolve(), solvent_path)
+        solvent["path"] = str(solvent_path)
+        assets.append(solvent)
     return {"studyRevisionId": "identified-recommendation-fixture",
             "sourcePath": str(source), "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
             "modelIndex": 0, "assemblyId": None,
             "chainSelections": [{"sourceChain": "A", "copyId": "A"}],
             "altlocChoices": [], "retainedPartners": [], "approvedDisulfides": [],
             "overrides": [], "nominalPh": 7.0, "seed": chemical["recommendation"]["seed"],
-            "forceFieldFiles": [asset], "permittedVariants": chemical["permittedVariants"],
+            "forceFieldFiles": assets, "permittedVariants": chemical["permittedVariants"],
             "disulfideCandidateMaxSgDistanceAngstrom": chemical["disulfideCandidateMaxSgDistanceAngstrom"],
             "geometrySpec": CATALOGUE["proteinStructuralPolicies"][0]["measurement"]}
 
@@ -65,6 +72,91 @@ def internal_variant_fragment(path: Path, variant_name: str) -> None:
 
 
 class RecommendationWorkerTests(unittest.TestCase):
+    def test_retained_ordinary_water_and_ions_keep_exact_source_membership(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "ordinary-retained-members.pdb"
+            members = [(50, "HOH", "W", "O", "O"), (51, "WAT", "X", "O", "O"),
+                       (52, "H2O", "Y", "O", "O"), (53, "NA", "I", "NA", "NA"),
+                       (54, "CL", "J", "CL", "CL")]
+            source.write_text(two_alanines(1, "A").replace("ENDMDL\n", "") +
+                              "".join(atom_line(number, atom, name, chain, number,
+                                                (20 + number, 20, 20), element).replace(
+                                                    "ATOM  ", "HETATM", 1)
+                                      for number, name, chain, atom, element in members) + "END\n")
+            original_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            payload = fixture_payload(directory, source, include_solvent=True)
+            inspected, source_events = invoke(directory, "inspect_source", dict(payload, maxAtoms=1000))
+            self.assertEqual(inspected.returncode, 0, source_events[-1])
+            partners = source_events[-1]["payload"]["observations"]["models"][0]["partners"]
+            self.assertEqual({(item["sourceId"], item["kind"]) for item in partners},
+                             {(f"0:{chain}:{number}::{name}",
+                               "water" if name in {"HOH", "WAT", "H2O"} else "ion")
+                              for number, name, chain, _, _ in members})
+            payload["retainedPartners"] = partners
+            preview, preview_events = invoke(directory, "inspect_preparation_changes", payload)
+            self.assertEqual(preview.returncode, 0, preview_events[-1])
+            self.assertEqual(preview_events[-1]["payload"]["observations"]["selectedAtomCount"], 16)
+            payload["proposedHeavyAtoms"] = preview_events[-1]["payload"]["observations"][
+                "missingNonbackboneHeavyAtoms"]
+            recommended, events = invoke(directory, "recommend_preparation", payload)
+            self.assertEqual(recommended.returncode, 0, events[-1])
+            artifacts = events[-1]["payload"]["artifacts"]
+            correspondence = json.loads(Path(next(item["path"] for item in artifacts
+                                                  if item["role"] == "correspondenceJson")).read_text())
+            sourced = [atom for atom in correspondence["atoms"]
+                       if atom["role"] == "source" and atom["moleculeRole"] in {"water", "ion"}]
+            self.assertEqual({(atom["sourceResidue"]["chain"], atom["sourceResidue"]["copyId"],
+                               atom["moleculeRole"]) for atom in sourced},
+                             {(chain, chain, "water" if name in {"HOH", "WAT", "H2O"} else "ion")
+                              for _, name, chain, _, _ in members})
+            prepared = PDBFile(next(item["path"] for item in artifacts if item["role"] == "preparedPdb"))
+            self.assertEqual({residue.name for residue in prepared.topology.residues()
+                              if residue.name in {"HOH", "NA", "CL"}}, {"HOH", "NA", "CL"})
+            self.assertEqual(sum(residue.name == "HOH" for residue in prepared.topology.residues()), 3)
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original_digest)
+
+    def test_selected_assembly_frames_preserve_partner_only_source_copy_ids(self):
+        import gemmi
+
+        original = ROOT / "tests/ProteinInMembraneSystem.AcceptanceTests/SelectAndPrepareProtein" / \
+            "fixtures/actor-selection-identities.cif"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "controlled-assembly-water.cif"
+            structure = gemmi.read_structure(str(original))
+            structure.setup_entities()
+            for chain in structure[0]:
+                for residue in chain:
+                    if residue.name == "HEM":
+                        residue.name = "HOH"
+                        residue[0].name = "O"
+                        residue[0].element = gemmi.Element("O")
+            structure.make_mmcif_document().write_file(str(source))
+            payload = fixture_payload(directory, source, include_solvent=True)
+            inspected, events = invoke(directory, "inspect_source", dict(payload, maxAtoms=1000))
+            self.assertEqual(inspected.returncode, 0, events[-1])
+            partner = next(item for item in events[-1]["payload"]["observations"]["models"][0]["partners"]
+                           if item["chain"] == "B")
+            payload.update(assemblyId="1", retainedPartners=[partner],
+                           chainSelections=[{"sourceChain": "A", "copyId": "A1"},
+                                            {"sourceChain": "A", "copyId": "A2"}])
+            preview, preview_events = invoke(directory, "inspect_preparation_changes", payload)
+            self.assertEqual(preview.returncode, 0, preview_events[-1])
+            self.assertEqual(preview_events[-1]["payload"]["observations"]["selectedAtomCount"], 24)
+            payload["proposedHeavyAtoms"] = preview_events[-1]["payload"]["observations"][
+                "missingNonbackboneHeavyAtoms"]
+            recommended, events = invoke(directory, "recommend_preparation", payload)
+            self.assertEqual(recommended.returncode, 0, events[-1])
+            correspondence = json.loads(Path(next(item["path"] for item in events[-1]["payload"]["artifacts"]
+                                                  if item["role"] == "correspondenceJson")).read_text())
+            water_copies = {atom["sourceResidue"]["copyId"] for atom in correspondence["atoms"]
+                            if atom["moleculeRole"] == "water" and atom["role"] == "source"}
+            self.assertEqual(water_copies, {"B1", "B2"})
+            self.assertTrue(all(atom["sourceResidue"]["chain"] == "B"
+                                for atom in correspondence["atoms"]
+                                if atom["moleculeRole"] == "water" and atom["role"] == "source"))
+
     def test_authorized_seed_reproduces_checked_candidate_with_heavy_repair(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

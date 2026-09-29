@@ -230,6 +230,7 @@ class NativeExplicitWorkerCrossing(unittest.TestCase):
         construction = cls.policy["construction"]
         return work, {
             "studyRevisionId": "native-6qwr-revision", "attemptId": "native-6qwr-attempt",
+            "route": "nativeOpenMm",
             "orientedPdbPath": str(oriented), "orientedPdbSha256": digest(oriented),
             "preparedPdbPath": str(prepared), "preparedPdbSha256": digest(prepared),
             "preparedCorrespondence": copy.deepcopy(cls.prepared_mapping),
@@ -351,7 +352,7 @@ class NativeExplicitWorkerCrossing(unittest.TestCase):
             ("patch-digest", lambda p: p.update(nativePatchSha256="0" * 64), "inputMismatch"),
             ("patch-path", lambda p: p.update(nativePatchPath=p["preparedPdbPath"]), "providerMismatch"),
             ("provider-version", lambda p: p.update(providerVersion="8.5.0"), "providerMismatch"),
-            ("other-lipid", lambda p: p.update(lipidTypeArgument="DOPC"), "unsupportedPolicy"),
+            ("other-lipid", lambda p: p.update(lipidTypeArgument="DOPC"), "providerMismatch"),
             ("oriented-digest", lambda p: p.update(orientedPdbSha256="0" * 64), "inputMismatch"),
             ("prepared-digest", lambda p: p.update(preparedPdbSha256="0" * 64), "inputMismatch"),
             ("graph-digest", lambda p: p.update(preparedBondGraphSha256="0" * 64), "inputMismatch"),

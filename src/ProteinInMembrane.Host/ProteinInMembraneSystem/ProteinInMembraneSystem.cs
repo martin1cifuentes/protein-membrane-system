@@ -16,7 +16,8 @@ namespace ProteinInMembrane.Host.ProteinInMembraneSystem;
 
 /// <summary>The installed package resource observed through the selected worker interpreter.</summary>
 public sealed record ConstructionProviderInstallation(string FullVersion, string NativePatchPath,
-    string NativePatchSha256, ImmutableArray<NativePatchInstallation> AdditionalPatches = default);
+    string NativePatchSha256, ImmutableArray<NativePatchInstallation> AdditionalPatches = default,
+    string? MemgenVersion = null, string? MemgenHome = null);
 
 /// <summary>An additional exact built-in patch from the same selected OpenMM installation.</summary>
 public sealed record NativePatchInstallation(string SpeciesId, string Path, string Sha256);
@@ -42,16 +43,19 @@ public sealed class ProteinInMembraneSystem
     private readonly string _ppmExecutablePath;
     private readonly Func<ConstructionProviderInstallation?> _constructionProviderProbe;
     private readonly ConstructionProviderInstallation? _startupConstructionProvider;
-    private bool _constructionProviderAdmissionAvailable = true;
+    private ConstructionProviderInstallation? _lastObservedConstructionProvider;
     private readonly CatalogueDocument? _catalogue;
     private readonly string? _catalogueIssue;
     private readonly Dictionary<string, StructureBinding> _structures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DiagnosticBinding> _diagnostics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StructuralSource> _uploads = new(StringComparer.Ordinal);
     private readonly Dictionary<(string SourceId, int ModelIndex, string? AssemblyId), SourcePreviewAccount> _sourcePreviews = new();
     private readonly Dictionary<string, StudyRevision> _revisions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CompletedStage> _stages = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ConstructedExplicitSystem> _constructedByAttempt = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ConstructionDerivation> _derivationByAttempt = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ImmutableArray<ConstructionTrialSummary>> _trialsByAttempt = new(StringComparer.Ordinal);
+    private readonly List<AttemptAccount> _priorAttempts = new();
     private readonly Dictionary<string, ApplicablePreparationPolicy> _policyByAttempt = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AssessedPreparedProtein> _proteinByAttempt = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AssessedMembraneModel> _membraneByAttempt = new(StringComparer.Ordinal);
@@ -61,8 +65,8 @@ public sealed class ProteinInMembraneSystem
     private readonly Dictionary<string, ImmutableArray<ScientificFinding>> _laterFindingsByStage = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CompletedStageBundle> _bundles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StageExportAccount> _exportAccounts = new(StringComparer.Ordinal);
-    private readonly List<WorkspaceNotice> _notices = new();
     private ImmutableArray<CandidateSourceRecord> _candidates = ImmutableArray<CandidateSourceRecord>.Empty;
+    private ImmutableArray<string> _sourceSearchIssues = ImmutableArray<string>.Empty;
     private StudyRevision _study;
     private StructuralSource? _selectedSource;
     private SourceInspectionReport? _sourceInspection;
@@ -83,7 +87,6 @@ public sealed class ProteinInMembraneSystem
     private string? _proteinPreparationFailure;
     private bool _proteinPreparationRetryable;
     private string? _proteinPreparationObservationIssue;
-    private MembraneModel? _membraneProposal;
     private AssessedMembraneModel? _membrane;
     private string? _membraneAssessmentReason;
     private bool _membraneAssessmentRunning;
@@ -97,6 +100,7 @@ public sealed class ProteinInMembraneSystem
     private bool _placementRunning;
     private bool _placementAssessing;
     private string? _placementOperationIssue;
+    private PlacementRouteOutcomeAccount? _placementRouteOutcome;
     private PreparationAttempt? _currentAttempt;
     private StageExecutionState? _execution;
     private CancellationTokenSource? _attemptStop;
@@ -119,6 +123,8 @@ public sealed class ProteinInMembraneSystem
         _membraneAssessment = new MembraneAssessmentBoundary(worker);
         _placementAssessment = new PlacementAssessmentBoundary(worker);
         _explicitPreparation = new ExplicitPreparationBoundary(worker, worker, worker);
+        if (worker is ScientificWorkerExchange localExchange)
+            localExchange.ProgressObserved += ObserveConstructionProgress;
         _export = new ExportBoundary(worker);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         Directory.CreateDirectory(_workspaceRoot);
@@ -127,13 +133,10 @@ public sealed class ProteinInMembraneSystem
         (_catalogue, _catalogueIssue) = ReadCatalogue(policyCataloguePath);
         _startupConstructionProvider = _catalogue is { PreparationPolicies: { IsEmpty: false } }
             ? _constructionProviderProbe() : null;
+        _lastObservedConstructionProvider = _startupConstructionProvider;
         _study = new StudyRevision(NewId(), 1, null, null, null, FixedStudyConditions.Initial);
         _revisions.Add(_study.Id, _study);
         _workspace.RetainStudy(_study);
-        if (_catalogueIssue is not null) Notice("warning", _catalogueIssue, null);
-        if (_catalogue?.PreparationPolicies.Any(policy =>
-                ConstructionProviderMatches(policy.Construction, _startupConstructionProvider)) == false)
-            Notice("warning", "The selected Python installation does not match an identified OpenMM full version and native lipid patch; explicit preparation is unavailable.", null);
     }
 
     public WorkspaceState Snapshot()
@@ -193,13 +196,12 @@ public sealed class ProteinInMembraneSystem
                 ActorActionKind.RetryPreparationPlan => await RetryPreparationPlanAsync(cancellationToken),
                 ActorActionKind.StartProteinPreparation => await StartProteinPreparationAsync(cancellationToken),
                 ActorActionKind.RetryProteinPreparation => await RetryProteinPreparationAsync(cancellationToken),
-                ActorActionKind.ProposeMembrane => ProposeMembrane(command.Data),
                 ActorActionKind.AdoptMembrane => await AdoptMembraneAsync(command.Data, cancellationToken),
+                ActorActionKind.RetryMembraneCheck => await RetryMembraneCheckAsync(command.Data, cancellationToken),
                 ActorActionKind.ProposePlacement => await ProposePlacementAsync(command.Data, cancellationToken),
                 ActorActionKind.RevisePlacement => await RevisePlacementAsync(command.Data, cancellationToken),
                 ActorActionKind.AdoptPlacement => AdoptPlacement(command.Data),
-                ActorActionKind.StartPreparation => StartPreparation(),
-                ActorActionKind.ContinueMinimization => ContinueMinimization(command.Data),
+                ActorActionKind.BuildAndMinimize => StartPreparation(command.Data),
                 ActorActionKind.StopAttempt => StopAttempt(command.Data),
                 ActorActionKind.RequestEquilibration => RequestEquilibration(command.Data),
                 ActorActionKind.SelectInspectionSubject => SelectInspectionSubject(command.Data),
@@ -281,6 +283,103 @@ public sealed class ProteinInMembraneSystem
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return null;
+        }
+    }
+
+    /// <summary>Reads only a retained, exact-trial diagnostic whose bytes still match its digest.</summary>
+    public (byte[] Bytes, string FileName, string Extension)? VerifiedDiagnosticContent(string token)
+    {
+        DiagnosticBinding binding;
+        lock (_gate)
+        {
+            if (!_diagnostics.TryGetValue(token, out binding!)) return null;
+            if (!_trialsByAttempt.TryGetValue(binding.AttemptId, out var trials) ||
+                trials.IsDefaultOrEmpty || !trials.Any(trial =>
+                    trial.TrialId == binding.TrialId && !trial.DiagnosticArtifacts.IsDefaultOrEmpty &&
+                    trial.DiagnosticArtifacts.Any(artifact =>
+                        artifact.Role == binding.Role && artifact.Sha256 == binding.Sha256 &&
+                        artifact.DownloadUrl == "/api/diagnostics/" + token)))
+                return null;
+        }
+        if (!IsWorkspaceFile(binding.Path)) return null;
+        try
+        {
+            var bytes = File.ReadAllBytes(binding.Path);
+            if (bytes.LongLength > 512L * 1024 * 1024 ||
+                !string.Equals(Convert.ToHexString(SHA256.HashData(bytes)),
+                    binding.Sha256, StringComparison.OrdinalIgnoreCase)) return null;
+            return (bytes, binding.FileName, Path.GetExtension(binding.FileName).ToLowerInvariant());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Projects exact molecular roles for the selected full-system view.</summary>
+    public InspectionComponentsAccount? ResolveInspectionComponents(string subjectId, string structureToken)
+    {
+        if (string.IsNullOrWhiteSpace(subjectId) || string.IsNullOrWhiteSpace(structureToken)) return null;
+        lock (_gate)
+        {
+            var inspection = _inspection.Current;
+            if (inspection is null || inspection.SubjectId != subjectId ||
+                inspection.StructureUrl is null ||
+                !string.Equals(inspection.StructureUrl.Split('?', 2)[0],
+                    "/api/structures/" + structureToken, StringComparison.Ordinal) ||
+                VerifiedStructureContent(structureToken) is null)
+                return null;
+
+            SourceToResultCorrespondence? correspondence;
+            int atomCount;
+            if (_constructedByAttempt.Values.FirstOrDefault(item => item.Id == subjectId) is
+                { } constructed && constructed.Attempt.StudyRevisionId == inspection.StudyRevisionId)
+            {
+                correspondence = constructed.Correspondence;
+                atomCount = constructed.Molecule.AtomCount;
+                if (correspondence.ResultId != constructed.Molecule.CoordinateSha256) return null;
+            }
+            else if (_stages.TryGetValue(subjectId, out var stage) &&
+                     stage.Attempt.StudyRevisionId == inspection.StudyRevisionId)
+            {
+                correspondence = stage.Correspondence;
+                atomCount = stage.Molecule.AtomCount;
+                if (correspondence.ResultId != stage.Molecule.Id) return null;
+            }
+            else return null;
+
+            if (correspondence is not { Complete: true } || correspondence.Atoms.IsDefault ||
+                correspondence.Atoms.Length != atomCount || atomCount <= 0) return null;
+            var atoms = new AtomCorrespondence?[atomCount];
+            foreach (var atom in correspondence.Atoms)
+            {
+                if (atom.ResultAtomIndex < 0 || atom.ResultAtomIndex >= atomCount ||
+                    atoms[atom.ResultAtomIndex] is not null || !Enum.IsDefined(atom.MoleculeRole))
+                    return null;
+                atoms[atom.ResultAtomIndex] = atom;
+            }
+            var runs = ImmutableArray.CreateBuilder<InspectionComponentRun>();
+            var start = 0;
+            for (var index = 0; index < atomCount; index++)
+            {
+                var atom = atoms[index];
+                if (atom is null) return null;
+                var chain = atom.SourceResidue?.Chain;
+                var copyId = atom.SourceResidue?.CopyId;
+                if (index == 0) continue;
+                var first = atoms[start]!;
+                if (atom.MoleculeRole == first.MoleculeRole &&
+                    chain == first.SourceResidue?.Chain && copyId == first.SourceResidue?.CopyId)
+                    continue;
+                runs.Add(new InspectionComponentRun(start, index, first.MoleculeRole,
+                    first.SourceResidue?.Chain, first.SourceResidue?.CopyId));
+                start = index;
+            }
+            var last = atoms[start]!;
+            runs.Add(new InspectionComponentRun(start, atomCount, last.MoleculeRole,
+                last.SourceResidue?.Chain, last.SourceResidue?.CopyId));
+            return new InspectionComponentsAccount(subjectId, inspection.StudyRevisionId,
+                structureToken, atomCount, runs.ToImmutable());
         }
     }
 
@@ -383,7 +482,7 @@ public sealed class ProteinInMembraneSystem
         lock (_gate)
         {
             _candidates = result.Candidates;
-            foreach (var issue in result.UnavailableRoutes) Notice("warning", issue, null);
+            _sourceSearchIssues = result.UnavailableRoutes;
             TouchLocked();
         }
         Changed?.Invoke();
@@ -514,7 +613,8 @@ public sealed class ProteinInMembraneSystem
             rawAltlocs.Select(choice => choice.Residue).Distinct().Count() != rawAltlocs.Length)
             return "Choose observed protein chain copies and explicit dispositions for all partners in the selected membership.";
         var altlocs = rawAltlocs.Select(item => item with { DecisionId = NewId() }).ToImmutableArray();
-        var intended = new IntendedProteinModel(NewId(), source, modelIndex!.Value, assembly, chains, partners, altlocs);
+        var intended = new IntendedProteinModel(NewId(), source, modelIndex!.Value, assembly, chains, partners, altlocs,
+            model.SourceModelId);
         StudyRevision revision;
         ProteinChemicalStatePolicy? chemicalPolicy;
         ProteinStructuralAssessmentPolicy? structuralPolicy;
@@ -552,7 +652,6 @@ public sealed class ProteinInMembraneSystem
                 {
                     _proteinSelectionRunning = false;
                     _proteinSelectionIssue = "No qualified protein chemical-state and structural assessment policies cover this selected structure.";
-                    Notice("warning", _proteinSelectionIssue, intended.Id);
                     TouchLocked();
                 }
             }
@@ -573,7 +672,6 @@ public sealed class ProteinInMembraneSystem
                 if (_study.Id != revision.Id) return null;
                 _proteinSelectionRunning = false;
                 _proteinSelectionIssue = $"The selected protein could not be assessed: {exception.Message}";
-                Notice("warning", _proteinSelectionIssue, intended.Id);
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -585,7 +683,6 @@ public sealed class ProteinInMembraneSystem
             _proteinSelectionRunning = false;
             _preparationProposals = proposed.Value;
             _proteinSelectionIssue = proposed.Value is null ? proposed.Reason : null;
-            if (proposed.Value is null) Notice("warning", proposed.Reason, intended.Id);
             TouchLocked();
         }
         Changed?.Invoke();
@@ -841,12 +938,6 @@ public sealed class ProteinInMembraneSystem
                 SelectChemicalPolicyLocked(_sourceInspection.Models.FirstOrDefault(item =>
                     item.Index == revision.IntendedProtein?.ModelIndex), revision.IntendedProtein)?
                     .Recommendation is not null;
-            if (decision.ChosenValue == ResearcherDecisionValue.Declined &&
-                proposal.Kind == PreparationChangeKind.HeavyAtom)
-                Notice("warning", $"Required heavy-atom change {proposal.ProposedChange} at " +
-                    $"{proposal.Residue.Chain}[{proposal.Residue.CopyId}]:{proposal.Residue.Residue}" +
-                    $"{proposal.Residue.InsertionCode} was declined for study revision {revision.Id}; " +
-                    "no assessed prepared protein can be established from this selection.", proposal.Id);
             TouchLocked();
         }
         Changed?.Invoke();
@@ -915,8 +1006,6 @@ public sealed class ProteinInMembraneSystem
                     _proteinPreparationFailure = $"Protein preparation stopped before an assessed result: {exception.Message}";
                     _proteinPreparationRetryable = exception is IOException or TimeoutException or HttpRequestException;
                 }
-                Notice("warning", _proteinPreparationObservationIssue ?? _proteinPreparationFailure ??
-                    "Protein preparation did not establish an assessed result.", intended.Id);
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -938,7 +1027,6 @@ public sealed class ProteinInMembraneSystem
                 _proteinPreparationObservationIssue = prepared.Reason;
                 _proteinPreparationFailure = null;
             }
-            if (prepared.Value is null) Notice("warning", prepared.Reason, intended.Id);
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1225,7 +1313,13 @@ public sealed class ProteinInMembraneSystem
         if (_protein is null || _study.Membrane is null) return null;
         var proposalId = _placementProposal?.Id;
         var adopted = proposalId is not null && _study.AdoptedPlacementProposalId == proposalId;
+        var routeOutcome = _placementRouteOutcome is { } observed &&
+            observed.StudyRevisionId == _study.Id && observed.PreparedProteinId == _protein.Id &&
+            observed.MembraneModelId == _study.Membrane.Id ? observed : null;
+        var routeDidNotEstablishPosition = routeOutcome?.Standing is
+            "noMatch" or "noncorresponding" or "failed" or "unobserved";
         var standing = _placementRunning ? _placementAssessing ? "assessing" : "obtaining" :
+            routeDidNotEstablishPosition ? "noProposal" :
             _placementProposal is null ? _placementOperationIssue is null ? "ready" : "noProposal" :
             _placement?.Standing switch
             {
@@ -1240,7 +1334,8 @@ public sealed class ProteinInMembraneSystem
             "assessing" => "Checking the complete positioned construct and membrane frame…",
             "ready" => _membrane is null ? "Complete the chosen membrane's parameter check before positioning." :
                 "Choose a starting position, then move or rotate the complete construct.",
-            "noProposal" => "No reviewable position was established by the latest attempt: " + _placementOperationIssue,
+            "noProposal" => routeOutcome?.Message ??
+                "No reviewable position was established by the latest attempt: " + _placementOperationIssue,
             "supported" when adopted => "Position selected. The same checked construct can continue to system preparation.",
             "supported" => "Position ready to use. Review it and explicitly choose Use this position.",
             "unsupported" => _placement?.Reason ?? "The current position failed a technical check.",
@@ -1249,61 +1344,39 @@ public sealed class ProteinInMembraneSystem
         };
         return new PlacementTaskAccount(_study.Id, _protein.Id, _study.Membrane.Id,
             proposalId, standing, message, adopted,
-            proposalId is not null ? _placementOperationIssue : null);
-    }
-
-    private string? ProposeMembrane(JsonElement data)
-    {
-        var upper = ParseArray<LipidFraction>(data, "upper");
-        var lower = ParseArray<LipidFraction>(data, "lower");
-        var purpose = Text(data, "scientificPurpose");
-        if (!Coherent(upper) || !Coherent(lower))
-            return "Both leaflets need coherent finite species fractions.";
-        lock (_gate)
-        {
-            _membraneProposal = new MembraneModel(NewId(), new LeafletComposition(LeafletSide.Upper, upper),
-                new LeafletComposition(LeafletSide.Lower, lower), _study.Conditions, purpose);
-            _membraneAssessmentReason = null;
-            _membraneAssessmentRunning = false;
-            _membraneAssessmentUnavailable = false;
-            _inspection.Clear();
-            TouchLocked();
-        }
-        Changed?.Invoke();
-        // The identified intention is available for inspection immediately.
-        // Viewing it does not adopt it or establish membrane support.
-        SelectInspectionSubject(JsonSerializer.SerializeToElement(new { subjectId = _membraneProposal!.Id }));
-        return null;
+            _placementOperationIssue, routeOutcome);
     }
 
     private async Task<string?> AdoptMembraneAsync(JsonElement data, CancellationToken cancellationToken)
     {
+        var upper = ParseArray<LipidFraction>(data, "upper");
+        var lower = ParseArray<LipidFraction>(data, "lower");
+        if (!Coherent(upper) || !Coherent(lower))
+            return "Both leaflets need coherent finite species fractions.";
         MembraneModel proposal;
         StudyRevision revision;
         MembraneSupportPolicy? policy;
         IReadOnlyDictionary<string, MolecularRepresentation> lipids;
         lock (_gate)
         {
-            if (_membraneProposal is null || _membraneProposal.Id != Text(data, "modelId"))
-                return "Choose the currently proposed membrane model.";
-            proposal = _membraneProposal;
             if (_membraneAssessmentRunning) return "This membrane support assessment is already running.";
-            if (_study.Membrane?.Id == proposal.Id && !_membraneAssessmentUnavailable)
-                return "This membrane intention has already been assessed. Propose a changed composition to assess another model.";
-            if (_study.Membrane?.Id != proposal.Id)
-            {
-                AdvanceStudyLocked(_study.IntendedProtein, proposal, null);
-                _allDecisions = _allDecisions.Add(new ResearcherDecision(NewId(), _study.Id,
-                    proposal.Id, ResearcherDecisionKind.AdoptMembrane, ResearcherDecisionValue.Adopted, DateTimeOffset.UtcNow,
-                    null));
-                _protein = CarryProteinLocked(_study);
-                _placementProposal = null;
-                _opmReview = null;
-                _placementMeasurement = null;
-                _placementMeasurementIssue = null;
-                _placementWitness = null;
-                _placement = null;
-            }
+            if (_study.Membrane is { } chosen &&
+                SameComposition(chosen.Upper.Fractions, upper) &&
+                SameComposition(chosen.Lower.Fractions, lower))
+                return "This membrane composition is already selected. Review its current checks or use the available retry.";
+            proposal = new MembraneModel(NewId(), new LeafletComposition(LeafletSide.Upper, upper),
+                new LeafletComposition(LeafletSide.Lower, lower), _study.Conditions, null);
+            AdvanceStudyLocked(_study.IntendedProtein, proposal, null);
+            _allDecisions = _allDecisions.Add(new ResearcherDecision(NewId(), _study.Id,
+                proposal.Id, ResearcherDecisionKind.AdoptMembrane, ResearcherDecisionValue.Adopted, DateTimeOffset.UtcNow,
+                null));
+            _protein = CarryProteinLocked(_study);
+            _placementProposal = null;
+            _opmReview = null;
+            _placementMeasurement = null;
+            _placementMeasurementIssue = null;
+            _placementWitness = null;
+            _placement = null;
             revision = _study;
             _membrane = null;
             _membraneAssessmentReason = null;
@@ -1313,9 +1386,39 @@ public sealed class ProteinInMembraneSystem
             lipids = LipidsLocked();
             TouchLocked();
         }
+        return await AssessChosenMembraneAsync(proposal, revision, policy, lipids, cancellationToken);
+    }
+
+    private async Task<string?> RetryMembraneCheckAsync(JsonElement data, CancellationToken cancellationToken)
+    {
+        MembraneModel proposal;
+        StudyRevision revision;
+        MembraneSupportPolicy? policy;
+        IReadOnlyDictionary<string, MolecularRepresentation> lipids;
+        lock (_gate)
+        {
+            if (_study.Membrane is not { } selected || selected.Id != Text(data, "modelId") ||
+                !_membraneAssessmentUnavailable ||
+                _membraneAssessmentRunning)
+                return "Only a failed check of the exact currently selected membrane can be retried.";
+            proposal = selected;
+            revision = _study;
+            _membrane = null;
+            _membraneAssessmentRunning = true;
+            _membraneAssessmentUnavailable = false;
+            policy = SelectMembranePolicyLocked(proposal);
+            lipids = LipidsLocked();
+            TouchLocked();
+        }
+        return await AssessChosenMembraneAsync(proposal, revision, policy, lipids, cancellationToken);
+    }
+
+    private async Task<string?> AssessChosenMembraneAsync(MembraneModel proposal, StudyRevision revision,
+        MembraneSupportPolicy? policy, IReadOnlyDictionary<string, MolecularRepresentation> lipids,
+        CancellationToken cancellationToken)
+    {
         Changed?.Invoke();
-        // Revision advancement clears the old inspection account. Keep the exact
-        // adopted intention visible while its support assessment is in flight.
+        // The adopted intention is available for inspection during its exact check.
         SelectInspectionSubject(JsonSerializer.SerializeToElement(new { subjectId = proposal.Id }));
         BoundaryOutcome<AssessedMembraneModel> assessed;
         try
@@ -1333,7 +1436,6 @@ public sealed class ProteinInMembraneSystem
                 _membraneAssessmentReason = exception is OperationCanceledException
                     ? "The membrane support assessment outcome could not be observed after interruption. Refresh the account before retrying."
                     : $"Membrane support assessment was unavailable: {exception.Message}";
-                Notice("warning", _membraneAssessmentReason, proposal.Id);
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -1345,7 +1447,6 @@ public sealed class ProteinInMembraneSystem
             _membraneAssessmentRunning = false;
             _membrane = assessed.Value;
             _membraneAssessmentReason = assessed.Value is null ? assessed.Reason : null;
-            if (assessed.Value is null) Notice("warning", assessed.Reason, proposal.Id);
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1358,7 +1459,8 @@ public sealed class ProteinInMembraneSystem
         StudyRevision revision;
         AssessedPreparedProtein protein;
         MembraneModel membrane;
-        AssessedMembraneModel? assessedMembrane;
+        PlacementSupportPolicy framePolicy;
+        IReadOnlyDictionary<string, MolecularRepresentation> frameSpecies;
         bool ppmAvailable;
         lock (_gate)
         {
@@ -1367,11 +1469,10 @@ public sealed class ProteinInMembraneSystem
             revision = _study;
             protein = _protein;
             membrane = _study.Membrane;
-            assessedMembrane = _membrane;
             ppmAvailable = CanRunPpmLocked();
         }
         var route = Text(data, "orientationRoute") ?? "manual";
-        if (route is not ("manual" or "auto" or "ppm" or "opm"))
+        if (route is not ("manual" or "ppm" or "opm"))
             return "Choose user-defined positioning or an available orientation method.";
         var startingPosition = Text(data, "startingPosition") switch
         {
@@ -1383,21 +1484,41 @@ public sealed class ProteinInMembraneSystem
         var manualValues = new[] { Number(data, "offsetXAngstrom"), Number(data, "offsetYAngstrom"),
             Number(data, "offsetZAngstrom"), Number(data, "rotationXDegrees"),
             Number(data, "rotationYDegrees"), Number(data, "rotationZDegrees") };
-        if (route == "manual" && (assessedMembrane is null || startingPosition is null ||
+        if (route == "manual" && (startingPosition is null ||
             manualValues.Any(value => value is null || !double.IsFinite(value.Value))))
-            return "Choose a checked membrane, starting position and finite movement and rotation values.";
+            return "Choose a starting position and finite movement and rotation values.";
         var topologyKind = ParseProteinTopology(Text(data, "topologyKind"));
         var physicalSide = ParsePlacementSide(Text(data, "physicalSide"));
         var ppmNterminalSide = ParsePpmNterminalSide(Text(data, "ppmNterminalSide"));
         if (route != "manual" && (topologyKind is null || physicalSide is null ||
             route == "ppm" && ppmNterminalSide is null)
             ) return "Choose the requested orientation method's topology, physical side and N-terminal assignment.";
+        if (route == "opm" && (protein.Intended.Source.Kind != SourceRouteKind.Rcsb ||
+            protein.Intended.Source.Accession is null))
+            return "OPM lookup requires an identified RCSB entry; another available positioning method may be selected.";
+        if (route == "ppm" && !ppmAvailable)
+            return "The local PPM installation is not currently identified and hash-verified.";
+        var routeRequestId = route == "manual" ? null : NewId();
         lock (_gate)
         {
             if (_placementRunning) return "An exact placement operation is already running.";
+            var applicableFrames = ApplicablePlacementPoliciesLocked(
+                route == "manual" ? ProteinTopologyKind.Unclassified : topologyKind!.Value, membrane);
+            if (applicableFrames.Length != 1 ||
+                applicableFrames[0].OuterLeafletEnvelopeAngstrom is not double envelope ||
+                !double.IsFinite(envelope) || envelope <= 0)
+                return "The chosen membrane has no unique declared placement frame for this position.";
+            framePolicy = applicableFrames[0];
+            frameSpecies = LipidsLocked();
             _placementRunning = true;
             _placementAssessing = false;
             _placementOperationIssue = null;
+            _placementRouteOutcome = routeRequestId is null ? null :
+                new PlacementRouteOutcomeAccount(routeRequestId, revision.Id, protein.Id, membrane.Id,
+                    route, topologyKind!.Value, physicalSide!.Value, ppmNterminalSide,
+                    route == "opm" ? "searching" : "running",
+                    route == "opm" ? "Searching OPM for the exact selected source…" :
+                        "Running the selected local PPM orientation…");
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1405,34 +1526,83 @@ public sealed class ProteinInMembraneSystem
         {
         BoundaryOutcome<PlacementProposal>? proposed = null;
         if (route == "manual")
-            proposed = await _placementAssessment.ProposeManualAsync(revision, protein, assessedMembrane!,
+            proposed = await _placementAssessment.ProposeManualAsync(revision, protein, membrane,
+                frameSpecies, framePolicy,
                 startingPosition!.Value, manualValues[0]!.Value, manualValues[1]!.Value,
                 manualValues[2]!.Value, manualValues[3]!.Value, manualValues[4]!.Value,
                 manualValues[5]!.Value,
                 _catalogue?.MaximumSourceAtoms is > 0 ? _catalogue.MaximumSourceAtoms : int.MaxValue,
                 WorkDirectory("placement", NewId()), cancellationToken);
-        OpmReferenceRecord? reference = null;
-        if ((route is "auto" or "opm") && protein.Intended.Source.Kind == SourceRouteKind.Rcsb &&
-            protein.Intended.Source.Accession is { } accession)
-            reference = await TryOptionalOpmReferenceAsync(accession,
-                WorkDirectory("opm-reference", revision.Id), cancellationToken);
-        var opm = reference is null ? null :
-            _placementAssessment.ReviewOpmReference(revision, protein, membrane, reference).Value;
-        if ((route is "auto" or "opm") && reference is not null && opm is not null)
-            proposed = _placementAssessment.ProposeFromOpmReference(revision, protein, membrane,
-                reference, opm, topologyKind!.Value, physicalSide!.Value,
-                Text(data, "biologicalSidedness"));
-        if (proposed?.Value is null && (route is "auto" or "ppm") && ppmAvailable)
+        OpmReferenceReview? opm = null;
+        string? routeStanding = null;
+        string? routeMessage = null;
+        if (route == "opm")
         {
-            if (ppmNterminalSide is null)
-                return "Choose the PPM N-terminal assignment for the local orientation route.";
+            var lookup = await _sources.TryRetrieveOpmReferenceAsync(protein.Intended.Source.Accession!,
+                WorkDirectory("opm-reference", revision.Id), cancellationToken);
+            if (lookup.Standing != OpmLookupStanding.Found || lookup.Reference is null)
+            {
+                routeStanding = lookup.Standing switch
+                {
+                    OpmLookupStanding.NoMatch => "noMatch",
+                    OpmLookupStanding.Failed => "failed",
+                    _ => "unobserved"
+                };
+                routeMessage = routeStanding switch
+                {
+                    "noMatch" => lookup.Reason ?? "No matching OPM reference was found for this source.",
+                    "failed" => lookup.Reason ?? "The OPM lookup failed.",
+                    _ => lookup.Reason ?? "The OPM lookup did not establish a usable reference."
+                };
+                routeMessage += " An earlier position remains available if one was checked; retry or choose another method.";
+            }
+            else
+            {
+                var reviewed = _placementAssessment.ReviewOpmReference(revision, protein, membrane,
+                    lookup.Reference);
+                opm = reviewed.Value;
+                if (opm is { CorrespondsToSelectedConstruct: false })
+                {
+                    routeStanding = "noncorresponding";
+                    routeMessage = "An OPM reference was found, but it does not correspond to the selected construct. " +
+                        string.Join(" ", opm.Limitations) +
+                        " An earlier position remains available if one was checked.";
+                }
+                else if (opm is null)
+                {
+                    routeStanding = "unobserved";
+                    routeMessage = (reviewed.Reason ?? "The OPM reference could not be checked against the selected construct.") +
+                        " An earlier position remains available if one was checked.";
+                }
+                else
+                {
+                    proposed = _placementAssessment.ProposeFromOpmReference(revision, protein, membrane,
+                        framePolicy, lookup.Reference, opm, topologyKind!.Value, physicalSide!.Value,
+                        Text(data, "biologicalSidedness"));
+                    if (proposed.Value is null)
+                    {
+                        routeStanding = "unobserved";
+                        routeMessage = (proposed.Reason ?? "The OPM reference did not yield a usable mapped position for this construct.") +
+                            " An earlier position remains available if one was checked.";
+                    }
+                }
+            }
+        }
+        if (route == "ppm")
+        {
             proposed = await _placementAssessment.ProposeWithPpmAsync(revision, protein, membrane,
-                topologyKind!.Value, physicalSide!.Value,
-                Text(data, "biologicalSidedness"), ppmNterminalSide.Value,
+                framePolicy, topologyKind!.Value, physicalSide!.Value,
+                Text(data, "biologicalSidedness"), ppmNterminalSide!.Value,
                 _ppmExecutablePath, _catalogue!.PpmVersion,
                 _catalogue.PpmExecutableSha256,
                 WorkDirectory("placement", NewId()), cancellationToken,
                 _catalogue.PpmResidueLibraryPath, _catalogue.PpmResidueLibrarySha256);
+            if (proposed.Value is null)
+            {
+                routeStanding = "unobserved";
+                routeMessage = (proposed.Reason ?? "The local PPM route did not establish a usable position.") +
+                    " An earlier position remains available if one was checked.";
+            }
         }
         lock (_gate)
         {
@@ -1447,15 +1617,25 @@ public sealed class ProteinInMembraneSystem
                 _placementMeasurementIssue = null;
                 _placementWitness = null;
                 _placement = null;
+                if (routeRequestId is not null && _placementRouteOutcome?.RequestId == routeRequestId)
+                    _placementRouteOutcome = _placementRouteOutcome with
+                    {
+                        Standing = "checking",
+                        Message = "A mapped position was obtained; checking it against the selected membrane…",
+                        ProposalId = proposed.Value.Id
+                    };
             }
             else
             {
                 _placementOperationIssue = proposed?.Reason ??
-                    "No exact OPM position was available and the local PPM executable or residue library is not identified and hash-verified.";
-                Notice("warning", _placementOperationIssue, protein.Id);
+                    (routeStanding is "failed" or "unobserved" ? routeMessage : null);
+                if (routeRequestId is not null && _placementRouteOutcome?.RequestId == routeRequestId)
+                    _placementRouteOutcome = _placementRouteOutcome with
+                    {
+                        Standing = routeStanding ?? "unobserved",
+                        Message = routeMessage ?? "No usable position was established by this request."
+                    };
             }
-            if (opm is { CorrespondsToSelectedConstruct: false } or { MembraneContextApplicable: false })
-                Notice("information", "An OPM reference was found but its exact construct or membrane-context applicability is not established.", protein.Id);
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1474,7 +1654,12 @@ public sealed class ProteinInMembraneSystem
                 _placementOperationIssue = exception is OperationCanceledException
                     ? "The placement outcome could not be observed after interruption. Refresh before a new operation."
                     : $"The requested position could not be obtained or checked: {exception.Message}";
-                Notice("warning", _placementOperationIssue, protein.Id);
+                if (routeRequestId is not null && _placementRouteOutcome?.RequestId == routeRequestId)
+                    _placementRouteOutcome = _placementRouteOutcome with
+                    {
+                        Standing = exception is OperationCanceledException ? "unobserved" : "failed",
+                        Message = _placementOperationIssue
+                    };
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -1492,20 +1677,6 @@ public sealed class ProteinInMembraneSystem
                 }
             }
             Changed?.Invoke();
-        }
-    }
-
-    private async Task<OpmReferenceRecord?> TryOptionalOpmReferenceAsync(string accession,
-        string directory, CancellationToken cancellationToken)
-    {
-        try { return await _sources.TryRetrieveOpmReferenceAsync(accession, directory, cancellationToken); }
-        catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or
-                                         InvalidDataException || exception is OperationCanceledException &&
-                                         !cancellationToken.IsCancellationRequested)
-        {
-            // A reference is independent contextual evidence, not a prerequisite
-            // for invoking local PPM or judging its explicit-membrane candidate.
-            return null;
         }
     }
 
@@ -1530,6 +1701,7 @@ public sealed class ProteinInMembraneSystem
             _placementRunning = true;
             _placementAssessing = false;
             _placementOperationIssue = null;
+            _placementRouteOutcome = null;
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1554,7 +1726,6 @@ public sealed class ProteinInMembraneSystem
             else
             {
                 _placementOperationIssue = revised.Reason;
-                Notice("warning", revised.Reason, source.Id);
             }
             TouchLocked();
         }
@@ -1574,7 +1745,6 @@ public sealed class ProteinInMembraneSystem
                 _placementOperationIssue = exception is OperationCanceledException
                     ? "The corrected placement outcome could not be observed after interruption. Refresh before a new operation."
                     : $"The corrected position could not be obtained or checked: {exception.Message}";
-                Notice("warning", _placementOperationIssue, source.Id);
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -1598,16 +1768,16 @@ public sealed class ProteinInMembraneSystem
     private async Task AssessPlacementAsync(StudyRevision revision, PlacementProposal proposal, CancellationToken cancellationToken)
     {
         AssessedPreparedProtein? protein;
-        AssessedMembraneModel? membrane;
+        MembraneModel? membrane;
         PlacementSupportPolicy? policy;
         PlacementStructuralWitness? witness;
         lock (_gate)
         {
             protein = _protein;
-            membrane = _membrane;
+            membrane = _study.Membrane;
             policy = membrane is null ? null : SelectPlacementPolicyLocked(proposal, membrane);
-            witness = protein is null || membrane is null ? null :
-                SelectPlacementWitnessLocked(protein, membrane, proposal);
+            witness = protein is null || _membrane is null ? null :
+                SelectPlacementWitnessLocked(protein, _membrane, proposal);
         }
         if (protein is null) return;
         PlacementMeasurementReport? measurement = null;
@@ -1633,7 +1803,19 @@ public sealed class ProteinInMembraneSystem
             _placementMeasurementIssue = measurementIssue;
             _placementWitness = witness;
             _placement = assessed;
-            if (measurementIssue is not null) Notice("warning", measurementIssue, proposal.Id);
+            if (_placementRouteOutcome?.ProposalId == proposal.Id)
+                _placementRouteOutcome = _placementRouteOutcome with
+                {
+                    Standing = assessed.Standing switch
+                    {
+                        AssessmentStanding.Supported => "supported",
+                        AssessmentStanding.Unsupported => "unsupported",
+                        _ => "notEstablished"
+                    },
+                    Message = assessed.Standing == AssessmentStanding.Supported
+                        ? "The mapped position passed its current membrane checks. Select Use this position to continue."
+                        : assessed.Reason
+                };
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1647,7 +1829,7 @@ public sealed class ProteinInMembraneSystem
                 _placementProposal.Id != Text(data, "proposalId") ||
                 _study.AdoptedPlacementProposalId == _placementProposal.Id ||
                 _placement.Proposal.Id != _placementProposal.Id || _placement.Standing != AssessmentStanding.Supported ||
-                _protein is null || _membrane is null || _placementMeasurement is null)
+                _protein is null || _study.Membrane is null || _placementMeasurement is null)
                 return "Only the current supported proposal can be adopted.";
             if (_placementMeasurement.Evidence.IsDefaultOrEmpty ||
                 _placementMeasurement.Evidence.Any(item => item.SubjectId != _placementProposal.Id ||
@@ -1661,10 +1843,10 @@ public sealed class ProteinInMembraneSystem
                 _study.Membrane, _placementProposal.Id, _study.Conditions);
             var carriedProtein = CarryProteinLocked(revised);
             var carriedMembrane = CarryMembraneLocked(revised);
-            if (carriedProtein is null || carriedMembrane is null)
+            if (carriedProtein is null || revised.Membrane is null)
                 return "An affected assessed input cannot be carried into this changed study premise.";
-            var policy = SelectPlacementPolicyLocked(_placementProposal, carriedMembrane);
-            var reassessed = _placementAssessment.Assess(revised, carriedProtein, carriedMembrane,
+            var policy = SelectPlacementPolicyLocked(_placementProposal, revised.Membrane);
+            var reassessed = _placementAssessment.Assess(revised, carriedProtein, revised.Membrane,
                 _placementProposal, policy, _placementMeasurement, _placementWitness,
                 _placementMeasurement.Evidence,
                 _placement.Findings);
@@ -1688,8 +1870,9 @@ public sealed class ProteinInMembraneSystem
         return null;
     }
 
-    private string? StartPreparation()
+    private string? StartPreparation(JsonElement data)
     {
+        string? refusal = null;
         lock (_gate)
         {
             if (_protein is null || _membrane is null || _placement is null ||
@@ -1699,59 +1882,45 @@ public sealed class ProteinInMembraneSystem
                 _membrane.StudyRevisionId != _study.Id)
                 return "Current, corresponding supported inputs are required before preparation.";
             if (_attemptTask is { IsCompleted: false }) return "The current attempt is still running.";
-            if (_execution?.Standing == StageExecutionStanding.ReadyForMinimization)
-                return "Review and continue or decline the current constructed candidate before starting another attempt.";
-            var policy = SelectPreparationPolicyLocked(_study, _protein, _placement.Proposal, _membrane);
-            if (policy is null) return "No qualified, applicable preparation policy and exact assets are available.";
-            if (!_constructionProviderAdmissionAvailable ||
-                !ConstructionProviderMatches(policy.Construction, _startupConstructionProvider))
-                return "The selected Python installation does not match the qualified OpenMM version and native lipid patch.";
+            var requestedPolicyId = Text(data, "policyId");
+            var policy = SelectPreparationPolicyLocked(_study, _protein, _placement.Proposal, _membrane,
+                requestedPolicyId);
+            if (policy is null) return "No applicable construction route and exact policy are available for these inputs.";
+            if (!ConstructionProviderMatches(policy.Construction, _startupConstructionProvider) ||
+                !PreparationAssetsAvailable(policy, _membrane))
+                return "The selected construction provider or one of its exact assets is unavailable.";
             var admissionProvider = _constructionProviderProbe();
-            if (!ConstructionProviderMatches(policy.Construction, admissionProvider))
+            _lastObservedConstructionProvider = admissionProvider;
+            if (!ConstructionProviderMatches(policy.Construction, admissionProvider) ||
+                !PreparationAssetsAvailable(policy, _membrane))
             {
-                _constructionProviderAdmissionAvailable = false;
                 TouchLocked();
-                return "The selected Python installation changed or no longer matches the qualified OpenMM version and native lipid patch.";
+                refusal = "The selected construction provider or one of its exact assets changed before admission.";
             }
-            var revision = _study;
-            var protein = _protein;
-            var membrane = _membrane;
-            var placement = _placement;
-            var decisionSubjects = protein.Changes.Select(change => change.Id)
-                .Append(membrane.Intended.Id).Append(placement.Proposal.Id)
-                .ToHashSet(StringComparer.Ordinal);
-            var decisions = _allDecisions.Where(decision => decisionSubjects.Contains(decision.SubjectId))
-                .ToImmutableArray();
-            var attemptStop = new CancellationTokenSource();
-            _currentAttempt = null;
-            _execution = new StageExecutionState(string.Empty, null, null, StageExecutionStanding.Pending,
-                "The corresponding attempt is being admitted.", null, DateTimeOffset.UtcNow);
-            TrackAttemptTaskLocked(Task.Run(() => RunPreparationAsync(revision, protein, membrane, placement, policy,
-                decisions, attemptStop.Token)), attemptStop);
-            TouchLocked();
+            else
+            {
+                var revision = _study;
+                var protein = _protein;
+                var membrane = _membrane;
+                var placement = _placement;
+                var decisionSubjects = protein.Changes.Select(change => change.Id)
+                    .Append(membrane.Intended.Id).Append(placement.Proposal.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                var decisions = _allDecisions.Where(decision => decisionSubjects.Contains(decision.SubjectId))
+                    .ToImmutableArray();
+                var attemptStop = new CancellationTokenSource();
+                if (_currentAttempt is { } earlier && _execution is { } earlierExecution)
+                    _priorAttempts.Insert(0, AttemptAccountLocked(earlier, earlierExecution)!);
+                _currentAttempt = null;
+                _execution = new StageExecutionState(string.Empty, null, null, StageExecutionStanding.Pending,
+                    "The corresponding attempt is being admitted.", null, DateTimeOffset.UtcNow);
+                TrackAttemptTaskLocked(Task.Run(() => RunPreparationAsync(revision, protein, membrane, placement, policy,
+                    decisions, attemptStop.Token)), attemptStop);
+                TouchLocked();
+            }
         }
         Changed?.Invoke();
-        return null;
-    }
-
-    private bool CanContinueMinimizationLocked()
-    {
-        var attempt = _currentAttempt;
-        if (attempt is null || _execution is not
-            { Standing: StageExecutionStanding.ReadyForMinimization, Kind: null } ready ||
-            ready.AttemptId != attempt.Id || _attemptTask is { IsCompleted: false } ||
-            !_constructedByAttempt.TryGetValue(attempt.Id, out var constructed) ||
-            constructed.Attempt.Id != attempt.Id ||
-            _study.Id != attempt.StudyRevisionId || _protein?.Id != attempt.ProteinId ||
-            _membrane?.Id != attempt.MembraneId || _placement?.Id != attempt.PlacementId ||
-            _placement.Standing != AssessmentStanding.Supported ||
-            _study.AdoptedPlacementProposalId != _placement.Proposal.Id ||
-            !_policyByAttempt.TryGetValue(attempt.Id, out var policy) ||
-            !PreparationPolicyFingerprint.Matches(attempt, policy))
-            return false;
-        return SelectPreparationPolicyLocked(_study, _protein, _placement.Proposal, _membrane) is
-            { } currentPolicy && currentPolicy.Id == policy.Id &&
-            PreparationPolicyFingerprint.Compute(currentPolicy) == attempt.PolicyFingerprintSha256;
+        return refusal;
     }
 
     private static bool CandidateArtifactsMatch(ConstructedExplicitSystem candidate)
@@ -1768,38 +1937,6 @@ public sealed class ProteinInMembraneSystem
             molecule.CorrespondenceSha256 is { } mappingSha && VerifyHash(mappingPath, mappingSha);
     }
 
-    private string? ContinueMinimization(JsonElement data)
-    {
-        var attemptId = Text(data, "attemptId");
-        var constructedSubjectId = Text(data, "constructedSubjectId");
-        lock (_gate)
-        {
-            if (!CanContinueMinimizationLocked() || _currentAttempt?.Id != attemptId ||
-                !_constructedByAttempt.TryGetValue(attemptId!, out var constructed) ||
-                constructed.Id != constructedSubjectId)
-                return "Review the exact current constructed candidate before continuing minimization.";
-            // Hash the five bounded candidate artifacts only for the command. Snapshot/action
-            // polling must not reread a potentially large molecular system on every refresh.
-            if (!CandidateArtifactsMatch(constructed))
-                return "The constructed candidate's coordinates, topology, parameters, state or correspondence changed; construct a new candidate before minimization.";
-            var policy = _policyByAttempt[attemptId!];
-            var protein = _protein!;
-            var membrane = _membrane!;
-            var placement = _placement!;
-            var stop = new CancellationTokenSource();
-            var pendingExecution = new StageExecutionState(attemptId!, null, StageKind.Minimization,
-                StageExecutionStanding.Pending, "Required minimization is starting.", null,
-                DateTimeOffset.UtcNow);
-            _workspace.RetainExecution(pendingExecution);
-            _execution = pendingExecution;
-            TrackAttemptTaskLocked(Task.Run(() => RunMinimizationAsync(constructed, protein, membrane,
-                placement, policy, stop.Token)), stop);
-            TouchLocked();
-        }
-        Changed?.Invoke();
-        return null;
-    }
-
     private string? StopAttempt(JsonElement data)
     {
         lock (_gate)
@@ -1807,24 +1944,13 @@ public sealed class ProteinInMembraneSystem
             var id = Text(data, "attemptId");
             if (id is null || _currentAttempt?.Id != id || _execution?.AttemptId != id)
                 return "No matching unfinished preparation attempt can be stopped.";
-            if (_execution.Standing == StageExecutionStanding.ReadyForMinimization &&
-                _constructedByAttempt.ContainsKey(id))
-            {
-                var stopped = new StageExecutionState(id, null, null, StageExecutionStanding.Stopped,
-                    "The constructed candidate was declined; no completed stage was created.", null,
-                    DateTimeOffset.UtcNow);
-                _workspace.RetainExecution(stopped);
-                _execution = stopped;
-                Notice("information", "The constructed candidate was declined; it remains available for inspection.", id);
-            }
-            else if (_attemptTask is { IsCompleted: false } && _attemptStop is not null &&
+            if (_attemptTask is { IsCompleted: false } && _attemptStop is not null &&
                 _execution.Standing is StageExecutionStanding.Pending or StageExecutionStanding.Running)
             {
                 if (_stopRequestedAttemptId == id)
                     return "A stop request is already pending for this attempt; wait for its observed outcome.";
                 _stopRequestedAttemptId = id;
                 _attemptStop.Cancel();
-                Notice("information", "Stop requested; the actual stage standing will be reported when the worker stops.", id);
             }
             else return "No matching unfinished preparation attempt can be stopped.";
             TouchLocked();
@@ -1996,7 +2122,6 @@ public sealed class ProteinInMembraneSystem
             {
                 _exportAccounts[stage.Id] = new StageExportAccount(stage.Id, assessment.Id,
                     "failed", delivered.Reason, null, null);
-                Notice("warning", delivered.Reason, stage.Id);
                 outcomeReason = delivered.Reason;
             }
             TouchLocked();
@@ -2062,12 +2187,16 @@ public sealed class ProteinInMembraneSystem
         CancellationToken cancellationToken)
     {
         var attemptId = NewId();
+        var admitted = false;
         try
         {
             var attempt = new PreparationAttempt(attemptId, revision.Id, protein.Id, membrane.Id,
                 placement.Id, policy.Id, DateTimeOffset.UtcNow, policy.Version,
                 PreparationPolicyFingerprint.Compute(policy), policy.ForceFieldFiles,
-                policy.Construction.ProviderVersion, policy.Construction.NativePatchSha256);
+                policy.Construction.ProviderVersion, policy.Construction.NativePatchSha256,
+                policy.Construction.Route, policy.Construction.SaltConvention,
+                policy.Construction.ProviderAssets.IsDefault
+                    ? ImmutableArray<ProviderAsset>.Empty : policy.Construction.ProviderAssets);
             var started = await _explicitPreparation.StartAsync(attempt, revision, protein, membrane, placement, policy,
                 WorkDirectory("attempts", attempt.Id), accepted =>
                 {
@@ -2075,6 +2204,7 @@ public sealed class ProteinInMembraneSystem
                     {
                         _workspace.RetainAttempt(accepted);
                         _currentAttempt = accepted;
+                        admitted = true;
                         _execution = new StageExecutionState(accepted.Id, null, null,
                             StageExecutionStanding.Pending, "The identified attempt was admitted.",
                             null, DateTimeOffset.UtcNow);
@@ -2089,7 +2219,8 @@ public sealed class ProteinInMembraneSystem
             }
             lock (_gate)
             {
-                _workspace.RetainExecution(started.State);
+                var outcome = PreserveObservedConstructionPhase(_execution, started.State);
+                _workspace.RetainExecution(outcome);
                 _currentAttempt = started.Attempt;
                 _policyByAttempt[started.Attempt.Id] = policy;
                 _proteinByAttempt[started.Attempt.Id] = protein;
@@ -2098,23 +2229,64 @@ public sealed class ProteinInMembraneSystem
                 _decisionsByAttempt[started.Attempt.Id] = decisions;
                 if (started.Derivation is not null)
                     _derivationByAttempt[started.Attempt.Id] = started.Derivation;
+                if (!started.Trials.IsDefault)
+                    _trialsByAttempt[started.Attempt.Id] = started.Trials
+                        .Select(trial => BindTrialDiagnosticsLocked(started.Attempt.Id, trial))
+                        .ToImmutableArray();
                 if (started.Constructed is not null)
                     _constructedByAttempt[started.Attempt.Id] = started.Constructed;
-                _execution = started.State;
+                if (_stopRequestedAttemptId == started.Attempt.Id && outcome.Standing is
+                    StageExecutionStanding.Completed or StageExecutionStanding.Stopped or
+                    StageExecutionStanding.Failed or StageExecutionStanding.ResourceRefused or
+                    StageExecutionStanding.Unobserved)
+                    _stopRequestedAttemptId = null;
+                _execution = outcome;
                 TouchLocked();
             }
             Changed?.Invoke();
+            if (started.Constructed is null) return;
+            if (started.State.Standing is StageExecutionStanding.Failed or StageExecutionStanding.Stopped or
+                StageExecutionStanding.ResourceRefused or StageExecutionStanding.Unobserved)
+            {
+                SetExecution(started.State with
+                {
+                    Standing = StageExecutionStanding.Unobserved,
+                    Message = "The construction handoff had a terminal standing despite supplying a candidate."
+                });
+                return;
+            }
+            if (!CandidateArtifactsMatch(started.Constructed))
+            {
+                SetExecution(new StageExecutionState(attemptId, null, null,
+                    StageExecutionStanding.Failed,
+                    "The checked construction handoff changed before required minimization could start.",
+                    null, DateTimeOffset.UtcNow, PreparationPhase.HandoffChecks,
+                    FailureCode: "handoffArtifactChanged"));
+                return;
+            }
+            await RunMinimizationAsync(started.Constructed, protein, membrane, placement, policy,
+                cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            SetExecution(new StageExecutionState(attemptId, null, null,
-                StageExecutionStanding.Stopped, "The unfinished preparation work was stopped.", null, DateTimeOffset.UtcNow));
+            SetExecution(new StageExecutionState(admitted ? attemptId : string.Empty, null, null,
+                StageExecutionStanding.Stopped,
+                admitted ? "The unfinished preparation work was stopped." :
+                    "Preparation was stopped before an attempt was admitted.",
+                null, DateTimeOffset.UtcNow));
         }
         catch (Exception exception)
         {
-            SetExecution(new StageExecutionState(attemptId, null, null,
-                StageExecutionStanding.Unobserved, "The local worker outcome could not be established: " + exception.Message,
-                null, DateTimeOffset.UtcNow));
+            var resourceRefused = !admitted && exception is IOException or UnauthorizedAccessException;
+            SetExecution(new StageExecutionState(admitted ? attemptId : string.Empty, null, null,
+                resourceRefused ? StageExecutionStanding.ResourceRefused :
+                    admitted ? StageExecutionStanding.Unobserved : StageExecutionStanding.Failed,
+                (resourceRefused ? "The local workspace could not admit preparation: " :
+                    admitted ? "The local worker outcome could not be established: " :
+                        "Preparation could not be admitted: ") + exception.Message,
+                null, DateTimeOffset.UtcNow,
+                FailureCode: resourceRefused ? "resourceRefused" :
+                    admitted ? "unobservedWorkerOutcome" : "admissionFailed"));
         }
     }
 
@@ -2206,44 +2378,128 @@ public sealed class ProteinInMembraneSystem
 
     private IProgress<StageExecutionState> Progress() => new DirectProgress(SetExecution);
 
+    private void ObserveConstructionProgress(string requestId, JsonElement payload)
+    {
+        if (Text(payload, "operation") != "construct_system" ||
+            Text(payload, "attemptId") is not { Length: > 0 } attemptId ||
+            Text(payload, "studyRevisionId") is not { Length: > 0 } revisionId ||
+            Text(payload, "stage") is not { Length: > 0 } stage)
+            return;
+        var phase = stage switch
+        {
+            "providerPopulation" => PreparationPhase.ProviderPopulation,
+            "providerPacking" => PreparationPhase.ProviderPacking,
+            "providerCleanup" => PreparationPhase.ProviderCleanup,
+            "amberParameterization" => PreparationPhase.AmberParameterization,
+            "providerConditioningRestrained" => PreparationPhase.ProviderConditioningRestrained,
+            "providerConditioningUnrestrained" => PreparationPhase.ProviderConditioningUnrestrained,
+            _ => (PreparationPhase?)null
+        };
+        if (phase is null) return;
+        var detail = payload.TryGetProperty("detail", out var value) && value.ValueKind == JsonValueKind.Object
+            ? value : default;
+        var trialId = detail.ValueKind == JsonValueKind.Object ? Text(detail, "trialId") : null;
+        int? trialIndex = detail.ValueKind == JsonValueKind.Object &&
+            detail.TryGetProperty("trialIndex", out var indexValue) && indexValue.TryGetInt32(out var index)
+            ? index : null;
+        double? fraction = detail.ValueKind == JsonValueKind.Object &&
+            detail.TryGetProperty("progress", out var progressValue) && progressValue.TryGetDouble(out var progress) &&
+            double.IsFinite(progress) && progress is >= 0 and <= 1 ? progress : null;
+        var message = detail.ValueKind == JsonValueKind.Object ? Text(detail, "message") : null;
+        if (string.IsNullOrWhiteSpace(trialId) || trialIndex is null) return;
+        lock (_gate)
+        {
+            if (_currentAttempt?.Id != attemptId || _currentAttempt.StudyRevisionId != revisionId ||
+                _execution?.Standing is not (StageExecutionStanding.Pending or StageExecutionStanding.Running) ||
+                _execution.TrialId != trialId || _execution.TrialIndex != trialIndex ||
+                !SetExecutionLocked(new StageExecutionState(attemptId, null, null,
+                    StageExecutionStanding.Running, message ?? stage, fraction,
+                    DateTimeOffset.UtcNow, phase, trialId, trialIndex)))
+                return;
+        }
+        Changed?.Invoke();
+    }
+
     private sealed class DirectProgress(Action<StageExecutionState> receive) : IProgress<StageExecutionState>
     {
         public void Report(StageExecutionState value) => receive(value);
     }
 
+    private static StageExecutionState PreserveObservedConstructionPhase(
+        StageExecutionState? previous, StageExecutionState incoming)
+    {
+        // The construction owner knows that a trial ended without a checked
+        // handoff, while only the correlated worker progress identifies its
+        // last observed provider phase. A terminal fallback must not move the
+        // same trial back to population after packing or conditioning began.
+        if (previous is not null && previous.AttemptId == incoming.AttemptId &&
+            previous.TrialId is { Length: > 0 } trialId && trialId == incoming.TrialId &&
+            previous.Kind is null && incoming.Kind is null &&
+            previous.Phase is { } observed &&
+            observed >= PreparationPhase.ProviderPacking &&
+            observed <= PreparationPhase.HandoffChecks &&
+            incoming.Phase is null or PreparationPhase.ProviderPopulation)
+            return incoming with { Phase = observed };
+        return incoming;
+    }
+
     private void SetExecution(StageExecutionState state)
     {
         lock (_gate)
-        {
-            if (_currentAttempt is { } attempt && state.AttemptId != attempt.Id)
-                return;
-            if (_currentAttempt is null && _execution?.AttemptId is { Length: > 0 } pendingId &&
-                state.AttemptId != pendingId)
-                return;
-            if (_execution is { } previous && previous.AttemptId == state.AttemptId)
-            {
-                var terminalRegression = previous.Standing is StageExecutionStanding.Completed or
-                    StageExecutionStanding.Stopped or StageExecutionStanding.Failed or
-                    StageExecutionStanding.ResourceRefused or StageExecutionStanding.Unobserved &&
-                    state.Standing is StageExecutionStanding.Pending or StageExecutionStanding.Running;
-                if (previous.Kind is not null && previous.Kind != state.Kind ||
-                    previous.StageId is not null && previous.StageId != state.StageId ||
-                    terminalRegression)
-                    return;
-            }
-            // The child reports terminal progress before the root has judged and
-            // retained its completed stage. Only the paired stage and assessment
-            // may make completion visible to a reattached actor.
-            if (state.Standing == StageExecutionStanding.Completed &&
-                (state.StageId is null || !_stages.TryGetValue(state.StageId, out var stage) ||
-                 stage.Attempt.Id != state.AttemptId || !_stageAssessments.ContainsKey(state.StageId)))
-                return;
-            if (_currentAttempt?.Id == state.AttemptId)
-                _workspace.RetainExecution(state);
-            _execution = state;
-            TouchLocked();
-        }
+            if (!SetExecutionLocked(state)) return;
         Changed?.Invoke();
+    }
+
+    private bool SetExecutionLocked(StageExecutionState state)
+    {
+        if (_currentAttempt is { } attempt && state.AttemptId != attempt.Id)
+            return false;
+        if (_currentAttempt is null && _execution?.AttemptId is { Length: > 0 } pendingId &&
+            state.AttemptId != pendingId)
+            return false;
+        if (_execution is { } previous && previous.AttemptId == state.AttemptId)
+        {
+            var terminalRegression = previous.Standing is StageExecutionStanding.Completed or
+                StageExecutionStanding.Stopped or StageExecutionStanding.Failed or
+                StageExecutionStanding.ResourceRefused or StageExecutionStanding.Unobserved &&
+                state.Standing is StageExecutionStanding.Pending or StageExecutionStanding.Running;
+            if (previous.Kind is not null && previous.Kind != state.Kind ||
+                previous.StageId is not null && previous.StageId != state.StageId ||
+                terminalRegression)
+                return false;
+        }
+        state = PreserveObservedConstructionPhase(_execution, state);
+        // The child reports terminal progress before the root has judged and
+        // retained its completed stage. Only the paired stage and assessment
+        // may make completion visible to a reattached actor.
+        if (state.Standing == StageExecutionStanding.Completed &&
+            (state.StageId is null || !_stages.TryGetValue(state.StageId, out var stage) ||
+             stage.Attempt.Id != state.AttemptId || !_stageAssessments.ContainsKey(state.StageId)))
+            return false;
+        if (_currentAttempt?.Id == state.AttemptId)
+        {
+            if (state.Trial is { } trial)
+            {
+                trial = BindTrialDiagnosticsLocked(state.AttemptId, trial);
+                state = state with { Trial = trial };
+                var known = _trialsByAttempt.GetValueOrDefault(state.AttemptId);
+                if (known.IsDefault) known = ImmutableArray<ConstructionTrialSummary>.Empty;
+                var position = -1;
+                for (var index = 0; index < known.Length; index++)
+                    if (known[index].TrialId == trial.TrialId) { position = index; break; }
+                _trialsByAttempt[state.AttemptId] = position < 0 ? known.Add(trial) :
+                    known.SetItem(position, trial);
+            }
+            _workspace.RetainExecution(state);
+        }
+        if (_stopRequestedAttemptId == state.AttemptId && state.Standing is
+            StageExecutionStanding.Completed or StageExecutionStanding.Stopped or
+            StageExecutionStanding.Failed or StageExecutionStanding.ResourceRefused or
+            StageExecutionStanding.Unobserved)
+            _stopRequestedAttemptId = null;
+        _execution = state;
+        TouchLocked();
+        return true;
     }
 
     private void RetainCompleted(CompletedStage stage, ConstructedExplicitSystem constructed,
@@ -2265,8 +2521,8 @@ public sealed class ProteinInMembraneSystem
                 _membrane?.Id == membrane.Id && _placementMeasurement?.ProposalId == placement.Proposal.Id;
             if (reassessPlacement)
             {
-                judgedPlacement = _placementAssessment.Assess(_study, _protein!, _membrane!,
-                    placement.Proposal, SelectPlacementPolicyLocked(placement.Proposal, _membrane!),
+                judgedPlacement = _placementAssessment.Assess(_study, _protein!, _membrane!.Intended,
+                    placement.Proposal, SelectPlacementPolicyLocked(placement.Proposal, _membrane!.Intended),
                     _placementMeasurement, _placementWitness, _placementMeasurement!.Evidence,
                     placement.Findings.AddRange(newPlacementFindings));
             }
@@ -2317,8 +2573,6 @@ public sealed class ProteinInMembraneSystem
             if (reassessPlacement)
             {
                 _placement = judgedPlacement;
-                Notice("warning", "A completed-stage observation challenges the previously adopted placement; its support has been reassessed.",
-                    placement.Proposal.Id);
             }
             _stages[stage.Id] = stage;
             _stageAssessments[stage.Id] = assessment;
@@ -2329,6 +2583,8 @@ public sealed class ProteinInMembraneSystem
                 _bundles.Remove(earlierId);
                 _exportAccounts.Remove(earlierId);
             }
+            if (_stopRequestedAttemptId == stage.Attempt.Id)
+                _stopRequestedAttemptId = null;
             _execution = completedState;
             TouchLocked();
         }
@@ -2373,7 +2629,7 @@ public sealed class ProteinInMembraneSystem
             return (WithGeometry(GenericSubject(id, _study.Id, _protein.Molecule.CoordinatePath, "preparedProtein",
                 _protein.Evidence.AddRange(_opmReview?.Evidence ?? ImmutableArray<ScientificEvidence>.Empty),
                 _protein.Findings, null), _protein.Geometry), _study);
-        if (_membraneProposal is not null && id == _membraneProposal.Id)
+        if (_study.Membrane is { } selectedMembrane && id == selectedMembrane.Id)
         {
             var evidence = _membrane?.Intended.Id == id
                 ? _membrane.Evidence
@@ -2397,6 +2653,21 @@ public sealed class ProteinInMembraneSystem
             var subject = _placementAssessment.ProposalInspectionSubject(_study, _placementProposal,
                 _placementMeasurement, url, _placementMeasurementIssue);
             return (subject.Value, _study);
+        }
+        if (_diagnostics.TryGetValue(id, out var diagnosticBinding) &&
+            _trialsByAttempt.TryGetValue(diagnosticBinding.AttemptId, out var diagnosticTrials) &&
+            !diagnosticTrials.IsDefaultOrEmpty &&
+            _revisions.TryGetValue(diagnosticBinding.StudyRevisionId, out var diagnosticOrigin))
+        {
+            var artifact = diagnosticTrials.Where(trial => trial.TrialId == diagnosticBinding.TrialId)
+                .SelectMany(trial => trial.DiagnosticArtifacts.IsDefault
+                    ? ImmutableArray<TrialDiagnosticArtifact>.Empty : trial.DiagnosticArtifacts)
+                .FirstOrDefault(item => item.SubjectId == id);
+            if (artifact is { LocalPath: { } diagnosticPath } &&
+                IsWorkspaceFile(diagnosticPath) && VerifyHash(diagnosticPath, artifact.Sha256))
+                return (GenericSubject(id, diagnosticOrigin.Id, diagnosticPath,
+                    "providerDiagnostic", ImmutableArray<ScientificEvidence>.Empty,
+                    ImmutableArray<ScientificFinding>.Empty, null), diagnosticOrigin);
         }
         var constructed = _constructedByAttempt.Values.FirstOrDefault(item => item.Id == id);
         if (constructed is not null &&
@@ -2586,7 +2857,12 @@ public sealed class ProteinInMembraneSystem
                 ? ConstructedAccount(stageSource) : null,
             _exportAccounts.TryGetValue(stage.Id, out var export) &&
             export.AssessmentId == retainedAssessments.GetValueOrDefault(stage.Id)?.Id
-                ? export : null, stage.SourceStageId)).ToImmutableArray();
+                ? export : null, stage.SourceStageId,
+            StageProteinLabelLocked(stage.Attempt.StudyRevisionId),
+            stage.Attempt.Route == ConstructionRouteKind.PackmolMemgen
+                ? $"PACKMOL-Memgen {stage.Attempt.ConstructionProviderVersion}"
+                : $"OpenMM native construction {stage.Attempt.ConstructionProviderVersion}",
+            stage.Attempt.StartedAt)).ToImmutableArray();
         var declinedRequiredChange = _preparationProposals?.StudyRevisionId == _study.Id &&
             _preparationProposals.IntendedProteinId == _study.IntendedProtein?.Id
             ? _preparationProposals.Changes.FirstOrDefault(change =>
@@ -2618,24 +2894,25 @@ public sealed class ProteinInMembraneSystem
                     PredictionAccount(_sourceInspection?.Prediction), _proteinDiagnostic?.Geometry,
                     _preparationProposals?.SourceGeometry, _proteinDiagnostic?.Candidate.Id)
                 : null;
-        var currentMembrane = _membraneProposal is not null && _membrane?.Intended.Id == _membraneProposal.Id
+        var selectedMembrane = _study.Membrane;
+        var currentMembrane = selectedMembrane is not null && _membrane?.Intended.Id == selectedMembrane.Id
             ? _membrane : null;
-        var membrane = _membraneProposal is null ? null : new MembraneAccount(
-            _membraneProposal.Id, currentMembrane is not null ? "assessed" :
-            _study.Membrane?.Id == _membraneProposal.Id ? _membraneAssessmentRunning ? "assessing" :
-                _membraneAssessmentUnavailable ? "unavailable" : "notEstablished" : "proposed",
-            _membraneProposal.ScientificPurpose,
-            _membraneProposal.Upper.Fractions, _membraneProposal.Lower.Fractions,
+        var membrane = selectedMembrane is null ? null : new MembraneAccount(
+            selectedMembrane.Id, currentMembrane is not null ? "assessed" :
+                _membraneAssessmentRunning ? "assessing" :
+                _membraneAssessmentUnavailable ? "unavailable" : "notEstablished",
+            selectedMembrane.ScientificPurpose,
+            selectedMembrane.Upper.Fractions, selectedMembrane.Lower.Fractions,
             currentMembrane?.Limitations ?? ImmutableArray<string>.Empty,
-            _study.Membrane?.Id == _membraneProposal.Id ? _membraneAssessmentReason : null,
+            _membraneAssessmentReason,
             currentMembrane?.PolicyId, currentMembrane?.PolicyVersion,
             currentMembrane?.Evidence ?? ImmutableArray<ScientificEvidence>.Empty,
             currentMembrane?.SpeciesRepresentations.Select(item => new MembraneSpeciesSupportAccount(
                 item.SpeciesId, item.ChemistryId, item.Category, item.ForceFieldFamily,
                 item.ForceFieldVersion, item.CoordinateTemplateSha256, item.TemplateSha256,
                 item.Limitations)).ToImmutableArray() ?? ImmutableArray<MembraneSpeciesSupportAccount>.Empty);
-        var placementPolicy = _placementProposal is not null && _membrane is not null
-            ? SelectPlacementPolicyLocked(_placementProposal, _membrane) : null;
+        var placementPolicy = _placementProposal is not null && _study.Membrane is not null
+            ? SelectPlacementPolicyLocked(_placementProposal, _study.Membrane) : null;
         var placementEvidence = _placementProposal?.Evidence.AddRange(
             _placementMeasurement?.Evidence ?? ImmutableArray<ScientificEvidence>.Empty)
             .AddRange(_opmReview?.Evidence ?? ImmutableArray<ScientificEvidence>.Empty) ??
@@ -2696,31 +2973,9 @@ public sealed class ProteinInMembraneSystem
             LipidsLocked().Values.OrderBy(item => item.SpeciesId).Select(item => new LipidCatalogueAccount(
                 item.SpeciesId, item.SpeciesId, item.ChemistryId, item.Limitations)).ToImmutableArray(),
             protein, membrane, placement,
-            shownAttempt is null && shownExecution is null ? null : new AttemptAccount(
-                shownAttempt?.Id ?? shownExecution?.AttemptId ?? string.Empty,
-                shownExecution?.Standing switch
-                {
-                    StageExecutionStanding.Pending => "pending",
-                    StageExecutionStanding.Running => "running",
-                    StageExecutionStanding.ReadyForMinimization => "readyForMinimization",
-                    StageExecutionStanding.Completed => "completed",
-                    StageExecutionStanding.Stopped => "stopped",
-                    StageExecutionStanding.Failed => "failed",
-                    StageExecutionStanding.ResourceRefused => "resourceRefused",
-                    StageExecutionStanding.Unobserved => "unobserved",
-                    _ => "pending"
-                },
-                shownExecution?.Kind, shownExecution?.Progress,
-                shownExecution?.Message ?? "The local attempt has not started.",
-                shownAttempt?.StudyRevisionId, shownAttempt?.PolicyId,
-                shownAttempt?.PolicyVersion, shownExecution?.StageId,
-                shownAttempt is not null ? _derivationByAttempt.GetValueOrDefault(shownAttempt.Id) : null,
-                shownAttempt is not null &&
-                _constructedByAttempt.TryGetValue(shownAttempt.Id, out var currentConstructed)
-                    ? ConstructedAccount(currentConstructed)
-                    : null,
-                shownAttempt is not null && _stopRequestedAttemptId == shownAttempt.Id),
-            stages, _inspection.Current, ActionsLocked(stages), _notices.ToImmutableArray(),
+            AttemptAccountLocked(shownAttempt, shownExecution),
+            stages, _inspection.Current, ActionsLocked(stages),
+            ActiveIssuesLocked(AttemptAccountLocked(shownAttempt, shownExecution), stages, preparationReview),
             PredictionAccount(_sourceInspection?.Prediction), preparationReview,
             BuildProteinTaskLocked(preparationReview), BuildPlacementTaskLocked(),
             ImmutableArray.Create(
@@ -2728,7 +2983,125 @@ public sealed class ProteinInMembraneSystem
                     _selectedSource?.Kind == SourceRouteKind.Rcsb ? null : "OPM lookup requires an identified RCSB entry; user positioning remains available."),
                 new PlacementMethodAccount("PPM", CanRunPpmLocked() ? "configured" : "unavailable",
                     CanRunPpmLocked() ? null : "The local PPM executable or residue library is not identified and hash-verified.")),
-            BuildPreparationPlanAccountLocked());
+            BuildPreparationPlanAccountLocked(), BuildConstructionRoutesLocked(),
+            _priorAttempts.ToImmutableArray());
+    }
+
+    private ImmutableArray<WorkspaceNotice> ActiveIssuesLocked(AttemptAccount? attempt,
+        ImmutableArray<StageAccount> stages, ProteinPreparationReviewAccount? review)
+    {
+        var issues = ImmutableArray.CreateBuilder<WorkspaceNotice>();
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        void Add(string condition, string severity, string? message, string? subject,
+            string correctionArea, params string[] affectedAreas)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return;
+            var key = $"{condition}:{subject ?? "study"}";
+            if (!keys.Add(key)) return;
+            issues.Add(new WorkspaceNotice(key, severity, message, subject, key,
+                affectedAreas.ToImmutableArray(), correctionArea));
+        }
+
+        Add("catalogue", "error", _catalogueIssue, null, "preparation", "preparation");
+        if (_selectedSource is null)
+            for (var index = 0; index < _sourceSearchIssues.Length; index++)
+                Add($"source-search-{index}", "warning", _sourceSearchIssues[index], null,
+                    "protein", "protein");
+        if (_study.IntendedProtein is { } intended && _protein is null)
+        {
+            Add("protein-selection", "error", _proteinSelectionIssue, intended.Id, "protein", "protein");
+            Add("preparation-outcome", "error", _proteinPreparationObservationIssue ??
+                _proteinPreparationFailure, intended.Id, "protein", "protein", "placement", "preparation");
+            if (_preparationPlan is null && !_recommendationRunning)
+                Add("recommendation", "warning", _recommendationIssue, intended.Id, "protein", "protein");
+            if (review is not null)
+                for (var index = 0; index < review.Blockers.Length; index++)
+                    Add($"preparation-blocker-{index}", "error", review.Blockers[index], intended.Id,
+                        "protein", "protein", "placement", "preparation");
+        }
+        if (_study.Membrane is { } chosen && _membrane is null)
+            Add("membrane-check", "error", _membraneAssessmentReason, chosen.Id,
+                "membrane", "membrane", "placement", "preparation");
+        if (_placementProposal is { } proposed && _study.Membrane is not null)
+        {
+            Add("placement-measurement", "error", _placementMeasurementIssue, proposed.Id,
+                "placement", "placement", "preparation");
+            if (_placement is { Standing: not AssessmentStanding.Supported })
+                Add("placement-check", "error", _placement.Reason, proposed.Id,
+                    "placement", "placement", "preparation");
+        }
+        if (_placementRouteOutcome?.Standing is "failed" or "unobserved" &&
+            _placementRouteOutcome.StudyRevisionId == _study.Id)
+            Add("orientation-route", "warning", _placementRouteOutcome.Message,
+                _placementRouteOutcome.RequestId, "placement", "placement");
+        else if (_placementOperationIssue is not null && _placementRouteOutcome is null)
+            Add("placement-operation", "warning", _placementOperationIssue,
+                _placementProposal?.Id, "placement", "placement");
+        if (attempt is { Status: "failed" or "resourceRefused" or "unobserved" } &&
+            attempt.StudyRevisionId == _study.Id)
+            Add("attempt-outcome", "error", attempt.Message, attempt.AttemptId,
+                "preparation", "preparation");
+        foreach (var stage in stages)
+        {
+            if (stage.Assessment is { CurrentlyApplicable: true,
+                    CheckStanding: not PreparationCheckStanding.ChecksPassed } assessment)
+                Add("stage-check", "error", assessment.Reason, stage.StageId, "results", "results");
+            if (stage.Export is { Status: "failed" } export)
+                Add("stage-export", "warning", export.Reason, stage.StageId, "results", "results");
+        }
+        return issues.ToImmutable();
+    }
+
+    private string StageProteinLabelLocked(string studyRevisionId)
+    {
+        if (!_revisions.TryGetValue(studyRevisionId, out var revision) ||
+            revision.IntendedProtein is not { } intended)
+            return "Protein source unavailable in the retained account";
+        var source = intended.Source;
+        var name = !string.IsNullOrWhiteSpace(source.Accession) ? source.Accession :
+            !string.IsNullOrWhiteSpace(source.SourceModelDescription) ? source.SourceModelDescription :
+            source.Kind == SourceRouteKind.Upload ? "Uploaded structure" : "Selected protein source";
+        var assembly = intended.BiologicalAssemblyId is { Length: > 0 } assemblyId
+            ? $"assembly {assemblyId}" : "deposited coordinates";
+        var chains = intended.Chains.IsDefaultOrEmpty ? "chains unavailable" :
+            "chains " + string.Join(", ", intended.Chains.Select(chain =>
+                chain.SourceChain == chain.CopyId ? chain.SourceChain :
+                    $"{chain.SourceChain} copy {chain.CopyId}"));
+        var sourceModelId = string.IsNullOrWhiteSpace(intended.SourceModelId)
+            ? (intended.ModelIndex + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : intended.SourceModelId.Trim();
+        return $"{name} · coordinate model {sourceModelId} · {assembly} · {chains}";
+    }
+
+    private AttemptAccount? AttemptAccountLocked(PreparationAttempt? attempt,
+        StageExecutionState? execution)
+    {
+        if (attempt is null && execution is null) return null;
+        return new AttemptAccount(
+            attempt?.Id ?? execution?.AttemptId ?? string.Empty,
+            execution?.Standing switch
+            {
+                StageExecutionStanding.Pending => "pending",
+                StageExecutionStanding.Running => "running",
+                StageExecutionStanding.Completed => "completed",
+                StageExecutionStanding.Stopped => "stopped",
+                StageExecutionStanding.Failed => "failed",
+                StageExecutionStanding.ResourceRefused => "resourceRefused",
+                StageExecutionStanding.Unobserved => "unobserved",
+                _ => "pending"
+            },
+            execution?.Kind, execution?.Progress,
+            execution?.Message ?? "The local attempt has not started.",
+            attempt?.StudyRevisionId, attempt?.PolicyId, attempt?.PolicyVersion,
+            execution?.StageId,
+            attempt is not null ? _derivationByAttempt.GetValueOrDefault(attempt.Id) : null,
+            attempt is not null && _constructedByAttempt.TryGetValue(attempt.Id, out var constructed)
+                ? ConstructedAccount(constructed) : null,
+            attempt is not null && _stopRequestedAttemptId == attempt.Id,
+            attempt is not null && _trialsByAttempt.TryGetValue(attempt.Id, out var trials)
+                ? trials : ImmutableArray<ConstructionTrialSummary>.Empty,
+            execution?.Phase, execution?.TrialId, execution?.TrialIndex,
+            execution?.FailureCode);
     }
 
     private static PredictionEvidenceAccount? PredictionAccount(PredictionEvidenceObservations? observations) =>
@@ -2739,7 +3112,8 @@ public sealed class ProteinInMembraneSystem
     private static ConstructedSystemAccount ConstructedAccount(ConstructedExplicitSystem source) =>
         new(source.Id, source.Attempt.Id, source.Molecule.AtomCount, source.AchievedComposition,
             source.ActualCellAngstrom, source.Derivation.WaterCount, source.Derivation.SodiumCount,
-            source.Derivation.ChlorideCount, source.ConditionsTreatment, source.LocalState);
+            source.Derivation.ChlorideCount, source.ConditionsTreatment, source.LocalState,
+            source.MaximumProteinCoordinateDeviationAngstrom);
 
     private ImmutableArray<AvailableAction> ActionsLocked(ImmutableArray<StageAccount> stages)
     {
@@ -2796,19 +3170,17 @@ public sealed class ProteinInMembraneSystem
             _proteinPreparationFailure is not null && _protein is null && !_proteinPreparationRunning &&
             _proteinPreparationRetryable && _preparationProposals?.StudyRevisionId == _study.Id,
             "Retry is available only after a recoverable failure of the current reviewed protein.");
-        Add(ActorActionKind.ProposeMembrane, null, true, "");
-        Add(ActorActionKind.AdoptMembrane, null, _membraneProposal is not null &&
-            !_membraneAssessmentRunning &&
-            (_study.Membrane?.Id != _membraneProposal.Id || _membraneAssessmentUnavailable),
-            _membraneAssessmentRunning ? "This membrane support assessment is running." :
-            _membraneProposal is null ? "Propose a complete membrane model first." :
-            "This membrane intention was assessed. Propose a changed composition for a new assessment.");
-        Add(ActorActionKind.ProposePlacement, null, !_placementRunning && _protein is not null && _membrane is not null &&
-            _study.Membrane?.Id == _membrane.Intended.Id,
+        Add(ActorActionKind.AdoptMembrane, null, !_membraneAssessmentRunning,
+            "This membrane support assessment is already running.");
+        Add(ActorActionKind.RetryMembraneCheck, null,
+            _study.Membrane is not null &&
+            _membraneAssessmentUnavailable && !_membraneAssessmentRunning,
+            "Retry is available only after an unfinished check of the current selected membrane.");
+        Add(ActorActionKind.ProposePlacement, null, !_placementRunning && _protein is not null && _study.Membrane is not null,
             _placementRunning ? "An exact placement operation is running." :
             _protein is null ? "Prepare a protein first." :
-            _membrane is null ? "Choose a membrane and complete its parameter check first." :
-            "The prepared protein and checked membrane must belong to the current study.");
+            _study.Membrane is null ? "Choose a membrane first." :
+            "The prepared protein and chosen membrane must belong to the current study.");
         Add(ActorActionKind.RevisePlacement, null, !_placementRunning && _placementProposal is not null,
             _placementRunning ? "An exact placement operation is running." : "A positioned candidate is needed first.");
         Add(ActorActionKind.AdoptPlacement, null, !_placementRunning && _placement?.Standing == AssessmentStanding.Supported &&
@@ -2819,46 +3191,38 @@ public sealed class ProteinInMembraneSystem
                 currentPlacement.OrientedProtein.CoordinateSha256) &&
             _study.AdoptedPlacementProposalId != _placementProposal?.Id,
             "A current supported proposal, its exact assessment evidence and intact oriented coordinates are required.");
-        var exactPreparationPolicy = _protein is not null && _membrane is not null &&
-            _placement is not null
-            ? SelectPreparationPolicyLocked(_study, _protein, _placement.Proposal, _membrane)
-            : null;
+        var constructionRoutes = BuildConstructionRoutesLocked();
         var constructionReady = _placement is { Standing: AssessmentStanding.Supported } &&
             _study.AdoptedPlacementProposalId == _placement.Proposal.Id &&
             _attemptTask is not { IsCompleted: false } &&
-            _execution?.Standing != StageExecutionStanding.ReadyForMinimization &&
             _protein is not null && _membrane is not null &&
             _protein.StudyRevisionId == _study.Id && _membrane.StudyRevisionId == _study.Id &&
-            _placement.StudyRevisionId == _study.Id && exactPreparationPolicy is not null &&
-            _constructionProviderAdmissionAvailable &&
-            ConstructionProviderMatches(exactPreparationPolicy.Construction, _startupConstructionProvider);
+            _placement.StudyRevisionId == _study.Id;
         var constructionBlocker = _protein is null ? "Prepare a protein first." :
             _membrane is null ? "Choose and check a membrane composition first." :
             _placement is null or { Standing: not AssessmentStanding.Supported } ?
                 "Check a position for this exact protein and membrane first." :
             _study.AdoptedPlacementProposalId != _placement.Proposal.Id ?
                 "Use the checked position before constructing the system." :
-            _execution?.Standing == StageExecutionStanding.ReadyForMinimization ?
-                "Review this constructed candidate and authorize its minimization." :
             _attemptTask is { IsCompleted: false } ? "The current system operation is still running." :
-            exactPreparationPolicy is null ?
+            constructionRoutes.IsDefaultOrEmpty ?
                 $"Construction is unavailable for the chosen {string.Join("/", _membrane.SpeciesRepresentations.Select(item => item.SpeciesId))} composition; no verified recipe is enabled." :
-            !_constructionProviderAdmissionAvailable ||
-                !ConstructionProviderMatches(exactPreparationPolicy.Construction, _startupConstructionProvider) ?
-                "The selected OpenMM installation or native lipid patch does not match the verified recipe." :
                 "The exact protein, membrane and position must belong to the current study revision.";
-        Add(ActorActionKind.StartPreparation, null, constructionReady, constructionBlocker);
-        Add(ActorActionKind.ContinueMinimization, _currentAttempt?.Id, CanContinueMinimizationLocked(),
-            "Review the current constructed candidate and its actual counts and cell before continuing minimization.");
+        if (constructionRoutes.IsDefaultOrEmpty)
+            Add(ActorActionKind.BuildAndMinimize, null, false, constructionBlocker);
+        else
+            foreach (var route in constructionRoutes)
+                Add(ActorActionKind.BuildAndMinimize, route.PolicyId,
+                    constructionReady && route.Available,
+                    !route.Available ? route.Reason ?? "The selected construction provider is unavailable." :
+                        constructionBlocker);
         Add(ActorActionKind.StopAttempt, null, _currentAttempt is not null &&
             _execution?.AttemptId == _currentAttempt.Id &&
-            (_execution.Standing == StageExecutionStanding.ReadyForMinimization &&
-                _constructedByAttempt.ContainsKey(_currentAttempt.Id) ||
-             _attemptTask is { IsCompleted: false } && _attemptStop is not null &&
+            (_attemptTask is { IsCompleted: false } && _attemptStop is not null &&
                 _stopRequestedAttemptId != _currentAttempt.Id &&
                 _execution.Standing is StageExecutionStanding.Pending or StageExecutionStanding.Running),
-            "No identified unfinished attempt or review candidate can be stopped.");
-        Add(ActorActionKind.SelectInspectionSubject, null, _sourceInspection is not null || _membraneProposal is not null ||
+            "No identified unfinished attempt can be stopped.");
+        Add(ActorActionKind.SelectInspectionSubject, null, _sourceInspection is not null || _study.Membrane is not null ||
             _placementProposal is not null || _proteinDiagnostic is not null ||
             _constructedByAttempt.Count > 0 || stages.Length > 0,
             "There is no identified subject to inspect.");
@@ -2896,6 +3260,7 @@ public sealed class ProteinInMembraneSystem
         _placementRunning = false;
         _placementAssessing = false;
         _placementOperationIssue = null;
+        _placementRouteOutcome = null;
     }
 
     private AssessedPreparedProtein? CarryProteinLocked(StudyRevision revision)
@@ -2930,7 +3295,17 @@ public sealed class ProteinInMembraneSystem
         IntendedProteinModel? intended)
     {
         if (model is null || intended is null || _catalogue is null ||
-            intended.Partners.Any(partner => partner.Retain)) return null;
+            intended.Partners.Where(partner => partner.Retain).Any(partner =>
+            {
+                var source = model.Partners.FirstOrDefault(item => item.SourceId == partner.SourceId);
+                return source is null || source.Kind switch
+                {
+                    "water" => source.Label is not ("HOH" or "WAT" or "H2O") ||
+                        source.AtomCount is not (1 or 3),
+                    "ion" => source.Label is not ("NA" or "CL") || source.AtomCount != 1,
+                    _ => true
+                };
+            })) return null;
         var canonical = new HashSet<string>("ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL"
             .Split(' '), StringComparer.Ordinal);
         var selectedChainResidues = model.Residues.Where(item =>
@@ -2994,30 +3369,35 @@ public sealed class ProteinInMembraneSystem
         return applicable.Length == 1 ? applicable[0] : null;
     }
 
-    private PlacementSupportPolicy? SelectPlacementPolicyLocked(PlacementProposal proposal, AssessedMembraneModel membrane)
+    private PlacementSupportPolicy? SelectPlacementPolicyLocked(PlacementProposal proposal, MembraneModel membrane)
     {
         var applicable = ApplicablePlacementPoliciesLocked(proposal, membrane);
         return applicable.Length == 1 ? applicable[0] : null;
     }
 
-    private string PlacementPolicyIssueLocked(PlacementProposal proposal, AssessedMembraneModel membrane) =>
+    private string PlacementPolicyIssueLocked(PlacementProposal proposal, MembraneModel membrane) =>
         ApplicablePlacementPoliciesLocked(proposal, membrane).Length > 1
             ? "Multiple applicable placement support policies are present; ambiguous placement support policies cannot be selected."
             : "No placement support policy covers this exact topology and membrane.";
 
     private PlacementSupportPolicy[] ApplicablePlacementPoliciesLocked(PlacementProposal proposal,
-        AssessedMembraneModel membrane)
+        MembraneModel membrane) => ApplicablePlacementPoliciesLocked(proposal.TopologyKind, membrane);
+
+    private PlacementSupportPolicy[] ApplicablePlacementPoliciesLocked(ProteinTopologyKind topologyKind,
+        MembraneModel membrane)
     {
         if (_catalogue is null) return [];
         return _catalogue.PlacementPolicies.Where(policy =>
             !string.IsNullOrWhiteSpace(policy.Id) && !string.IsNullOrWhiteSpace(policy.Version) &&
-            !policy.EvidenceReferences.IsDefaultOrEmpty && !policy.GeometryCriteria.IsDefaultOrEmpty &&
+            !policy.EvidenceReferences.IsDefaultOrEmpty &&
             !policy.CoveredTopologyKinds.IsDefaultOrEmpty &&
             policy.CoveredTopologyKinds.All(kind => Enum.IsDefined(kind)) &&
             !policy.CoveredSpeciesIds.IsDefaultOrEmpty &&
             double.IsFinite(policy.InterfaceBandAngstrom) && policy.InterfaceBandAngstrom > 0 &&
-            policy.CoveredTopologyKinds.Contains(proposal.TopologyKind) &&
-            membrane.SpeciesRepresentations.All(item => policy.CoveredSpeciesIds.Contains(item.SpeciesId)))
+            policy.CoveredTopologyKinds.Contains(topologyKind) &&
+            membrane.Upper.Fractions.Concat(membrane.Lower.Fractions)
+                .Where(item => item.Fraction > 0)
+                .All(item => policy.CoveredSpeciesIds.Contains(item.SpeciesId)))
             .Take(2).ToArray();
     }
 
@@ -3068,7 +3448,18 @@ public sealed class ProteinInMembraneSystem
     private static bool ConstructionProviderMatches(ConstructionPolicy policy,
         ConstructionProviderInstallation? installed)
     {
-        if (installed is null ||
+        if (installed is null)
+            return false;
+        if (policy.Route == ConstructionRouteKind.PackmolMemgen)
+            return policy.ProviderName == "PACKMOL-Memgen" &&
+                string.Equals(installed.MemgenVersion, policy.ProviderVersion, StringComparison.Ordinal) &&
+                !string.IsNullOrWhiteSpace(installed.MemgenHome) &&
+                !policy.ProviderAssets.IsDefaultOrEmpty &&
+                policy.ProviderAssets.All(asset =>
+                    Path.GetFullPath(asset.Path).StartsWith(
+                        Path.GetFullPath(installed.MemgenHome) + Path.DirectorySeparatorChar,
+                        StringComparison.Ordinal) && VerifyHash(asset.Path, asset.Sha256));
+        if (policy.Route != ConstructionRouteKind.NativeOpenMm ||
             !string.Equals(installed.FullVersion, policy.ProviderVersion, StringComparison.Ordinal))
             return false;
         var mode = policy.NativePatchMode ?? "installed";
@@ -3086,27 +3477,33 @@ public sealed class ProteinInMembraneSystem
                         StringComparison.OrdinalIgnoreCase)) == 1;
         }
         if (mode == "mapped-lipid21-zenodo-popc")
-            return policy.LipidTypeArgument == "POPC";
-        if (installed.AdditionalPatches.IsDefault ||
-            mode is not ("popc-62-109-deletion" or "balanced-defect-deletion"))
-            return false;
-        var sourcePatches = installed.AdditionalPatches
-            .Where(patch => patch.SpeciesId == policy.LipidTypeArgument).Take(2).ToArray();
-        return sourcePatches.Length == 1 &&
-            string.Equals(sourcePatches[0].Path, policy.NativeSourcePatchPath, StringComparison.Ordinal) &&
-            string.Equals(sourcePatches[0].Sha256, policy.NativeSourcePatchSha256,
-                StringComparison.OrdinalIgnoreCase);
+            return policy.LipidTypeArgument == "POPC" &&
+                VerifyHash(policy.NativePatchPath ?? string.Empty,
+                    policy.NativePatchSha256 ?? string.Empty) &&
+                VerifyHash(policy.NativeSourcePatchPath ?? string.Empty,
+                    policy.NativeSourcePatchSha256 ?? string.Empty);
+        return false;
     }
 
     private ApplicablePreparationPolicy? SelectPreparationPolicyLocked(StudyRevision revision,
+        AssessedPreparedProtein protein, PlacementProposal proposal, AssessedMembraneModel membrane,
+        string? requestedPolicyId = null)
+    {
+        var applicable = ApplicablePreparationPoliciesLocked(revision, protein, proposal, membrane);
+        if (requestedPolicyId is not null)
+            return applicable.SingleOrDefault(policy => policy.Id == requestedPolicyId);
+        return applicable.SingleOrDefault(policy => policy.Construction.Route == ConstructionRouteKind.PackmolMemgen);
+    }
+
+    private ApplicablePreparationPolicy[] ApplicablePreparationPoliciesLocked(StudyRevision revision,
         AssessedPreparedProtein protein, PlacementProposal proposal, AssessedMembraneModel membrane)
     {
-        if (_catalogue is null) return null;
+        if (_catalogue is null) return Array.Empty<ApplicablePreparationPolicy>();
         var applicable = _catalogue.PreparationPolicies.Where(policy =>
             !string.IsNullOrWhiteSpace(policy.Id) && !string.IsNullOrWhiteSpace(policy.Version) &&
             !policy.EvidenceReferences.IsDefaultOrEmpty &&
             policy.ApplicableMolecularClass == "canonical-amino-acid-assembly" &&
-            policy.MaximumMinimizationIterations > 0 &&
+            policy.MaximumMinimizationIterations == 20000 &&
             double.IsFinite(policy.FinalUnrestrainedRmsForceTargetKjMolNm) &&
             policy.FinalUnrestrainedRmsForceTargetKjMolNm == 10.0 &&
             policy.Construction is { } construction &&
@@ -3114,20 +3511,26 @@ public sealed class ProteinInMembraneSystem
             !string.IsNullOrWhiteSpace(construction.Id) &&
             !string.IsNullOrWhiteSpace(construction.Version) &&
             !construction.EvidenceReferences.IsDefaultOrEmpty &&
-            construction.ProviderName == "OpenMM Modeller.addMembrane" &&
+            (construction.Route == ConstructionRouteKind.NativeOpenMm
+                ? construction.ProviderName == "OpenMM Modeller.addMembrane" &&
+                  !string.IsNullOrWhiteSpace(construction.NativePatchPath) &&
+                  !string.IsNullOrWhiteSpace(construction.NativePatchSha256) &&
+                  construction.LipidTypeArgument is "DLPC" or "DLPE" or "DMPC" or "DOPC" or
+                      "DPPC" or "POPC" or "POPE" &&
+                  construction.WaterMolarityForIonRounding == 55.4
+                : construction.Route == ConstructionRouteKind.PackmolMemgen &&
+                  construction.ProviderName == "PACKMOL-Memgen" &&
+                  construction.SaltConvention == SaltConventionKind.MemgenChargeCompensated &&
+                  construction.NativePatchPath is null &&
+                  construction.NativePatchSha256 is null &&
+                  construction.LipidTypeArgument is null &&
+                  construction.Memgen is not null &&
+                  !construction.ProviderAssets.IsDefaultOrEmpty) &&
             !string.IsNullOrWhiteSpace(construction.ProviderVersion) &&
-            VerifyHash(construction.NativePatchPath, construction.NativePatchSha256) &&
-            (construction.NativePatchMode is not ("popc-62-109-deletion" or "balanced-defect-deletion" or
-                "mapped-lipid21-zenodo-popc") ||
-                VerifyHash(construction.NativeSourcePatchPath ?? "",
-                    construction.NativeSourcePatchSha256 ?? "")) &&
-            construction.LipidTypeArgument is "DLPC" or "DLPE" or "DMPC" or "DOPC" or
-                "DPPC" or "POPC" or "POPE" &&
             construction.PositiveIonArgument == "Na+" &&
             construction.NegativeIonArgument == "Cl-" &&
             double.IsFinite(construction.MinimumPaddingNanometers) &&
             construction.MinimumPaddingNanometers > 0 &&
-            construction.WaterMolarityForIonRounding == 55.4 &&
             construction.MaximumAtomCount > 0 &&
             double.IsFinite(construction.MaximumCellDimensionAngstrom) &&
             construction.MaximumCellDimensionAngstrom > 0 &&
@@ -3137,27 +3540,57 @@ public sealed class ProteinInMembraneSystem
             construction.CoveredTopologyKinds.All(kind => Enum.IsDefined(kind)) &&
             !construction.CoveredSpeciesIds.IsDefaultOrEmpty &&
             policy.SystemSettings is { NonbondedMethod: "PME", Constraints: "HBonds" } &&
-            double.IsFinite(policy.SystemSettings.NonbondedCutoffNanometers) &&
-            policy.SystemSettings.NonbondedCutoffNanometers > 0 &&
-            double.IsFinite(policy.SystemSettings.EwaldErrorTolerance) &&
-            policy.SystemSettings.EwaldErrorTolerance is > 0 and < 1 &&
-            (policy.SystemSettings.SwitchDistanceNanometers is null ||
-             policy.SystemSettings.SwitchDistanceNanometers is double switchDistance &&
-             double.IsFinite(switchDistance) && switchDistance > 0 &&
-             switchDistance < policy.SystemSettings.NonbondedCutoffNanometers) &&
-            (policy.SystemSettings.HydrogenMassDaltons is null ||
-             policy.SystemSettings.HydrogenMassDaltons is double hydrogenMass &&
-             double.IsFinite(hydrogenMass) && hydrogenMass > 0) &&
+            policy.SystemSettings.NonbondedCutoffNanometers == 1.0 &&
+            policy.SystemSettings.RigidWater &&
+            policy.SystemSettings.EwaldErrorTolerance == 0.0005 &&
+            policy.SystemSettings.SwitchDistanceNanometers is null &&
+            policy.SystemSettings.UseDispersionCorrection &&
+            policy.SystemSettings.RemoveCMMotion &&
+            policy.SystemSettings.HydrogenMassDaltons is null &&
             construction.CoveredTopologyKinds.Contains(proposal.TopologyKind) &&
             membrane.SpeciesRepresentations.All(item => construction.CoveredSpeciesIds.Contains(item.SpeciesId)) &&
             ExplicitPreparationBoundary.PolicyScopeMatches(policy.Scope, revision, protein, membrane, proposal) &&
             ValidLocalStatePolicy(policy) &&
             ValidStageProteinGeometryPolicy(policy) &&
-            !policy.ForceFieldFiles.IsDefaultOrEmpty && policy.ForceFieldFiles.All(VerifiedAsset) &&
-            new[] { policy.Water, policy.Sodium, policy.Chloride }.All(VerifiedRepresentation))
-            .Take(2).ToArray();
-        return applicable.Length == 1 ? applicable[0] : null;
+            !policy.ForceFieldFiles.IsDefaultOrEmpty)
+            .ToArray();
+        return applicable;
     }
+
+    private ImmutableArray<ConstructionRouteAccount> BuildConstructionRoutesLocked()
+    {
+        if (_protein is null || _membrane is null || _placement is null)
+            return ImmutableArray<ConstructionRouteAccount>.Empty;
+        return ApplicablePreparationPoliciesLocked(_study, _protein, _placement.Proposal, _membrane)
+            .OrderBy(policy => policy.Construction.Route == ConstructionRouteKind.PackmolMemgen ? 0 : 1)
+            .ThenBy(policy => policy.Id, StringComparer.Ordinal)
+            .Select(policy =>
+            {
+                var providerAvailable = ConstructionProviderMatches(policy.Construction,
+                    _lastObservedConstructionProvider);
+                var assetsAvailable = PreparationAssetsAvailable(policy, _membrane);
+                var available = providerAvailable && assetsAvailable;
+                return new ConstructionRouteAccount(policy.Id,
+                    policy.Construction.Route == ConstructionRouteKind.PackmolMemgen
+                        ? "PACKMOL-Memgen: general construction" :
+                          $"OpenMM native: {policy.Construction.LipidTypeArgument}",
+                    policy.Construction.Route, policy.Construction.SaltConvention, available,
+                    available ? null : !providerAvailable
+                        ? "The exact local provider is unavailable or changed. Restore it and restart the local app to recheck this route."
+                        : "One or more exact construction assets are unavailable or changed.",
+                    policy.Construction.ProviderVersion,
+                    policy.Construction.MaximumConstructionSeconds,
+                    policy.Construction.MaximumAtomCount,
+                    policy.Construction.MaximumCellDimensionAngstrom);
+            }).ToImmutableArray();
+    }
+
+    private bool PreparationAssetsAvailable(ApplicablePreparationPolicy policy,
+        AssessedMembraneModel membrane) =>
+        policy.ForceFieldFiles.All(VerifiedAsset) &&
+        new[] { policy.Water, policy.Sodium, policy.Chloride }.All(VerifiedRepresentation) &&
+        !membrane.SpeciesRepresentations.IsDefaultOrEmpty &&
+        membrane.SpeciesRepresentations.All(VerifiedRepresentation);
 
     private static bool ValidLocalStatePolicy(ApplicablePreparationPolicy policy)
     {
@@ -3273,7 +3706,7 @@ public sealed class ProteinInMembraneSystem
             _stageAssessments.TryGetValue(minimized.Id, out var sourceAssessment) &&
             sourceAssessment.StageId == minimized.Id &&
             sourceAssessment.CurrentlyApplicable &&
-            sourceAssessment.Qualification != PreparationQualification.NotQualified &&
+            sourceAssessment.CheckStanding != PreparationCheckStanding.IssuesFound &&
             _constructedByAttempt.TryGetValue(attempt.Id, out var constructed) &&
             constructed.Attempt.Id == attempt.Id &&
             constructed.Attempt.StudyRevisionId == attempt.StudyRevisionId &&
@@ -3405,9 +3838,14 @@ public sealed class ProteinInMembraneSystem
                 ForceFieldFiles = item.ForceFieldFiles.Select(MapAsset).ToImmutableArray(),
                 Construction = item.Construction with
                 {
-                    NativePatchPath = Resolve(item.Construction.NativePatchPath),
+                    NativePatchPath = item.Construction.NativePatchPath is null ?
+                        null : Resolve(item.Construction.NativePatchPath),
                     NativeSourcePatchPath = item.Construction.NativeSourcePatchPath is null ?
-                        null : Resolve(item.Construction.NativeSourcePatchPath)
+                        null : Resolve(item.Construction.NativeSourcePatchPath),
+                    ProviderAssets = item.Construction.ProviderAssets.IsDefault
+                        ? ImmutableArray<ProviderAsset>.Empty
+                        : item.Construction.ProviderAssets.Select(asset => asset with
+                            { Path = Resolve(asset.Path) }).ToImmutableArray()
                 },
                 Water = Map(item.Water), Sodium = Map(item.Sodium), Chloride = Map(item.Chloride)
             };
@@ -3509,6 +3947,38 @@ public sealed class ProteinInMembraneSystem
         return "/api/structures/" + token + "?format=" + format;
     }
 
+    private ConstructionTrialSummary BindTrialDiagnosticsLocked(string attemptId,
+        ConstructionTrialSummary trial)
+    {
+        if (trial.DiagnosticArtifacts.IsDefaultOrEmpty) return trial with
+        {
+            DiagnosticArtifacts = ImmutableArray<TrialDiagnosticArtifact>.Empty
+        };
+        var bound = ImmutableArray.CreateBuilder<TrialDiagnosticArtifact>();
+        foreach (var artifact in trial.DiagnosticArtifacts)
+        {
+            if (artifact.LocalPath is not { } path || !IsWorkspaceFile(path) ||
+                !VerifyHash(path, artifact.Sha256) ||
+                Path.GetFileName(path) != artifact.FileName) continue;
+            var existing = _diagnostics.FirstOrDefault(item =>
+                item.Value.AttemptId == attemptId && item.Value.TrialId == trial.TrialId &&
+                item.Value.Role == artifact.Role && item.Value.Sha256 == artifact.Sha256 &&
+                item.Value.Path == path);
+            var token = existing.Key ?? NewId();
+            _diagnostics[token] = new DiagnosticBinding(attemptId,
+                _currentAttempt?.StudyRevisionId ?? _study.Id, trial.TrialId, artifact.Role,
+                path, artifact.Sha256, artifact.FileName);
+            var structural = Path.GetExtension(path).ToLowerInvariant() is ".pdb" or ".cif" or ".mmcif";
+            bound.Add(artifact with
+            {
+                DownloadUrl = "/api/diagnostics/" + token,
+                StructureUrl = structural ? StructureUrlLocked(path) : null,
+                SubjectId = structural ? token : null
+            });
+        }
+        return trial with { DiagnosticArtifacts = bound.ToImmutable() };
+    }
+
     private bool SelectedStructureIsVerifiedLocked(string subjectId, string studyRevisionId,
         string expectedPath, string expectedSha256)
     {
@@ -3526,6 +3996,8 @@ public sealed class ProteinInMembraneSystem
     }
 
     private sealed record StructureBinding(string Path, string Sha256, string Extension);
+    private sealed record DiagnosticBinding(string AttemptId, string StudyRevisionId,
+        string TrialId, string Role, string Path, string Sha256, string FileName);
 
     private static string Hash(string path)
     {
@@ -3535,16 +4007,6 @@ public sealed class ProteinInMembraneSystem
 
     private static string NewId() => Guid.NewGuid().ToString("N");
     private void TouchLocked() => _revision++;
-    private void Notice(string severity, string message, string? subjectId)
-    {
-        _notices.Add(new WorkspaceNotice(NewId(), severity, message, subjectId));
-        if (_notices.Count > 16) _notices.RemoveAt(0);
-    }
-    private void AddNotice(string severity, string message, string? subjectId)
-    {
-        lock (_gate) { Notice(severity, message, subjectId); TouchLocked(); }
-        Changed?.Invoke();
-    }
 
     private static string? Text(JsonElement data, string name) =>
         data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
@@ -3584,4 +4046,11 @@ public sealed class ProteinInMembraneSystem
             double.IsFinite(item.Fraction) && item.Fraction >= 0) &&
         fractions.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() == fractions.Length &&
         Math.Abs(fractions.Sum(item => item.Fraction) - 1.0) <= 1e-9;
+
+    private static bool SameComposition(ImmutableArray<LipidFraction> first,
+        ImmutableArray<LipidFraction> second) =>
+        first.Length == second.Length && first.OrderBy(item => item.SpeciesId, StringComparer.Ordinal)
+            .Zip(second.OrderBy(item => item.SpeciesId, StringComparer.Ordinal),
+                (left, right) => left.SpeciesId == right.SpeciesId &&
+                    Math.Abs(left.Fraction - right.Fraction) <= 1e-12).All(equal => equal);
 }

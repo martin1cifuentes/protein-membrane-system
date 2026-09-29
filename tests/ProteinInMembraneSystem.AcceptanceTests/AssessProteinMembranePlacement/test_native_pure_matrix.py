@@ -43,10 +43,7 @@ class NativePurePatchTests(unittest.TestCase):
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Membrane").click()
                     for side in ("Upper", "Lower"):
                         page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option(species)
-                    page.get_by_role("button", name="Propose membrane model").click()
-                    until(page, lambda account: (account.get("membrane") or {}).get("status") == "proposed",
-                          f"proposed {species}")
-                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
+                    page.get_by_role("button", name="Use this membrane").click()
                     until(page, lambda account: (account.get("membrane") or {}).get("status") == "assessed",
                           f"checked {species}")
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Placement").click()
@@ -59,13 +56,14 @@ class NativePurePatchTests(unittest.TestCase):
                     until(page, lambda account: account["study"]["adoptedPlacementProposalId"] ==
                           positioned["placement"]["proposalId"], "adopted exact pose")
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Preparation").click()
-                    expect(page.get_by_role("button", name="Construct system")).to_be_enabled()
-                    page.get_by_role("button", name="Construct system").click()
-                    candidate = until(page, lambda account: (account.get("attempt") or {}).get("status") in
-                                      ("readyForMinimization", "failed", "resourceRefused", "unobserved"),
-                                      f"real {species} native candidate", seconds=1100)
-                    self.assertEqual(candidate["attempt"]["status"], "readyForMinimization",
-                                     candidate["attempt"])
+                    route = page.locator(".construction-route").filter(
+                        has_text=f"OpenMM native: {species}")
+                    expect(route.get_by_role("button", name="Build and minimize")).to_be_enabled()
+                    route.get_by_role("button", name="Build and minimize").click()
+                    candidate = until(page, lambda account: (account.get("attempt") or {}).get("constructed")
+                                      is not None or (account.get("attempt") or {}).get("status") in
+                                      ("failed", "resourceRefused", "unobserved"),
+                                      f"real {species} native construction", seconds=1100)
                     self.assertEqual(candidate["attempt"]["policyId"],
                                      f"canonical-protein-pure-{species.lower()}-native-construction")
                     constructed = candidate["attempt"]["constructed"]
@@ -77,15 +75,16 @@ class NativePurePatchTests(unittest.TestCase):
                     self.assertGreater(constructed["waterCount"], 0)
                     self.assertGreater(constructed["atomCount"], candidate["protein"]["atomCount"])
                     self.assertTrue(all(0 < length <= 180 for length in constructed["cellAngstrom"]))
+                    page.get_by_role("button", name="Review attempt").click()
+                    page.get_by_role("button", name="Inspect verified constructed system").click()
                     until(page, lambda account: (account.get("inspection") or {}).get("subjectId") ==
                           constructed["subjectId"], f"{species} exact candidate inspection")
                     expect(page.locator(".scene-loading")).not_to_be_visible(timeout=240000)
                     ARTIFACTS.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(ARTIFACTS / f"{species.lower()}-candidate-1024.png"),
                                     full_page=True, animations="disabled")
-                    continuation = page.get_by_role("button", name="Authorize minimization of this candidate")
-                    expect(continuation).to_be_enabled()
-                    continuation.click()
+                    if candidate["attempt"]["status"] != "completed":
+                        self.assertFalse(any(item["status"] == "completed" for item in candidate["stages"]))
                     completed = until(page, lambda account: (account.get("attempt") or {}).get("status") in
                                       ("completed", "failed", "stopped", "unobserved") and
                                       (account.get("attempt") or {}).get("stageKind") == "Minimization",
@@ -98,6 +97,7 @@ class NativePurePatchTests(unittest.TestCase):
                     self.assertEqual(minimized["observation"]["termination"], "converged")
                     page.get_by_role("navigation", name="Research work areas").get_by_role(
                         "button", name="Results").click()
+                    page.locator(".result-stage-list button").first.click()
                     until(page, lambda account: (account.get("inspection") or {}).get("subjectId") ==
                           minimized["stageId"], f"{species} minimized-stage inspection")
                     expect(page.locator(".scene-loading")).not_to_be_visible(timeout=240000)
@@ -149,15 +149,15 @@ print(system.getNumParticles())
     def test_dlpe_center(self):
         self.run_species("DLPE", "center")
 
-    @unittest.skip("Installed DOPC patch has two trans alkenes; derivative decision and validation pending")
+    @unittest.skip("The installed native DOPC patch has two trans alkenes and is not enabled")
     def test_dopc_lower(self):
         self.run_species("DOPC", "lower")
 
-    @unittest.skip("Installed DPPC patch has inverted glycerol centres; derivative decision and validation pending")
+    @unittest.skip("The installed native DPPC patch has inverted glycerol centres and is not enabled")
     def test_dppc_center(self):
         self.run_species("DPPC", "center")
 
-    @unittest.skip("Installed POPC patch has an inverted glycerol centre; derivative decision and validation pending")
+    @unittest.skip("POPC uses the separately identified mapped Zenodo route")
     def test_popc_upper(self):
         self.run_species("POPC", "upper")
 

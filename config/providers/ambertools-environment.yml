@@ -1,0 +1,10 @@
+# Separate, local PACKMOL-Memgen 2026.3.25 / AmberTools26 runtime.
+# Package bytes and the LEaP data consumed by the selected route are also
+# checked against the policy catalogue at startup and for every trial.
+name: pim-ambertools26
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.14
+  - ambertools=26.0=cuda_None_nompi_py312hd652fd9_100
+  - scipy=1.18.1

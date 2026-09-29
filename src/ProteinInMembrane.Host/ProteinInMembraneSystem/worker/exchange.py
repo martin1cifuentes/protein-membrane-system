@@ -159,15 +159,19 @@ def main() -> int:
         identity = {key: payload[key] for key in ("studyRevisionId", "attemptId", "stageId") if key in payload}
 
         def progress(stage: str, detail: dict[str, Any] | None = None) -> None:
-            emit(request_id, "progress", {**identity, "operation": operation, "stage": stage, "detail": detail or {}})
+            observed = detail or {}
+            emit(request_id, "progress", {**observed, **identity, "operation": operation,
+                                          "stage": stage, "detail": observed})
 
         progress("started")
         result = _dispatch(operation)(directory, payload, progress)
         emit(request_id, "result", {"requestId": request_id, **identity, "standing": "observed", **result})
         return 0
     except WorkError as exc:
+        details = exc.details or {}
         emit(request_id, "error", {"requestId": request_id, **identity, "standing": "failed", "failureCode": exc.code,
-                                    "failureMessage": exc.message, "details": exc.details or {}})
+                                    "failureMessage": exc.message, "details": details,
+                                    "artifacts": details.get("artifacts", [])})
         return 2
     except ImportError as exc:
         emit(request_id, "error", {"requestId": request_id, **identity, "standing": "failed",

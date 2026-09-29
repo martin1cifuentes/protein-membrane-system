@@ -266,50 +266,6 @@ def _rotated(x: float, y: float, z: float, a: float, b: float, c: float) -> tupl
     return cc * x - sc * y, sc * x + cc * y, z
 
 
-def _headgroup_boundary(directory: Path, raw_species: Any) -> float:
-    """Use exact phospholipid template head/tail extents as a starting frame."""
-    import gemmi
-
-    if not isinstance(raw_species, list) or not raw_species:
-        raise WorkError("missingFrame", "The chosen membrane has no identified coordinate templates")
-    extents = []
-    seen = set()
-    for raw in raw_species:
-        item = require_mapping(raw, "leafletSpecies item")
-        species_id = require_text(item.get("speciesId"), "speciesId")
-        if species_id in seen:
-            raise WorkError("ambiguousFrame", "A membrane species was supplied more than once")
-        seen.add(species_id)
-        path = work_path(directory, item.get("coordinateTemplatePath"), "coordinateTemplatePath")
-        verify_sha256(path, require_text(item.get("coordinateTemplateSha256"), "coordinateTemplateSha256"),
-                      "coordinateTemplateSha256")
-        structure = gemmi.read_structure(str(path))
-        if len(structure) != 1:
-            raise WorkError("missingFrame", f"{species_id} has no single-molecule coordinate template")
-        atoms = [atom for chain in structure[0] for residue in chain for atom in residue]
-        if len(atoms) != require_integer(item.get("atomCount"), "atomCount", 1):
-            raise WorkError("providerMismatch", f"{species_id} template atom count differs")
-        if item.get("category") != "lipid":
-            continue  # Sterol geometry is packed separately; it does not define the phospholipid slab.
-        indices = item.get("headAtomIndices")
-        if not isinstance(indices, list) or len(indices) != 1 or any(
-                type(i) is not int or i < 1 or i > len(atoms) or atoms[i - 1].name != "P"
-                for i in indices):
-            raise WorkError("missingFrame", f"{species_id} lacks mapped polar-head anchors")
-        heavy = [atom for atom in atoms if atom.element.name.upper() not in ("H", "D")]
-        head_z = atoms[indices[0] - 1].pos.z
-        # Native patches may store a reference molecule with either normal
-        # orientation. The starting half-thickness is independent of its sign.
-        extent = max(abs(head_z - min(atom.pos.z for atom in heavy)),
-                     abs(head_z - max(atom.pos.z for atom in heavy)))
-        if not math.isfinite(extent) or extent < 5 or extent > 80:
-            raise WorkError("missingFrame", f"{species_id} head-to-tail template extent is unusable")
-        extents.append(extent)
-    if not extents:
-        raise WorkError("missingFrame", "A phospholipid template is required to define this starting bilayer frame")
-    return max(extents)
-
-
 def place_manual(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
     """Apply one actor-specified rigid transform to the complete prepared construct."""
     source = work_path(directory, payload.get("preparedPdbPath"), "preparedPdbPath")
@@ -328,7 +284,9 @@ def place_manual(directory: Path, payload: dict[str, Any], progress: Callable) -
                       ("rotationXDegrees", "rotationYDegrees", "rotationZDegrees")]
     if any(abs(value) > 100000 for value in offsets) or any(abs(value) > 360000 for value in angles_degrees):
         raise WorkError("resourceRefused", "The requested position exceeds the bounded PDB coordinate range")
-    boundary = _headgroup_boundary(directory, payload.get("leafletSpecies"))
+    boundary = require_number(payload.get("leafletEnvelopeAngstrom"), "leafletEnvelopeAngstrom")
+    if boundary <= 0 or boundary > 80:
+        raise WorkError("missingFrame", "The chosen membrane frame has no finite declared outer leaflet envelope")
     lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
     atom_lines = _source_atoms(lines)
     if len(atom_lines) != source_count:

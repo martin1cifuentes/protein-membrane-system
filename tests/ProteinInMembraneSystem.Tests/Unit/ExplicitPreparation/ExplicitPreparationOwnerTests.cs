@@ -18,7 +18,7 @@ public sealed class ExplicitPreparationOwnerTests
         var result = await Start(fixture, worker, onAccepted: value => accepted = value);
 
         Assert.Equal(fixture.Attempt.Id, accepted?.Id);
-        Assert.Equal(StageExecutionStanding.ReadyForMinimization, result.State.Standing);
+        Assert.True(result.State.Standing == StageExecutionStanding.Running, result.State.Message);
         Assert.Single(worker.ConstructionRequests);
         var request = worker.ConstructionRequests.Single();
         Assert.Equal(fixture.Attempt.Id, request.Payload.AttemptId);
@@ -33,6 +33,10 @@ public sealed class ExplicitPreparationOwnerTests
         Assert.Equal(fixture.Placement.Proposal.OrientedProtein.CoordinateSha256,
             request.Payload.OrientedPdbSha256);
         Assert.Equal(fixture.Policy.ForceFieldFiles, request.Payload.ForceFieldFiles);
+        Assert.Empty(request.Payload.ProviderAssets);
+        Assert.Empty(request.Payload.SelectedSpeciesRepresentations);
+        Assert.Equal("nativeOpenMm", JsonSerializer.SerializeToElement(request.Payload,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("route").GetString());
 
         var proposed = Assert.IsType<ConstructionDerivation>(result.Derivation);
         var constructed = Assert.IsType<ConstructedExplicitSystem>(result.Constructed);
@@ -47,6 +51,7 @@ public sealed class ExplicitPreparationOwnerTests
         Assert.Equal([80.0, 81.0, 100.0], proposed.CellAngstrom);
         Assert.Equal(proposed.CellAngstrom, constructed.ActualCellAngstrom);
         Assert.Equal(proposed.LipidCounts, constructed.AchievedComposition);
+        Assert.Equal(0.0, constructed.MaximumProteinCoordinateDeviationAngstrom);
         Assert.Equal(55.4 / 370, proposed.EstimatedNaClMolar, 10);
         Assert.Contains(proposed.Approximations, text => text.Contains("same construction invocation"));
         Assert.Equal(constructed.Molecule.AtomCount, constructed.Correspondence.Atoms.Length);
@@ -71,11 +76,448 @@ public sealed class ExplicitPreparationOwnerTests
             WaterCount = 368 };
         var result = await Start(fixture, worker);
 
-        Assert.Equal(StageExecutionStanding.ReadyForMinimization, result.State.Standing);
+        Assert.True(result.State.Standing == StageExecutionStanding.Running, result.State.Message);
         Assert.Single(worker.ConstructionRequests);
         Assert.Equal([4, 2], result.Derivation!.LipidCounts.Select(item => item.Count));
         Assert.Equal(368, result.Derivation.WaterCount);
         Assert.Equal(result.Derivation.LipidCounts, result.Constructed!.AchievedComposition);
+    }
+
+    [Fact]
+    public async Task Identical_coordinate_bytes_in_separate_attempts_have_distinct_constructed_subjects()
+    {
+        using var fixture = new ConstructionFixture();
+        var worker = new ConstructionWorker(fixture);
+        var first = Assert.IsType<ConstructedExplicitSystem>((await Start(fixture, worker)).Constructed);
+        var laterAttempt = fixture.Attempt with { Id = "later-attempt" };
+        var second = Assert.IsType<ConstructedExplicitSystem>((await new ConstructionOwner(worker, worker, worker)
+            .StartAsync(laterAttempt, fixture.Revision, fixture.Protein, fixture.Membrane,
+                fixture.Placement, fixture.Policy, fixture.Directory, null, null,
+                TestContext.Current.CancellationToken)).Constructed);
+
+        Assert.Equal(first.Molecule.Id, second.Molecule.Id);
+        Assert.Equal("constructed-" + fixture.Attempt.Id, first.Id);
+        Assert.Equal("constructed-" + laterAttempt.Id, second.Id);
+        Assert.All(first.Evidence, evidence => Assert.Equal(first.Id, evidence.SubjectId));
+        Assert.All(second.Evidence, evidence => Assert.Equal(second.Id, evidence.SubjectId));
+    }
+
+    [Theory]
+    [InlineData("resourceRefused")]
+    [InlineData("resourceLimit")]
+    public async Task Typed_memgen_capacity_refusal_keeps_the_attempt_and_unobserved_trial(
+        string failureCode)
+    {
+        using var fixture = new ConstructionFixture();
+        var (policy, attempt) = MemgenRoute(fixture);
+        var worker = new RefusingMemgenWorker { FailureCode = failureCode };
+        var progress = new CapturingStageProgress();
+        var unused = new ConstructionWorker(fixture);
+        var result = await new ConstructionOwner(worker, unused, unused).StartAsync(attempt,
+            fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Placement, policy,
+            fixture.Directory, null, progress, TestContext.Current.CancellationToken);
+
+        Assert.Equal(attempt.Id, result.Attempt?.Id);
+        Assert.Equal(StageExecutionStanding.ResourceRefused, result.State.Standing);
+        Assert.Equal(failureCode, result.State.FailureCode);
+        Assert.Null(result.Constructed);
+        var request = Assert.Single(worker.Requests);
+        AssertUnobservedTrial(result, progress, request, ConstructionTrialStanding.Failed, failureCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Memgen_stop_records_the_active_unobserved_trial_whether_worker_throws_or_returns(
+        bool workerThrows)
+    {
+        using var fixture = new ConstructionFixture();
+        var (policy, attempt) = MemgenRoute(fixture);
+        using var stop = new CancellationTokenSource();
+        var worker = new RefusingMemgenWorker
+        {
+            BeforeResult = stop.Cancel,
+            ThrowWhenCancelled = workerThrows
+        };
+        var progress = new CapturingStageProgress();
+        var unused = new ConstructionWorker(fixture);
+        var result = await new ConstructionOwner(worker, unused, unused).StartAsync(attempt,
+            fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Placement, policy,
+            fixture.Directory, null, progress, stop.Token);
+
+        Assert.Equal(attempt.Id, result.Attempt?.Id);
+        Assert.Equal(StageExecutionStanding.Stopped, result.State.Standing);
+        Assert.Equal("stopped", result.State.FailureCode);
+        Assert.Null(result.Constructed);
+        var request = Assert.Single(worker.Requests);
+        AssertUnobservedTrial(result, progress, request, ConstructionTrialStanding.Stopped, "stopped");
+    }
+
+    [Fact]
+    public async Task Memgen_stop_on_retry_keeps_the_prior_attributable_trial_and_current_request()
+    {
+        using var fixture = new ConstructionFixture();
+        var (policy, attempt) = MemgenRoute(fixture);
+        using var stop = new CancellationTokenSource();
+        var worker = new RefusingMemgenWorker
+        {
+            RetryOnceWithAttributableTrial = true,
+            BeforeResult = stop.Cancel,
+            ThrowWhenCancelled = true
+        };
+        var progress = new CapturingStageProgress();
+        var unused = new ConstructionWorker(fixture);
+        var result = await new ConstructionOwner(worker, unused, unused).StartAsync(attempt,
+            fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Placement, policy,
+            fixture.Directory, null, progress, stop.Token);
+
+        Assert.Equal(StageExecutionStanding.Stopped, result.State.Standing);
+        Assert.Equal(2, worker.Requests.Count);
+        Assert.Equal(2, result.Trials.Length);
+        Assert.Equal(worker.Requests[0].Payload.TrialId, result.Trials[0].TrialId);
+        Assert.Equal("zeroRoundedSpecies", result.Trials[0].FailureCode);
+        Assert.Equal(ConstructionTrialStanding.Failed, result.Trials[0].Standing);
+        Assert.Equal(worker.Requests[1].Payload.TrialId, result.Trials[1].TrialId);
+        Assert.Equal(1, result.Trials[1].TrialIndex);
+        Assert.Equal(30, result.Trials[1].LateralPaddingAngstrom);
+        Assert.Equal(17.5, result.Trials[1].AqueousPaddingAngstrom);
+        Assert.Equal(ConstructionTrialStanding.Stopped, result.Trials[1].Standing);
+        Assert.Equal("stopped", result.Trials[1].FailureCode);
+        Assert.Empty(result.Trials[1].ProposedLipidCounts);
+        Assert.Empty(result.Trials[1].ActualCellAngstrom);
+        Assert.Equal(result.Trials, progress.States.Where(state => state.Trial is not null)
+            .Select(state => state.Trial!).ToImmutableArray());
+    }
+
+    [Theory]
+    [InlineData("zeroRoundedSpecies", 30.0, 60.0, 17.5, 17.5)]
+    [InlineData("chargeBudgetRefusal", 15.0, 15.0, 35.0, 70.0)]
+    public async Task Memgen_attributable_failures_retry_only_within_the_declared_cell_bound(
+        string failureCode, double secondLateral, double thirdLateral,
+        double secondAqueous, double thirdAqueous)
+    {
+        using var fixture = new ConstructionFixture();
+        var (policy, attempt) = MemgenRoute(fixture);
+        var worker = new RefusingMemgenWorker
+        {
+            AttributableFailureCodes = [failureCode, failureCode, failureCode]
+        };
+        var progress = new CapturingStageProgress();
+        var unused = new ConstructionWorker(fixture);
+        var result = await new ConstructionOwner(worker, unused, unused).StartAsync(attempt,
+            fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Placement, policy,
+            fixture.Directory, null, progress, TestContext.Current.CancellationToken);
+
+        Assert.Equal(attempt.Id, result.Attempt?.Id);
+        Assert.Null(result.Constructed);
+        Assert.Null(result.Derivation);
+        var aqueousLimitRefusal = failureCode == "chargeBudgetRefusal";
+        var dispatched = aqueousLimitRefusal ? 2 : 3;
+        Assert.Equal(aqueousLimitRefusal ? StageExecutionStanding.ResourceRefused :
+            StageExecutionStanding.Failed, result.State.Standing);
+        Assert.Equal(aqueousLimitRefusal ? "resourceRefused" : failureCode,
+            result.State.FailureCode);
+        if (aqueousLimitRefusal)
+            Assert.Contains("186 Å", result.State.Message);
+        Assert.Equal(900, policy.Construction.MaximumConstructionSeconds);
+        Assert.Equal(dispatched, worker.Requests.Count);
+        Assert.Equal(dispatched, worker.Tokens.Count);
+        Assert.All(worker.Tokens, token => Assert.Equal(worker.Tokens[0], token));
+        Assert.Equal(new[] { 15.0, secondLateral, thirdLateral }.Take(dispatched),
+            worker.Requests.Select(request => request.Payload.LateralPaddingAngstrom!.Value));
+        Assert.Equal(new[] { 17.5, secondAqueous, thirdAqueous }.Take(dispatched),
+            worker.Requests.Select(request => request.Payload.AqueousPaddingAngstrom!.Value));
+        Assert.Equal(dispatched, worker.Requests.Select(request => request.Payload.TrialId).Distinct().Count());
+        Assert.Equal(new[] { 0, 1, 2 }.Take(dispatched),
+            worker.Requests.Select(request => request.Payload.TrialIndex!.Value));
+        Assert.All(worker.Requests, request =>
+        {
+            Assert.Equal(attempt.Id, request.Payload.AttemptId);
+            Assert.Equal(fixture.Revision.Id, request.Payload.StudyRevisionId);
+            Assert.Equal(policy.Construction.ProviderVersion, request.Payload.ProviderVersion);
+        });
+        Assert.Equal(dispatched, result.Trials.Length);
+        for (var index = 0; index < result.Trials.Length; index++)
+        {
+            var trial = result.Trials[index];
+            Assert.Equal(worker.Requests[index].Payload.TrialId, trial.TrialId);
+            Assert.Equal(index, trial.TrialIndex);
+            Assert.Equal(ConstructionTrialStanding.Failed, trial.Standing);
+            Assert.Equal(failureCode, trial.FailureCode);
+            Assert.Empty(trial.ProposedLipidCounts);
+            Assert.Empty(trial.AchievedLipidCounts);
+            Assert.Empty(trial.ActualCellAngstrom);
+        }
+        Assert.Equal(result.Trials, progress.States.Where(state => state.Trial is not null)
+            .Select(state => state.Trial!).ToImmutableArray());
+    }
+
+    [Fact]
+    public async Task Attributable_Memgen_failure_retains_only_verified_trial_diagnostics()
+    {
+        using var fixture = new ConstructionFixture();
+        var (policy, attempt) = MemgenRoute(fixture);
+        var outside = Path.Combine(fixture.Directory, "outside-provider-options.json");
+        File.WriteAllText(outside, "outside the trial");
+        var worker = new RefusingMemgenWorker
+        {
+            AttributableFailureCodes = ["zeroRoundedSpecies", "zeroRoundedSpecies", "zeroRoundedSpecies"],
+            FailureArtifacts = request =>
+            {
+                var inside = Path.Combine(request.WorkingDirectory, "memgen-trial-0");
+                System.IO.Directory.CreateDirectory(inside);
+                var log = Path.Combine(inside, "packmol.log");
+                var changed = Path.Combine(inside, "provider-stdout.log");
+                var unknown = Path.Combine(inside, "unlisted.txt");
+                File.WriteAllText(log, "the observed Packmol refusal");
+                File.WriteAllText(changed, "different bytes");
+                File.WriteAllText(unknown, "not an allowed diagnostic role");
+                return ImmutableArray.Create(
+                    new WorkerArtifact("providerPackmolLog", log, ConstructionFixture.Hash(log)),
+                    new WorkerArtifact("providerOptions", outside, ConstructionFixture.Hash(outside)),
+                    new WorkerArtifact("providerStdout", changed, new string('0', 64)),
+                    new WorkerArtifact("arbitraryOutput", unknown, ConstructionFixture.Hash(unknown)));
+            }
+        };
+        var progress = new CapturingStageProgress();
+        var unused = new ConstructionWorker(fixture);
+        var result = await new ConstructionOwner(worker, unused, unused).StartAsync(attempt,
+            fixture.Revision, fixture.Protein, fixture.Membrane, fixture.Placement, policy,
+            fixture.Directory, null, progress, TestContext.Current.CancellationToken);
+
+        Assert.Equal(3, result.Trials.Length);
+        foreach (var trial in result.Trials)
+        {
+            var diagnostic = Assert.Single(trial.DiagnosticArtifacts);
+            Assert.Equal("providerPackmolLog", diagnostic.Role);
+            Assert.Equal(PreparationPhase.ProviderPacking, diagnostic.Phase);
+            Assert.Equal("packmol.log", diagnostic.FileName);
+            Assert.Equal(ConstructionFixture.Hash(diagnostic.LocalPath!), diagnostic.Sha256);
+            Assert.Null(diagnostic.DownloadUrl);
+            Assert.Null(diagnostic.StructureUrl);
+            Assert.DoesNotContain("localPath", JsonSerializer.Serialize(diagnostic,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        }
+        Assert.Equal(result.Trials, progress.States.Where(state => state.Trial is not null)
+            .Select(state => state.Trial!).ToImmutableArray());
+    }
+
+    [Fact]
+    public async Task Checked_Memgen_intermediates_require_current_digest_and_nonlinked_trial_path()
+    {
+        using var fixture = new ConstructionFixture();
+        var trial = Path.Combine(fixture.Directory, "trial");
+        System.IO.Directory.CreateDirectory(trial);
+        var packed = Path.Combine(trial, "system.pdb");
+        var restart = Path.Combine(trial, "system_min.restrt");
+        File.WriteAllText(packed, "packed coordinates");
+        File.WriteAllText(restart, "final unrestrained restart");
+        var linked = Path.Combine(trial, "linked.pdb");
+        File.CreateSymbolicLink(linked, packed);
+        var reported = ImmutableArray.Create(
+            new WorkerArtifact("providerPacked", packed, ConstructionFixture.Hash(packed)),
+            new WorkerArtifact("amberFinalRestart", restart, ConstructionFixture.Hash(restart)),
+            new WorkerArtifact("providerProtein", linked, ConstructionFixture.Hash(packed)));
+        var method = typeof(ConstructionOwner).GetMethod("VerifiedMemgenDiagnosticsAsync",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        async Task<ImmutableArray<TrialDiagnosticArtifact>> Verify(
+            ImmutableArray<WorkerArtifact> artifacts) =>
+            await Assert.IsAssignableFrom<Task<ImmutableArray<TrialDiagnosticArtifact>>>(
+                method.Invoke(null, [artifacts, trial, TestContext.Current.CancellationToken]));
+
+        var accepted = await Verify(reported);
+        Assert.Equal(["providerPacked", "amberFinalRestart"], accepted.Select(item => item.Role));
+        Assert.Equal(PreparationPhase.ProviderPacking, accepted[0].Phase);
+        Assert.Equal(PreparationPhase.ProviderConditioningUnrestrained, accepted[1].Phase);
+        Assert.All(accepted, item => Assert.StartsWith(trial, item.LocalPath,
+            StringComparison.Ordinal));
+        File.AppendAllText(restart, "tampered after report");
+        var changed = await Verify(reported);
+        Assert.Equal("providerPacked", Assert.Single(changed).Role);
+    }
+
+    [Fact]
+    public void Unequal_Memgen_aqueous_regions_at_the_strict_charge_boundary_require_neutralization_only()
+    {
+        const double lowerVolume = 15000;
+        const double upperVolume = 26000;
+        const double volume = lowerVolume + upperVolume;
+        const double molarFactor = 6.02214076e-4;
+        var regions = ImmutableArray.Create(
+            new AqueousRegionAccount(LeafletSide.Lower, lowerVolume, 1, 0, 1),
+            new AqueousRegionAccount(LeafletSide.Upper, upperVolume, 2, 0, 1));
+        // |Q|/2 equals the smaller nominal salt count, so Memgen adds only
+        // neutralizers even though the two aqueous volumes differ.
+        var account = new ConstructionConditionAccount(
+            0, 1933, 1933, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 2, 2, 2, 0, 0, volume,
+            0, 2 / (molarFactor * volume), 0, 55.4 * 2 / 1933,
+            "neutralizationOnly", regions);
+        var generated = ImmutableArray.Create(
+            new ObservedSpeciesCount(GeneratedComponentRoleKind.Water, LeafletSide.Upper,
+                "HOH", 1933),
+            new ObservedSpeciesCount(GeneratedComponentRoleKind.NegativeIon, LeafletSide.Upper,
+                "CL", 1),
+            new ObservedSpeciesCount(GeneratedComponentRoleKind.NegativeIon, LeafletSide.Lower,
+                "CL", 1));
+        var observed = new ConstructionObservations(0, generated, [80, 80, 100], [30, 30, 60],
+            1933, 0, 2, 0, 2, -100, 0, 0, true, null,
+            ImmutableArray<string>.Empty, ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty, null!);
+        var validator = typeof(ConstructionOwner).GetMethod("MemgenConditionsCoherent",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        bool Coherent(ConstructionConditionAccount value, ConstructionObservations actual,
+            ImmutableArray<ObservedSpeciesCount> species) =>
+            Assert.IsType<bool>(validator.Invoke(null, [value, actual, species, 0.15, 55.4]));
+
+        Assert.True(Coherent(account, observed, generated));
+        Assert.False(Coherent(account with { SaltBranch = "chargeCompensated" }, observed, generated));
+        Assert.False(Coherent(account with { AqueousRegions = regions.SetItem(0,
+            regions[0] with { FlooredNominalSaltCount = 2 }) }, observed, generated));
+        // One salt threshold lies inside the printed 11070.26 Å³ interval:
+        // Memgen's hidden unrounded volume can floor to one even though
+        // recomputing from the two-decimal log would floor to zero.
+        const double loggedBoundaryVolume = 11070.26;
+        var boundaryRegions = regions.SetItem(0, regions[0] with
+        {
+            EstimatedVolumeAngstromCubed = loggedBoundaryVolume,
+            FlooredNominalSaltCount = 1
+        });
+        var boundaryVolume = loggedBoundaryVolume + upperVolume;
+        var boundary = account with
+        {
+            AqueousRegions = boundaryRegions,
+            EstimatedAqueousVolumeAngstromCubed = boundaryVolume,
+            ChlorideAqueousMolar = 2 / (molarFactor * boundaryVolume)
+        };
+        Assert.True(Coherent(boundary, observed, generated));
+        Assert.False(Coherent(boundary with { AqueousRegions = boundaryRegions.SetItem(0,
+            boundaryRegions[0] with { FlooredNominalSaltCount = 2 }) }, observed, generated));
+        var belowBoundaryRegions = boundaryRegions.SetItem(0, boundaryRegions[0] with
+        { EstimatedVolumeAngstromCubed = 11070.25 });
+        var belowBoundaryVolume = 11070.25 + upperVolume;
+        Assert.False(Coherent(boundary with
+        {
+            AqueousRegions = belowBoundaryRegions,
+            EstimatedAqueousVolumeAngstromCubed = belowBoundaryVolume,
+            ChlorideAqueousMolar = 2 / (molarFactor * belowBoundaryVolume)
+        }, observed, generated));
+        // LEaP's measured charge can differ slightly from the integral charge
+        // Memgen receives; that noise cannot turn strict equality into a pass.
+        var noisy = account with { PreparedFormalChargeElementary = 1.9999999,
+            ChargePdbDeltaElementary = -0.0000001 };
+        Assert.True(Coherent(noisy, observed with { ProteinNetChargeElementary = 1.9999999 },
+            generated));
+        Assert.False(Coherent(noisy with { SaltBranch = "chargeCompensated" },
+            observed with { ProteinNetChargeElementary = 1.9999999 }, generated));
+        var negativeRegions = regions.Select(region => region with
+        { ProviderGeneratedSodiumCount = 1, ProviderGeneratedChlorideCount = 0 }).ToImmutableArray();
+        var negative = account with { PreparedFormalChargeElementary = -2,
+            ProviderResidueNameChargeElementary = -2,
+            ProviderGeneratedSodiumCount = 2, ProviderGeneratedChlorideCount = 0,
+            FinalSodiumCount = 2, FinalChlorideCount = 0,
+            SodiumAqueousMolar = 2 / (molarFactor * volume), ChlorideAqueousMolar = 0,
+            SodiumFiniteWaterMolar = 55.4 * 2 / 1933, ChlorideFiniteWaterMolar = 0,
+            AqueousRegions = negativeRegions };
+        var negativeSpecies = ImmutableArray.Create(
+            generated[0],
+            new ObservedSpeciesCount(GeneratedComponentRoleKind.PositiveIon, LeafletSide.Upper,
+                "NA", 1),
+            new ObservedSpeciesCount(GeneratedComponentRoleKind.PositiveIon, LeafletSide.Lower,
+                "NA", 1));
+        var negativeObserved = observed with { ProteinNetChargeElementary = -2,
+            PositiveIonCount = 2, NegativeIonCount = 0 };
+        Assert.True(Coherent(negative, negativeObserved, negativeSpecies));
+        Assert.False(Coherent(negative with { SaltBranch = "chargeCompensated" },
+            negativeObserved, negativeSpecies));
+    }
+
+    private static (ApplicablePreparationPolicy Policy, PreparationAttempt Attempt) MemgenRoute(
+        ConstructionFixture fixture)
+    {
+        var assets = ImmutableArray.Create(new ProviderAsset("controlled-provider", "2026.3.25",
+            fixture.NativePatchPath, fixture.NativePatchSha));
+        var settings = new MemgenConstructionSettings("sander", "ff19SB", "lipid21", "tip3p",
+            15, 17.5, 23, 20, 100, 20, 2, 250, 250, 10, 2,
+            true, true, true, true, true, true, true, true, true, true, true);
+        var construction = fixture.Policy.Construction with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            ProviderName = "PACKMOL-Memgen",
+            ProviderVersion = "2026.3.25",
+            NativePatchPath = null,
+            NativePatchSha256 = null,
+            LipidTypeArgument = null,
+            CoveredSpeciesIds = ImmutableArray.Create("POPC", "POPE", "DLPC", "DLPE", "DMPC",
+                "DOPC", "DPPC", "CHL1", "HOH", "NA", "CL"),
+            MaximumAtomCount = 120000,
+            MaximumCellDimensionAngstrom = 180,
+            MaximumConstructionSeconds = 900,
+            ProviderAssets = assets,
+            Memgen = settings
+        };
+        var policy = fixture.Policy with { Construction = construction };
+        var attempt = fixture.Attempt with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            NativePatchSha256 = null,
+            ConstructionProviderVersion = construction.ProviderVersion,
+            ProviderAssets = assets,
+            PolicyFingerprintSha256 = PreparationPolicyFingerprint.Compute(policy)
+        };
+        return (policy, attempt);
+    }
+
+    [Fact]
+    public async Task Changed_selected_lipid_bytes_refuse_native_and_Memgen_before_an_attempt()
+    {
+        using var fixture = new ConstructionFixture();
+        var selected = fixture.Membrane.SpeciesRepresentations[0];
+        var membrane = fixture.Membrane with
+        {
+            SpeciesRepresentations = fixture.Membrane.SpeciesRepresentations.SetItem(0,
+                selected with { CoordinateTemplateSha256 = new string('0', 64) })
+        };
+        var (memgenPolicy, memgenAttempt) = MemgenRoute(fixture);
+        foreach (var (policy, attempt) in new[]
+                 { (fixture.Policy, fixture.Attempt), (memgenPolicy, memgenAttempt) })
+        {
+            var worker = new ConstructionWorker(fixture);
+            var accepted = false;
+            var result = await new ConstructionOwner(worker, worker, worker).StartAsync(
+                attempt, fixture.Revision, fixture.Protein, membrane, fixture.Placement,
+                policy, fixture.Directory, _ => accepted = true, null,
+                TestContext.Current.CancellationToken);
+            Assert.Null(result.Attempt);
+            Assert.False(accepted);
+            Assert.Empty(worker.ConstructionRequests);
+            Assert.Equal(StageExecutionStanding.ResourceRefused, result.State.Standing);
+            Assert.Equal("A selected molecular representation changed before preparation admission.",
+                result.State.Message);
+        }
+    }
+
+    private static void AssertUnobservedTrial(PreparationStartResult result,
+        CapturingStageProgress progress, ScientificWorkRequest<ConstructionPayload> request,
+        ConstructionTrialStanding standing, string failureCode)
+    {
+        var trial = Assert.Single(result.Trials);
+        Assert.Equal(request.Payload.TrialId, trial.TrialId);
+        Assert.Equal(request.Payload.TrialIndex, trial.TrialIndex);
+        Assert.Equal(15, trial.LateralPaddingAngstrom);
+        Assert.Equal(17.5, trial.AqueousPaddingAngstrom);
+        Assert.Equal(standing, trial.Standing);
+        Assert.Equal(failureCode, trial.FailureCode);
+        Assert.Empty(trial.ProposedLipidCounts);
+        Assert.Empty(trial.AchievedLipidCounts);
+        Assert.Empty(trial.CleanupRemovedLipidCounts);
+        Assert.Empty(trial.ProposedCellAngstrom);
+        Assert.Empty(trial.ActualCellAngstrom);
+        Assert.Null(trial.Conditions);
+        Assert.True(trial.DiagnosticArtifacts.IsDefaultOrEmpty);
+        Assert.Equal(trial, Assert.Single(progress.States, state => state.Trial is not null).Trial);
     }
 
     [Fact]
@@ -124,20 +566,24 @@ public sealed class ExplicitPreparationOwnerTests
             Assert.Null(result.Attempt);
             Assert.Null(result.Constructed);
             Assert.Empty(worker.ConstructionRequests);
+            Assert.Equal(string.Empty, result.State.AttemptId);
             Assert.True(result.State.Standing == (missingRepresentation
-                ? StageExecutionStanding.ResourceRefused : StageExecutionStanding.Pending),
+                ? StageExecutionStanding.ResourceRefused : StageExecutionStanding.Failed),
                 name + ": " + result.State.Message);
+            if (!missingRepresentation)
+                Assert.Equal("preAdmissionRefused", result.State.FailureCode);
             Assert.Equal(missingRepresentation
                     ? "A qualified molecular representation, native package patch, or exact parameter asset is unavailable before start."
-                    : "Corresponding supported inputs and an identified native construction policy are required.",
+                    : "Corresponding supported inputs and an identified complete construction policy are required.",
                 result.State.Message);
         }
 
         using var mixed = new ConstructionFixture(mixed: true);
         var mixedWorker = new ConstructionWorker(mixed);
         var mixedResult = await Start(mixed, mixedWorker);
-        Assert.Equal(StageExecutionStanding.Pending, mixedResult.State.Standing);
-        Assert.Equal("Corresponding supported inputs and an identified native construction policy are required.",
+        Assert.Equal(StageExecutionStanding.Failed, mixedResult.State.Standing);
+        Assert.Equal("preAdmissionRefused", mixedResult.State.FailureCode);
+        Assert.Equal("The selected native recipe requires its exact qualified pure lipid on both leaflets.",
             mixedResult.State.Message);
         Assert.Empty(mixedWorker.ConstructionRequests);
     }
@@ -189,10 +635,16 @@ public sealed class ExplicitPreparationOwnerTests
             Assert.Null(result.Constructed);
             Assert.Empty(worker.ConstructionRequests);
             Assert.Equal(missingAsset ? StageExecutionStanding.ResourceRefused :
-                StageExecutionStanding.Pending, result.State.Standing);
-            Assert.Equal(missingAsset
+                StageExecutionStanding.Failed, result.State.Standing);
+            if (!missingAsset)
+                Assert.Equal("preAdmissionRefused", result.State.FailureCode);
+            Assert.Equal(name == "missing catalogue reference"
+                    ? "A selected molecular representation changed before preparation admission."
+                    : missingAsset
                     ? "A qualified molecular representation, native package patch, or exact parameter asset is unavailable before start."
-                    : "Corresponding supported inputs and an identified native construction policy are required.",
+                    : name == "wrong lipid argument"
+                        ? "The selected native recipe requires its exact qualified pure lipid on both leaflets."
+                        : "Corresponding supported inputs and an identified complete construction policy are required.",
                 result.State.Message);
         }
     }
@@ -476,7 +928,7 @@ internal sealed class ConstructionFixture : IDisposable
         var geometryKinds = ImmutableArray.Create("covalentBond", "chainContinuity", "nonbondedDistance");
         Policy = new ApplicablePreparationPolicy("policy", "1", "canonical-amino-acid-assembly",
             ImmutableArray.Create("controlled identified construction evidence"), forceFields,
-            100, 10, 0.01, 0.01, 0.01,
+            20000, 10, 0.01, 0.01, 0.01,
             new MolecularDynamicsSystemSettings("PME", 1, "HBonds", true, 0.0005, null, true, true, null),
             new ConstructionPolicy("construction", "1", ImmutableArray.Create("controlled native basis"),
                 ImmutableArray.Create(ProteinTopologyKind.MembraneSpanning),
@@ -484,12 +936,13 @@ internal sealed class ConstructionFixture : IDisposable
                     : ImmutableArray.Create("DMPC", "HOH", "NA", "CL"),
                 "OpenMM Modeller.addMembrane", "8.6.0.dev-c6173db", NativePatchPath, NativePatchSha,
                 "DMPC", "Na+", "Cl-", 1, 55.4, 100000, 100, 3600,
-                "Water-equivalent salt estimate for a native finite cell"),
+                "Water-equivalent salt estimate for a native finite cell",
+                ProviderAssets: ImmutableArray<ProviderAsset>.Empty),
             waterRepresentation, sodiumRepresentation, chlorideRepresentation,
             new LocalStateObservationSpec(ImmutableArray.Create(rolePair), radii, 6, 100, true, metrics),
             ImmutableArray.Create(
                 new LocalStateCriterion("minimumIntermolecularHeavyAtomDistanceAngstrom",
-                    "angstrom", "allMoleculesHeavy", 1.5, 6),
+                    "angstrom", "wholeSystem", 1.5, 6),
                 new LocalStateCriterion("leafletHeadSeparationAngstrom", "angstrom", "bilayer", 10, 40),
                 new LocalStateCriterion("proteinBilayerMidplaneOffsetAngstrom", "angstrom",
                     "proteinVsBilayer", -20, 20)),
@@ -506,14 +959,15 @@ internal sealed class ConstructionFixture : IDisposable
         Attempt = new PreparationAttempt("attempt", Revision.Id, Protein.Id, Membrane.Id,
             Placement.Id, Policy.Id, DateTimeOffset.UtcNow, Policy.Version,
             PreparationPolicyFingerprint.Compute(Policy), Policy.ForceFieldFiles,
-            Policy.Construction.ProviderVersion, NativePatchSha);
+            Policy.Construction.ProviderVersion, NativePatchSha,
+            ProviderAssets: ImmutableArray<ProviderAsset>.Empty);
 
         MolecularRepresentation Representation(string species, string category, string ff, string template,
             int atomCount, double charge, double area) =>
             new(species, species + "-chemistry", category, ff, Hash(ff), template, Hash(template),
                 atomCount, charge, area, 0, category == "lipid" ? ImmutableArray.Create(0) :
                 ImmutableArray<int>.Empty, category == "lipid" ? "Lipid21" : "TIP3P", "8.6",
-                ImmutableArray<string>.Empty);
+                ImmutableArray<string>.Empty, ImmutableArray<MolecularStereoCheck>.Empty);
     }
 
     public static string Hash(string path) =>
@@ -554,7 +1008,7 @@ internal sealed class ConstructionWorker(ConstructionFixture fixture) :
                 "CL", ChlorideCount));
         var representations = new Dictionary<GeneratedComponentRoleKind, MolecularRepresentation>
         {
-            [GeneratedComponentRoleKind.Lipid] = request.Payload.Lipid,
+            [GeneratedComponentRoleKind.Lipid] = request.Payload.Lipid!,
             [GeneratedComponentRoleKind.Water] = request.Payload.Water,
             [GeneratedComponentRoleKind.PositiveIon] = request.Payload.Sodium,
             [GeneratedComponentRoleKind.NegativeIon] = request.Payload.Chloride
@@ -600,9 +1054,9 @@ internal sealed class ConstructionWorker(ConstructionFixture fixture) :
         var local = new LocalStateObservations(ObservationStanding.Observed, null,
             ImmutableArray.Create(
                 new MeasuredValue("minimumIntermolecularDistanceAngstrom", 1.1,
-                    "angstrom", "allMolecules"),
+                    "angstrom", "wholeSystem"),
                 new MeasuredValue("minimumIntermolecularHeavyAtomDistanceAngstrom", 1.8,
-                    "angstrom", "allMoleculesHeavy"),
+                    "angstrom", "wholeSystem"),
                 new MeasuredValue("leafletHeadSeparationAngstrom", 20, "angstrom", "bilayer"),
                 new MeasuredValue("proteinBilayerMidplaneOffsetAngstrom", 0,
                     "angstrom", "proteinVsBilayer")),
@@ -614,7 +1068,7 @@ internal sealed class ConstructionWorker(ConstructionFixture fixture) :
             [40.0, 41.0, 60.0], WaterCount, SodiumCount, ChlorideCount, 0, ProteinCharge,
             -100, atomCount, 0, true, request.Payload.NativePatchSha256,
             ImmutableArray<string>.Empty, ImmutableArray<string>.Empty,
-            ImmutableArray<string>.Empty, local);
+            ImmutableArray<string>.Empty, local, NativePatchMode: "installed");
         var result = new WorkerResult<ConstructionObservations>(request.RequestId,
             request.Payload.StudyRevisionId, request.Payload.AttemptId, null,
             WorkerResultStanding.Observed,
@@ -641,4 +1095,75 @@ internal sealed class ConstructionWorker(ConstructionFixture fixture) :
         ScientificWorkRequest<EquilibrationPayload> request,
         IProgress<EquilibrationWorkProgress>? progress, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("Optional equilibration is outside Slice 4.");
+}
+
+internal sealed class RefusingMemgenWorker : IExplicitConstructionWork
+{
+    public List<ScientificWorkRequest<ConstructionPayload>> Requests { get; } = [];
+    public List<CancellationToken> Tokens { get; } = [];
+    public string FailureCode { get; init; } = "resourceRefused";
+    public Action? BeforeResult { get; init; }
+    public bool ThrowWhenCancelled { get; init; }
+    public bool RetryOnceWithAttributableTrial { get; init; }
+    public ImmutableArray<string> AttributableFailureCodes { get; init; } = [];
+    public Func<ScientificWorkRequest<ConstructionPayload>, ImmutableArray<WorkerArtifact>>?
+        FailureArtifacts { get; init; }
+
+    public Task<WorkerResult<ConstructionObservations>> ConstructSystemAsync(
+        ScientificWorkRequest<ConstructionPayload> request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request);
+        Tokens.Add(cancellationToken);
+        if (!AttributableFailureCodes.IsDefaultOrEmpty)
+        {
+            var code = AttributableFailureCodes[Requests.Count - 1];
+            var trial = new ConstructionTrialSummary(request.Payload.TrialId!, request.Payload.TrialIndex!.Value,
+                ConstructionTrialStanding.Failed, request.Payload.LateralPaddingAngstrom!.Value,
+                request.Payload.AqueousPaddingAngstrom!.Value,
+                ImmutableArray<SpeciesCount>.Empty, ImmutableArray<SpeciesCount>.Empty,
+                ImmutableArray<SpeciesCount>.Empty, ImmutableArray<double>.Empty,
+                ImmutableArray<double>.Empty, null, code,
+                "The complete provider reported its typed population or charge refusal.",
+                ImmutableArray<TrialDiagnosticArtifact>.Empty);
+            return Task.FromResult(new WorkerResult<ConstructionObservations>(request.RequestId,
+                request.Payload.StudyRevisionId, request.Payload.AttemptId, null,
+                WorkerResultStanding.Failed,
+                FailureArtifacts?.Invoke(request) ?? ImmutableArray<WorkerArtifact>.Empty, null,
+                new ProviderIdentity("PACKMOL-Memgen", "2026.3.25"), code,
+                trial.Message, JsonSerializer.SerializeToElement(new { trial },
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        }
+        if (RetryOnceWithAttributableTrial && Requests.Count == 1)
+        {
+            var trial = new ConstructionTrialSummary(request.Payload.TrialId!, request.Payload.TrialIndex!.Value,
+                ConstructionTrialStanding.Failed, request.Payload.LateralPaddingAngstrom!.Value,
+                request.Payload.AqueousPaddingAngstrom!.Value,
+                ImmutableArray<SpeciesCount>.Empty, ImmutableArray<SpeciesCount>.Empty,
+                ImmutableArray<SpeciesCount>.Empty, ImmutableArray<double>.Empty,
+                ImmutableArray<double>.Empty, null, "zeroRoundedSpecies",
+                "The complete provider trial rounded a species to zero.",
+                ImmutableArray<TrialDiagnosticArtifact>.Empty);
+            return Task.FromResult(new WorkerResult<ConstructionObservations>(request.RequestId,
+                request.Payload.StudyRevisionId, request.Payload.AttemptId, null,
+                WorkerResultStanding.Failed, ImmutableArray<WorkerArtifact>.Empty, null,
+                new ProviderIdentity("PACKMOL-Memgen", "2026.3.25"), "zeroRoundedSpecies",
+                trial.Message, JsonSerializer.SerializeToElement(new { trial },
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+        }
+        BeforeResult?.Invoke();
+        if (ThrowWhenCancelled)
+            cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new WorkerResult<ConstructionObservations>(request.RequestId,
+            request.Payload.StudyRevisionId, request.Payload.AttemptId, null,
+            WorkerResultStanding.Failed, ImmutableArray<WorkerArtifact>.Empty, null,
+            new ProviderIdentity("PACKMOL-Memgen", "2026.3.25"), FailureCode,
+            "Actual provider result exceeds the authorized atom budget."));
+    }
+}
+
+internal sealed class CapturingStageProgress : IProgress<StageExecutionState>
+{
+    public List<StageExecutionState> States { get; } = [];
+
+    public void Report(StageExecutionState value) => States.Add(value);
 }

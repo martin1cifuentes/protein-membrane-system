@@ -35,9 +35,9 @@ public sealed class LocalRunWorkspaceOwnerTests
             State("foreign-attempt", null, null, StageExecutionStanding.Completed, 1)));
         Assert.Equal(running, workspace.Snapshot().CurrentExecution);
 
-        var candidate = State(attempt.Id, null, null, StageExecutionStanding.ReadyForMinimization, 1);
+        var candidate = State(attempt.Id, null, null, StageExecutionStanding.Running, 1);
         workspace.RetainExecution(candidate);
-        Assert.Equal(StageExecutionStanding.ReadyForMinimization, workspace.Snapshot().CurrentExecution?.Standing);
+        Assert.Equal(StageExecutionStanding.Running, workspace.Snapshot().CurrentExecution?.Standing);
         Assert.Throws<InvalidOperationException>(() => workspace.RetainAttempt(Attempt("replacement", current.Id)));
         Assert.Equal(attempt.Id, workspace.Snapshot().CurrentAttempt?.Id);
     }
@@ -159,7 +159,7 @@ public sealed class LocalRunWorkspaceOwnerTests
     }
 
     private static PreparationAssessmentResult Assessment(string stageId) =>
-        new("assessment", stageId, PreparationQualification.Indeterminate,
+        new("assessment", stageId, PreparationCheckStanding.ChecksIncomplete,
             "One exact completed stage assessment.", ImmutableArray<ScientificEvidence>.Empty,
             ImmutableArray<ScientificFinding>.Empty, ImmutableArray<string>.Empty,
             DateTimeOffset.UtcNow, true);

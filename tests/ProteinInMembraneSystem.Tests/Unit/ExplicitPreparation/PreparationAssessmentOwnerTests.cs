@@ -14,14 +14,14 @@ public sealed class PreparationAssessmentOwnerTests
         var fixture = await AssessmentFixture.Create(basis);
         var result = fixture.Assess();
 
-        Assert.Equal(PreparationQualification.QualifiedPrepared, result.Qualification);
+        Assert.True(result.CheckStanding == PreparationCheckStanding.ChecksPassed, result.Reason);
         Assert.True(result.CurrentlyApplicable);
         Assert.Equal(fixture.Stage.Id, result.StageId);
         Assert.Equal(StageKind.Minimization, fixture.Stage.Kind);
         var wrongStagePolicy = fixture.ForPolicy(fixture.Policy with { AssessmentCriteria =
             fixture.Policy.AssessmentCriteria.Select(item => item with
                 { StageKind = StageKind.Equilibration }).ToImmutableArray() });
-        Assert.Equal(PreparationQualification.Indeterminate, wrongStagePolicy.Assess().Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksPassed, wrongStagePolicy.Assess().CheckStanding);
     }
 
     [Fact]
@@ -32,18 +32,18 @@ public sealed class PreparationAssessmentOwnerTests
         var violated = fixture.Stage with { Observation = fixture.Stage.Observation with
         { Measurements = EditMeasurement(fixture.Stage.Observation.Measurements,
             "minimumIntermolecularDistanceAngstrom", item => item with { Value = 0.5 }) } };
-        Assert.Equal(PreparationQualification.NotQualified,
-            fixture.Assess(stage: violated).Qualification);
+        Assert.Equal(PreparationCheckStanding.IssuesFound,
+            fixture.Assess(stage: violated).CheckStanding);
         var missing = fixture.Stage with { Observation = fixture.Stage.Observation with
         { Measurements = fixture.Stage.Observation.Measurements.Remove(
             fixture.Stage.Observation.Measurements.Single(item =>
                 item.Name == "minimumIntermolecularDistanceAngstrom")) } };
-        Assert.Equal(PreparationQualification.Indeterminate,
-            fixture.Assess(stage: missing).Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete,
+            fixture.Assess(stage: missing).CheckStanding);
         var noPositiveCriteria = fixture.ForPolicy(fixture.Policy with
         { AssessmentCriteria = ImmutableArray<PreparationAssessmentCriterion>.Empty });
-        Assert.Equal(PreparationQualification.Indeterminate,
-            noPositiveCriteria.Assess().Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksPassed,
+            noPositiveCriteria.Assess().CheckStanding);
         Assert.True(noPositiveCriteria.Assess().CurrentlyApplicable);
         Assert.Equal(fixture.Stage.Id, fixture.Stage.Observation.StageId);
     }
@@ -84,7 +84,7 @@ public sealed class PreparationAssessmentOwnerTests
         foreach (var (name, change) in cases)
         {
             var result = fixture.Assess(stage: change(fixture.Stage));
-            Assert.True(result.Qualification == PreparationQualification.NotQualified,
+            Assert.True(result.CheckStanding == PreparationCheckStanding.IssuesFound,
                 name + ": observed defect was not interpreted negatively");
         }
     }
@@ -125,7 +125,7 @@ public sealed class PreparationAssessmentOwnerTests
         foreach (var (name, change) in cases)
         {
             var result = fixture.Assess(stage: change(fixture.Stage));
-            Assert.True(result.Qualification == PreparationQualification.Indeterminate,
+            Assert.True(result.CheckStanding == PreparationCheckStanding.ChecksIncomplete,
                 name + ": incomplete evidence qualified the stage");
         }
     }
@@ -142,18 +142,18 @@ public sealed class PreparationAssessmentOwnerTests
                 new PreparationAssessmentCriterion(StageKind.Minimization,
                     "lowerLipidHeadMeanZAngstrom", "angstrom", "absolute-z", -30, 0)) });
         var absoluteAssessment = absolute.Assess();
-        Assert.Equal(PreparationQualification.Indeterminate, absoluteAssessment.Qualification);
-        Assert.Contains("absolute", absoluteAssessment.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, absoluteAssessment.CheckStanding);
+        Assert.Contains("Stage measurement", absoluteAssessment.Reason, StringComparison.OrdinalIgnoreCase);
 
         var owner = new AssessmentOwner();
         var wrongPlacement = owner.Assess(fixture.Stage, fixture.Constructed, fixture.Protein,
             fixture.Membrane, fixture.Placement with { Id = "other-placement" }, fixture.Policy,
             ImmutableArray<ScientificFinding>.Empty);
         Assert.False(wrongPlacement.CurrentlyApplicable);
-        Assert.Equal(PreparationQualification.Indeterminate, wrongPlacement.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, wrongPlacement.CheckStanding);
         var wrongPolicy = fixture.Assess(policy: fixture.Policy with { Id = "other-policy" });
         Assert.False(wrongPolicy.CurrentlyApplicable);
-        Assert.Equal(PreparationQualification.Indeterminate, wrongPolicy.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, wrongPolicy.CheckStanding);
     }
 
     [Fact]
@@ -182,7 +182,7 @@ public sealed class PreparationAssessmentOwnerTests
                  })
         {
             var assessment = fixture.Assess(stage: changed);
-            Assert.Equal(PreparationQualification.Indeterminate, assessment.Qualification);
+            Assert.Equal(PreparationCheckStanding.ChecksIncomplete, assessment.CheckStanding);
             Assert.False(assessment.CurrentlyApplicable);
         }
     }
@@ -194,17 +194,81 @@ public sealed class PreparationAssessmentOwnerTests
         var fixture = await AssessmentFixture.Create(basis);
         var original = fixture.Assess();
         var unrelated = Finding("other-attempt", FindingDisposition.Disqualifies, true);
-        Assert.Equal(PreparationQualification.QualifiedPrepared,
-            fixture.Assess(findings: ImmutableArray.Create(unrelated)).Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksPassed,
+            fixture.Assess(findings: ImmutableArray.Create(unrelated)).CheckStanding);
         var challenge = Finding(fixture.Placement.Proposal.Id, FindingDisposition.Challenges, true);
         var challenged = fixture.Assess(findings: ImmutableArray.Create(challenge));
-        Assert.Equal(PreparationQualification.Indeterminate, challenged.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, challenged.CheckStanding);
         Assert.Contains(challenge, challenged.Findings);
         var contradiction = Finding(fixture.Constructed.Id, FindingDisposition.Disqualifies, true);
-        Assert.Equal(PreparationQualification.NotQualified,
-            fixture.Assess(findings: ImmutableArray.Create(contradiction)).Qualification);
-        Assert.Equal(PreparationQualification.QualifiedPrepared, original.Qualification);
+        Assert.Equal(PreparationCheckStanding.IssuesFound,
+            fixture.Assess(findings: ImmutableArray.Create(contradiction)).CheckStanding);
+        Assert.Equal(PreparationCheckStanding.ChecksPassed, original.CheckStanding);
         Assert.Empty(fixture.Stage.Findings);
+    }
+
+    [Fact]
+    public async Task Completed_Memgen_stage_reports_neutralization_only_as_an_attributable_condition_issue()
+    {
+        using var basis = new ConstructionFixture();
+        var fixture = await AssessmentFixture.Create(basis);
+        var asset = new ProviderAsset("controlled-memgen", "2026.3.25",
+            basis.NativePatchPath, basis.NativePatchSha);
+        var settings = new MemgenConstructionSettings("sander", "ff19SB", "lipid21", "tip3p",
+            15, 17.5, 23, 20, 100, 20, 2, 250, 250, 10, 2,
+            true, true, true, true, true, true, true, true, true, true, true);
+        var policy = fixture.Policy with { Construction = fixture.Policy.Construction with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            ProviderName = "PACKMOL-Memgen", ProviderVersion = "2026.3.25",
+            NativePatchPath = null, NativePatchSha256 = null, LipidTypeArgument = null,
+            ProviderAssets = [asset], Memgen = settings
+        } };
+        var attempt = fixture.Stage.Attempt with
+        {
+            Route = ConstructionRouteKind.PackmolMemgen,
+            SaltConvention = SaltConventionKind.MemgenChargeCompensated,
+            NativePatchSha256 = null,
+            ConstructionProviderVersion = policy.Construction.ProviderVersion,
+            ProviderAssets = [asset],
+            PolicyFingerprintSha256 = PreparationPolicyFingerprint.Compute(policy)
+        };
+        const double volume = 41000;
+        const double molarFactor = 6.02214076e-4;
+        var conditions = new ConstructionConditionAccount(
+            0, 1933, 1933, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 2, 2, 2, 0, 0, volume,
+            0, 2 / (molarFactor * volume), 0, 55.4 * 2 / 1933,
+            "neutralizationOnly", [
+                new AqueousRegionAccount(LeafletSide.Lower, 15000, 1, 0, 1),
+                new AqueousRegionAccount(LeafletSide.Upper, 26000, 2, 0, 1)
+            ]);
+        var constructionFinding = new ScientificFinding(Guid.NewGuid().ToString("N"),
+            fixture.Constructed.Id, fixture.Constructed.Evidence[0].Id,
+            "Memgen added neutralization only; the nominal input did not produce background salt pairs.",
+            "The achieved ion counts are reported.", FindingDisposition.Challenges,
+            true, DateTimeOffset.UtcNow);
+        var constructed = fixture.Constructed with
+        {
+            Attempt = attempt,
+            Derivation = fixture.Constructed.Derivation with { Conditions = conditions },
+            Findings = [constructionFinding],
+            ConditionsTreatment = "Nominal 0.15 M; actual neutralization only."
+        };
+        var stage = fixture.Stage with { Attempt = attempt, Findings = [constructionFinding] };
+
+        var assessment = new AssessmentOwner().Assess(stage, constructed, fixture.Protein,
+            fixture.Membrane, fixture.Placement, policy, ImmutableArray<ScientificFinding>.Empty);
+
+        Assert.True(assessment.CurrentlyApplicable, assessment.Reason);
+        Assert.Equal(PreparationCheckStanding.IssuesFound, assessment.CheckStanding);
+        Assert.Contains("Nominal NaCl treatment", assessment.Reason);
+        Assert.Contains("no background salt pairs", assessment.Reason);
+        Assert.Contains(constructionFinding, assessment.Findings);
+        Assert.Single(assessment.Findings, finding => finding.SubjectId == stage.Id &&
+            finding.Disposition == FindingDisposition.Disqualifies &&
+            finding.Meaning.Contains("Nominal NaCl treatment", StringComparison.Ordinal));
     }
 
     private static ScientificFinding Finding(string subject, FindingDisposition disposition, bool material) =>
@@ -239,7 +303,7 @@ internal sealed record AssessmentFixture(CompletedStage Stage, ConstructedExplic
             new PreparationAssessmentCriterion(StageKind.Minimization, "proteinBilayerMidplaneOffsetAngstrom",
                 "angstrom", "proteinVsBilayer", -20, 20),
             new PreparationAssessmentCriterion(StageKind.Minimization, "minimumIntermolecularDistanceAngstrom",
-                "angstrom", "allMolecules", 1, 6));
+                "angstrom", "wholeSystem", 1, 6));
         var policy = basis.Policy with { AssessmentCriteria = criteria };
         var attempt = basis.Attempt with
         { PolicyFingerprintSha256 = PreparationPolicyFingerprint.Compute(policy) };

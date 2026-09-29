@@ -8,6 +8,7 @@ the command-to-HTTP-byte crossing without repeating minimization.
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import lru_cache
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -28,41 +29,50 @@ sys.path.insert(0, str(ROOT / "tests" / "ProteinInMembraneSystem.AcceptanceTests
 from test_browser_presentation import (  # noqa: E402
     CHROMIUM, DIST, account, completed, controlled_account_server, inspection,
 )
+from test_export import capture as connected_capture, choose_stage  # noqa: E402 — same connected view checks
 
 
-def bundle() -> bytes:
+@lru_cache(maxsize=None)
+def bundle(stage_id: str = "stage-one") -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps({"stageId": "stage-one"}))
-        archive.writestr("coordinates.cif", "data_stage_one\n#\n")
+        archive.writestr("manifest.json", json.dumps({"stageId": stage_id}))
+        archive.writestr("coordinates.cif", f"data_{stage_id.replace('-', '_')}\n#\n")
     return buffer.getvalue()
 
 
-BUNDLE = bundle()
+BUNDLE = bundle("stage-one")
 DIGEST = sha256(BUNDLE).hexdigest()
 
 
-def assessment(stage_id: str, qualification: str, reason: str) -> dict:
+def assessment(stage_id: str, check_standing: str, reason: str) -> dict:
     return {"id": f"assessment-{stage_id}", "stageId": stage_id,
-            "qualification": qualification, "reason": reason,
+            "checkStanding": check_standing, "reason": reason,
             "evidence": [], "findings": [], "limitations": ["Controlled status"],
             "currentlyApplicable": True}
 
 
-def stage_account(stage_id: str, origin: str, qualification: str, reason: str,
+def stage_account(stage_id: str, origin: str, check_standing: str, reason: str,
                   constructed: dict) -> dict:
     return {"stageId": stage_id, "attemptId": "attempt-one",
             "studyRevisionId": origin, "kind": "Minimization", "status": "completed",
-            "assessment": assessment(stage_id, qualification, reason),
+            "assessment": assessment(stage_id, check_standing, reason),
             "summary": f"Completed minimized stage {stage_id}",
-            "observation": None, "constructed": constructed, "export": None}
+            "observation": None, "constructed": constructed, "export": None,
+            "originProteinLabel": "1CRN · coordinate model 1 · deposited coordinates · chains A"
+            if stage_id == "stage-one" else
+            "1UBQ · coordinate model 1 · deposited coordinates · chains A",
+            "originMethodLabel": "PACKMOL-Memgen 1.0",
+            "runStartedAt": "2026-09-28T09:00:00Z" if stage_id == "stage-one"
+            else "2026-09-27T11:00:00Z"}
 
 
 def export_account(stage_id: str, status: str, reason: str | None = None) -> dict:
+    payload = bundle(stage_id)
     return {"stageId": stage_id, "assessmentId": f"assessment-{stage_id}",
             "status": status, "reason": reason,
-            "sha256": DIGEST if status == "verified" else None,
-            "byteLength": len(BUNDLE) if status == "verified" else None}
+            "sha256": sha256(payload).hexdigest() if status == "verified" else None,
+            "byteLength": len(payload) if status == "verified" else None}
 
 
 def selected_stage_account() -> dict:
@@ -73,9 +83,12 @@ def selected_stage_account() -> dict:
     value["inspection"]["structureUrl"] = "/api/structures/tiny?format=pdb"
     value["inspection"]["omittedMolecules"] = []
     value["stages"][0]["export"] = None
+    value["stages"][0].update(originProteinLabel="1CRN · coordinate model 1 · deposited coordinates · chains A",
+                               originMethodLabel="PACKMOL-Memgen 1.0",
+                               runStartedAt="2026-09-28T09:00:00Z")
     old_constructed = deepcopy(value["attempt"]["constructed"])
     old_constructed.update(subjectId="constructed-zero", attemptId="attempt-zero")
-    older = stage_account("stage-two", "revision-zero", "notQualified",
+    older = stage_account("stage-two", "revision-zero", "issuesFound",
                                          "A separate observed condition failed",
                                          old_constructed)
     older["attemptId"] = "attempt-zero"
@@ -95,6 +108,7 @@ class ControlledExport:
         self.commands: list[tuple[str, str]] = []
         self.gets: list[tuple[str, str | None]] = []
         self.command_failure_once = False
+        self.select_failure_once = False
         self.stale_revision_once = False
         self.revision_checks: list[tuple[int | None, int]] = []
         self.get_failure_once: str | None = None
@@ -127,6 +141,11 @@ class ControlledExport:
                           body=json.dumps({"reason": "The selected stage is unavailable."}))
             return
         if kind == "selectInspectionSubject":
+            if self.select_failure_once:
+                self.select_failure_once = False
+                route.fulfill(status=422, content_type="application/json",
+                              body=json.dumps({"reason": "This result could not be opened."}))
+                return
             current["inspection"] = inspection(subject, "completedStage", stage["assessment"])
             current["inspection"]["studyRevisionId"] = stage["studyRevisionId"]
             current["inspection"]["studyRevisionNumber"] = 1 if subject == "stage-one" else 0
@@ -173,19 +192,20 @@ class ControlledExport:
             route.fulfill(status=404, content_type="application/json",
                           body=json.dumps({"reason": "The verified bundle is unavailable."}))
             return
-        if if_match != f'"{DIGEST}"':
+        body = bundle(stage_id)
+        digest = sha256(body).hexdigest()
+        if if_match != f'"{digest}"':
             route.fulfill(status=412, content_type="application/json",
                           body=json.dumps({"reason": "The bundle identity changed."}))
             return
-        body = BUNDLE
         if self.get_failure_once == "changed-response":
             self.get_failure_once = None
             body += b"changed after HTTP validation"
         route.fulfill(status=200, body=body, headers={
             "Content-Type": "application/zip",
             "Content-Disposition": f'attachment; filename="protein-membrane-{stage_id}.zip"',
-            "Cache-Control": "no-store", "ETag": f'"{DIGEST}"',
-            "X-Content-SHA256": DIGEST,
+            "Cache-Control": "no-store", "ETag": f'"{digest}"',
+            "X-Content-SHA256": digest,
         })
 
 
@@ -209,23 +229,37 @@ class ExportBrowserTests(unittest.TestCase):
                         animations="disabled")
 
     def assert_unchanged_stage(self, page, stage_id="stage-one"):
-        expect(page.get_by_label("Completed stage information")).to_contain_text(stage_id)
+        expect(page.get_by_label("Completed stage information")).to_contain_text("Verified protein + bilayer + water and ions")
         expect(page.get_by_label("Export validation and unchanged stage review"))\
             .to_contain_text("Required evidence unavailable")
         expect(page.locator(".stage-strip")).to_contain_text("Minimized")
-        expect(page.locator(".stage-strip")).to_contain_text("indeterminate")
+        expect(page.locator(".stage-strip")).to_contain_text("Checks incomplete")
         with self.subTest("scientific account untouched"):
             value = page.request.get(page.url + "api/state").json()
             stage = next(item for item in value["stages"] if item["stageId"] == stage_id)
             self.assertEqual(stage["status"], "completed")
-            self.assertEqual(stage["assessment"]["qualification"], "indeterminate")
+            self.assertEqual(stage["assessment"]["checkStanding"], "checksIncomplete")
             self.assertTrue(stage["assessment"]["currentlyApplicable"])
+
+    def test_collapsed_review_geometry_at_required_viewports(self):
+        """Controlled stage checks the connected route's layout assertions cheaply."""
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            host.replace(selected_stage_account())
+            browser, page = self.open_page(playwright, base, 1672, 941)
+            try:
+                page.goto(base, wait_until="domcontentloaded")
+                for width, height in ((1672, 941), (1024, 768), (820, 760)):
+                    connected_capture(page, CAPTURES, "controlled-review-ready", width, height,
+                                      "stage-one", "assessment-stage-one", failed=False)
+            finally:
+                browser.close()
 
     def test_unfinished_attempts_have_no_completed_stage_export_action(self):
         cases = (
             ("pending", False),
-            ("readyForMinimization", True),
+            ("running", False),
             ("running", True),
+            ("failed", True),
             ("stopped", True),
             ("unobserved", True),
         )
@@ -355,22 +389,20 @@ class ExportBrowserTests(unittest.TestCase):
                 failure = page.get_by_label("Export validation and unchanged stage review")
                 expect(failure).to_contain_text("Export not delivered")
                 expect(failure).to_contain_text("Bundle correspondence not verified")
-                expect(page.get_by_role("navigation", name="Review account sections")\
-                       .get_by_role("button", name="Evidence"))\
-                    .to_have_attribute("aria-current", "page")
+                expect(page.get_by_label("Details")).to_be_visible()
                 self.capture(page, "export-failure", 1672)
                 self.assert_unchanged_stage(page)
                 self.assertEqual(controlled.gets, [], "A refused command cannot begin ZIP delivery")
                 expect(page.get_by_role("button", name="Retry export")).to_be_enabled()
-                page.locator(".stage-card[title*='stage-two']").click()
+                choose_stage(page, "stage-two")
                 page.get_by_role("button", name="Collapse inputs").click()
                 expect(page.get_by_label("Export validation and unchanged stage review"))\
                     .to_have_count(0)
-                expect(page.get_by_label("Minimized stage review and distinct scientific assessment"))\
+                expect(page.get_by_label("Minimized stage review and technical checks"))\
                     .to_contain_text("A separate observed condition failed")
                 expect(page.get_by_label("Completed stage information"))\
-                    .to_contain_text("Historical stage from study revision revision-zero")
-                page.locator(".stage-card[title*='stage-one']").click()
+                    .to_contain_text("This result uses earlier inputs")
+                choose_stage(page, "stage-one")
                 page.get_by_role("button", name="Collapse inputs").click()
                 expect(failure).to_contain_text("Bundle correspondence not verified")
                 with page.expect_download(timeout=30000) as pending:
@@ -383,7 +415,7 @@ class ExportBrowserTests(unittest.TestCase):
                     self.assertEqual(sha256(saved.read_bytes()).hexdigest(), DIGEST)
                 expect(page.get_by_label("Export validation and unchanged stage review"))\
                     .to_have_count(0)
-                expect(page.get_by_label("Minimized stage review and distinct scientific assessment"))\
+                expect(page.get_by_label("Minimized stage review and technical checks"))\
                     .to_contain_text("Required evidence unavailable")
                 self.assertEqual(controlled.commands, [
                     ("exportStage", "stage-one"),
@@ -392,6 +424,86 @@ class ExportBrowserTests(unittest.TestCase):
                     ("exportStage", "stage-one"),
                 ])
                 self.assertEqual(controlled.gets, [("stage-one", f'"{DIGEST}"')])
+            finally:
+                browser.close()
+
+    def test_refused_stage_switch_keeps_each_export_fault_with_its_inspected_stage(self):
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            value = selected_stage_account()
+            value["stages"][0]["export"] = export_account("stage-one", "failed", "First result fault.")
+            value["stages"][1]["export"] = export_account("stage-two", "failed", "Second result fault.")
+            host.replace(value)
+            controlled = ControlledExport(host)
+            browser, page = self.open_page(playwright, base, 1024, 800)
+            try:
+                page.route("**/api/commands", controlled.command)
+                page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Results").click()
+                choices = page.get_by_label("Completed stage choices")
+                controlled.select_failure_once = True
+                choices.locator('[data-stage-id="stage-two"]').click()
+                expect(page.get_by_label("Completed stage information")).to_contain_text("1CRN")
+                detail = page.get_by_label("Export validation and unchanged stage review")
+                expect(detail).to_contain_text("First result fault.")
+                expect(detail).not_to_contain_text("Second result fault.")
+                expect(page.locator(".stage-export")).to_contain_text("Second result fault.")
+                self.assertEqual(host.account["inspection"]["subjectId"], "stage-one")
+
+                choices.locator('[data-stage-id="stage-two"]').click()
+                expect(page.get_by_label("Completed stage information")).to_contain_text("1UBQ")
+                controlled.select_failure_once = True
+                choices.locator('[data-stage-id="stage-one"]').click()
+                expect(detail).to_contain_text("Second result fault.")
+                expect(detail).not_to_contain_text("First result fault.")
+                expect(page.locator(".stage-export")).to_contain_text("First result fault.")
+                self.assertEqual(host.account["inspection"]["subjectId"], "stage-two")
+            finally:
+                browser.close()
+
+    def test_two_similar_earlier_results_keep_origin_and_exact_export_selection(self):
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            value = selected_stage_account()
+            earlier = value["stages"][1]
+            earlier["assessment"] = assessment("stage-two", "checksPassed", "Controlled checks passed.")
+            third = deepcopy(earlier)
+            third.update(stageId="stage-three", attemptId="attempt-three",
+                         studyRevisionId="revision-three", summary="Another earlier minimized result",
+                         originProteinLabel="2L6W · coordinate model 1 · deposited coordinates · chains A",
+                         runStartedAt="2026-09-26T11:00:00Z")
+            third["assessment"] = assessment("stage-three", "checksPassed", "Controlled checks passed.")
+            third["constructed"] = deepcopy(earlier["constructed"])
+            third["constructed"].update(subjectId="constructed-three", attemptId="attempt-three")
+            value["stages"].append(third)
+            value["actions"].append({"kind": "exportStage", "subjectId": "stage-three",
+                                      "enabled": False, "reason": "Select this completed stage before export."})
+            host.replace(value)
+            controlled = ControlledExport(host)
+            browser, page = self.open_page(playwright, base, 1024, 800)
+            try:
+                page.route("**/api/commands", controlled.command)
+                page.route("**/api/export/*", controlled.download)
+                page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Results").click()
+                choices = page.get_by_label("Completed stage choices")
+                expect(choices.locator('[data-stage-id="stage-two"]')).to_contain_text("1UBQ")
+                expect(choices.locator('[data-stage-id="stage-three"]')).to_contain_text("2L6W")
+                for stage_id, source in (("stage-two", "1UBQ"), ("stage-three", "2L6W")):
+                    choices.locator(f'[data-stage-id="{stage_id}"]').click()
+                    expect(page.get_by_label("Completed stage information")).to_contain_text(source)
+                    expect(page.get_by_label("Completed stage information"))\
+                        .to_contain_text("PACKMOL-Memgen 1.0")
+                    with page.expect_download(timeout=30000) as pending:
+                        page.get_by_role("button", name="Export this completed stage").click()
+                    with tempfile.TemporaryDirectory() as temporary:
+                        saved = Path(temporary) / "result.zip"
+                        pending.value.save_as(saved)
+                        with ZipFile(saved) as archive:
+                            self.assertEqual(json.loads(archive.read("manifest.json"))["stageId"], stage_id)
+                    self.assertEqual(host.account["inspection"]["subjectId"], stage_id)
+                self.assertIn(("exportStage", "stage-two"), controlled.commands)
+                self.assertIn(("exportStage", "stage-three"), controlled.commands)
+                self.assertEqual([stage_id for stage_id, _ in controlled.gets],
+                                 ["stage-two", "stage-three"])
             finally:
                 browser.close()
 
@@ -411,9 +523,7 @@ class ExportBrowserTests(unittest.TestCase):
                 page.get_by_role("button", name="Export with status").click()
                 failure = page.get_by_label("Export validation and unchanged stage review")
                 expect(failure).to_contain_text("Bundle bytes changed after validation")
-                expect(page.get_by_role("navigation", name="Review account sections")\
-                       .get_by_role("button", name="Evidence"))\
-                    .to_have_attribute("aria-current", "page")
+                expect(page.get_by_label("Details")).to_be_visible()
                 self.capture(page, "export-failure", 820)
                 self.assert_unchanged_stage(page)
                 retry = page.get_by_role("button", name="Retry export")

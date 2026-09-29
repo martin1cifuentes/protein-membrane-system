@@ -182,11 +182,13 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                         OptionalString(payload, "attemptId"),
                         OptionalString(payload, "stageId"),
                         WorkerResultStanding.Failed,
-                        ImmutableArray<WorkerArtifact>.Empty,
+                        ReadFailureArtifacts(payload),
                         null,
                         null,
                         OptionalString(payload, "failureCode"),
-                        OptionalString(payload, "failureMessage")),
+                        OptionalString(payload, "failureMessage"),
+                        payload.TryGetProperty("details", out var details) && details.ValueKind == JsonValueKind.Object
+                            ? details.Clone() : null),
                     _ => null
                 };
                 if (terminal is null)
@@ -199,9 +201,9 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                 return Unobserved<TObservation>(request.RequestId, "worker-exit-disagreement", $"Worker exit status contradicted its result. {stderr}");
             if (terminal is null || terminal.RequestId != request.RequestId)
                 return Unobserved<TObservation>(request.RequestId, "worker-result-unobserved", $"No corresponding terminal worker result was observed. {stderr}");
-            if (terminal.Standing != WorkerResultStanding.Observed)
-                return terminal;
-            if (terminal.Observations is null || terminal.Artifacts.IsDefault)
+            if (terminal.Artifacts.IsDefault)
+                return Unobserved<TObservation>(request.RequestId, "incomplete-worker-result", "The worker result lacked an artifact account.");
+            if (terminal.Standing == WorkerResultStanding.Observed && terminal.Observations is null)
                 return Unobserved<TObservation>(request.RequestId, "incomplete-worker-result", "A successful worker result lacked observations or an artifact account.");
 
             foreach (var artifact in terminal.Artifacts)
@@ -242,6 +244,15 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     private static string? OptionalString(JsonElement payload, string property)
         => payload.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
+    private static ImmutableArray<WorkerArtifact> ReadFailureArtifacts(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("artifacts", out var value) || value.ValueKind == JsonValueKind.Null)
+            return ImmutableArray<WorkerArtifact>.Empty;
+        if (value.ValueKind != JsonValueKind.Array)
+            throw new JsonException("The worker failure artifact account is invalid.");
+        return value.Deserialize<ImmutableArray<WorkerArtifact>>(WireJson);
+    }
+
     private static EquilibrationWorkProgress? ReadEquilibrationProgress(JsonElement payload)
     {
         if (payload.ValueKind != JsonValueKind.Object ||
@@ -266,8 +277,8 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
     // inputs. A previous stage's artifact may be reused, but the worker never
     // opens a mutable external path while carrying out this request. Explicit
     // executable paths and OpenMM's identified installed membrane patch are
-    // provider resources checked by their owner worker. A separately derived
-    // custom patch is a molecular input and is staged by its exact digest.
+    // provider resources checked by their owner worker. The mapped POPC source
+    // and conversion are molecular inputs staged by their exact digests.
     private static async Task<JsonNode> StageInputsAsync<TPayload>(
         TPayload payload, string workingDirectory, CancellationToken cancellationToken)
         where TPayload : class
@@ -291,8 +302,7 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
         if (node is not JsonObject objectNode) return;
 
         var patchMode = objectNode["nativePatchMode"]?.GetValue<string>();
-        if (patchMode is "popc-62-109-deletion" or "balanced-defect-deletion" or
-            "mapped-lipid21-zenodo-popc")
+        if (patchMode == "mapped-lipid21-zenodo-popc")
         {
             var derived = objectNode["nativePatchPath"]?.GetValue<string>();
             var derivedHash = objectNode["nativePatchSha256"]?.GetValue<string>();
@@ -305,9 +315,8 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
                 throw new InvalidDataException("The custom membrane patch lacks distinct, identified source and derived bytes.");
             objectNode["nativePatchPath"] = await StageFileAsync(derived, derivedHash,
                 inputDirectory, cancellationToken);
-            if (patchMode == "mapped-lipid21-zenodo-popc")
-                objectNode["nativeSourcePatchPath"] = await StageFileAsync(installedSource,
-                    installedSourceHash, inputDirectory, cancellationToken);
+            objectNode["nativeSourcePatchPath"] = await StageFileAsync(installedSource,
+                installedSourceHash, inputDirectory, cancellationToken);
         }
 
         foreach (var entry in objectNode.ToArray())
@@ -315,6 +324,11 @@ public sealed class ScientificWorkerExchange : IScientificWorkerExchange
             if (entry.Value is null) continue;
             if (entry.Key == "forceFieldFiles" && entry.Value is JsonArray forceFields)
             {
+                // Amber LEaP reads its installed parameter and library files through
+                // AMBERHOME. Preserve those exact installed paths so the selected
+                // full-provider route can verify the files it actually consumes.
+                if (objectNode["route"]?.GetValue<string>() == "packmolMemgen")
+                    continue;
                 foreach (var asset in forceFields.OfType<JsonObject>())
                 {
                     var path = asset["path"]?.GetValue<string>()

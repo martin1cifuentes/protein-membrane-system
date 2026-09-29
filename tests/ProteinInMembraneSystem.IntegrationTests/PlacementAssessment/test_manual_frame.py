@@ -1,9 +1,8 @@
-"""Exact native-reference headgroup frames, including inverted patch orientation."""
+"""The adopted construction frame determines manual upper and lower positions."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 import shutil
 import sys
@@ -12,44 +11,56 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src" / "ProteinInMembrane.Host"))
-from ProteinInMembraneSystem.PlacementAssessment.worker.placement_assessment import _headgroup_boundary  # noqa: E402
+from ProteinInMembraneSystem.PlacementAssessment.worker.placement_assessment import place_manual  # noqa: E402
 from ProteinInMembraneSystem.worker.exchange import WorkError  # noqa: E402
+
+SOURCE = Path(__file__).parent / "fixtures" / "6qwr-prepared.pdb"
+
+
+def _heavy_z(path: Path) -> list[float]:
+    return [float(line[46:54]) for line in path.read_text().splitlines()
+            if line.startswith(("ATOM  ", "HETATM")) and line[76:78].strip() not in {"H", "D"}]
 
 
 class ManualFrameTests(unittest.TestCase):
-    def test_all_identified_pure_templates_supply_an_orientation_independent_frame(self):
-        catalogue = json.loads((ROOT / "config/policies/protein-membrane-current.json").read_text())
-        with tempfile.TemporaryDirectory() as temporary:
-            work = Path(temporary)
-            extents = {}
-            for representation in catalogue["lipids"]:
-                species = representation["speciesId"]
-                if species == "CHL1":
-                    continue
-                source = ROOT / "config/policies" / representation["coordinateTemplatePath"]
-                target = work / f"{species}.cif"
-                shutil.copyfile(source, target)
-                descriptor = dict(representation, coordinateTemplatePath=target.name)
-                self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(),
-                                 descriptor["coordinateTemplateSha256"])
-                extents[species] = _headgroup_boundary(work, [descriptor])
-                self.assertGreater(extents[species], 5.0)
-                self.assertLess(extents[species], 80.0)
-            self.assertGreater(extents["DPPC"], 18.0,
-                               "The native DPPC reference stores its phosphate below its tails")
+    def _place(self, position: str, envelope: float) -> tuple[Path, dict]:
+        self.temporary = tempfile.TemporaryDirectory()
+        work = Path(self.temporary.name)
+        prepared = work / "prepared.pdb"
+        shutil.copyfile(SOURCE, prepared)
+        payload = {
+            "preparedPdbPath": str(prepared),
+            "preparedSha256": hashlib.sha256(prepared.read_bytes()).hexdigest(),
+            "preparedProteinId": "6qwr-controlled-frame",
+            "preparedAtomCount": sum(line.startswith(("ATOM  ", "HETATM"))
+                                     for line in prepared.read_text().splitlines()),
+            "maximumAtomCount": 120000,
+            "startingPosition": position,
+            "offsetXAngstrom": 0.0, "offsetYAngstrom": 0.0, "offsetZAngstrom": 0.0,
+            "rotationXDegrees": 0.0, "rotationYDegrees": 0.0, "rotationZDegrees": 0.0,
+            "leafletEnvelopeAngstrom": envelope,
+        }
+        result = place_manual(work, payload, lambda *_: None)
+        return work / "manual-placement.pdb", result
 
-    def test_head_index_must_identify_the_actual_phosphate(self):
-        catalogue = json.loads((ROOT / "config/policies/protein-membrane-current.json").read_text())
-        representation = next(item for item in catalogue["lipids"] if item["speciesId"] == "DPPC")
-        with tempfile.TemporaryDirectory() as temporary:
-            work = Path(temporary)
-            source = ROOT / "config/policies" / representation["coordinateTemplatePath"]
-            target = work / "DPPC.cif"
-            shutil.copyfile(source, target)
-            incorrect = dict(representation, coordinateTemplatePath=target.name,
-                             headAtomIndices=[representation["headAtomIndices"][0] + 1])
-            with self.assertRaises(WorkError):
-                _headgroup_boundary(work, [incorrect])
+    def tearDown(self) -> None:
+        if hasattr(self, "temporary"):
+            self.temporary.cleanup()
+
+    def test_selected_23_angstrom_envelope_anchors_both_physical_sides(self) -> None:
+        upper, result = self._place("upper", 23.0)
+        self.assertAlmostEqual(23.0, result["observations"]["headgroupBoundaryAngstrom"])
+        self.assertAlmostEqual(25.0, min(_heavy_z(upper)), places=2)
+        self.temporary.cleanup()
+        del self.temporary
+        lower, result = self._place("lower", 23.0)
+        self.assertAlmostEqual(23.0, result["observations"]["headgroupBoundaryAngstrom"])
+        self.assertAlmostEqual(-25.0, max(_heavy_z(lower)), places=2)
+
+    def test_absent_frame_cannot_position_a_construct(self) -> None:
+        with self.assertRaises(WorkError) as caught:
+            self._place("upper", 0.0)
+        self.assertEqual("missingFrame", caught.exception.code)
 
 
 if __name__ == "__main__":

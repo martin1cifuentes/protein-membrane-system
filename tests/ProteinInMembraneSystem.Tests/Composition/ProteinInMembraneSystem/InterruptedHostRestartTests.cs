@@ -23,7 +23,7 @@ public sealed class InterruptedHostRestartTests
         var first = NewRoot(fixture, firstWorker, http, workspacePath, cataloguePath);
         EstablishStudy(first, fixture);
 
-        var started = await Command(first, ActorActionKind.StartPreparation, new { });
+        var started = await Command(first, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.True(started.Established, started.Reason);
         await firstWorker.ConstructionEntered.Task.WaitAsync(TimeSpan.FromSeconds(4),
             TestContext.Current.CancellationToken);
@@ -59,7 +59,7 @@ public sealed class InterruptedHostRestartTests
         Assert.Empty(state.Stages);
         Assert.Null(state.Inspection);
         Assert.False(state.Actions.Single(item =>
-            item.Kind == ActorActionKind.ContinueMinimization).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         var retained = Workspace(reopened).Snapshot();
         Assert.Null(retained.CurrentAttempt);
         Assert.Null(retained.CurrentExecution);
@@ -115,7 +115,7 @@ public sealed class InterruptedHostRestartTests
         revisions.Add(revision.Id, revision);
         Workspace(root).RetainStudy(revision);
         Assert.True(root.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
     }
 
     private static LocalRunWorkspace Workspace(ProductRoot root) =>

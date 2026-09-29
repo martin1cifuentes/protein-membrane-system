@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from openmm import Vec3, unit
@@ -87,6 +88,15 @@ def main(output: Path) -> None:
     topology.setUnitCellDimensions(Vec3(*box) * unit.angstrom)
     with output.open("w") as stream:
         PDBxFile.writeFile(topology, coordinates * unit.angstrom, stream, keepIds=True)
+    # OpenMM writes the current date in the mmCIF header. Reproducibility of
+    # this qualified molecular asset requires the recorded conversion date.
+    written = output.read_text()
+    written, replacements = re.subn(
+        r"(?m)^# Created with OpenMM 8\.6, \d{4}-\d{2}-\d{2}$",
+        f"# Created with OpenMM 8.6, {manifest['mappedHeaderDate']}", written)
+    if replacements != 1:
+        raise ValueError("The converted mmCIF header differs from its recorded OpenMM format")
+    output.write_text(written)
     if digest(output) != manifest["mappedSha256"]:
         raise ValueError("The converted bytes differ from the qualified mapped patch")
     print(f"Verified {output}: {manifest['mappedSha256']}")

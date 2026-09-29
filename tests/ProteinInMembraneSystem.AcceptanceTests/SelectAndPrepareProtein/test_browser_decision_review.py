@@ -10,46 +10,20 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
-import time
 import unittest
 
 from playwright.sync_api import expect, sync_playwright
 
 from test_browser_route import ROOT, chromium, running_host
+from test_recommended_plan import POLICY as CURRENT_POLICY, two_histidine_fixture, until
 
 
 ARTIFACTS = ROOT / "out" / "browser-acceptance" / "decision-review"
 
 
-def two_site_fixture(path: Path) -> None:
-    """Two displaced copies of 6QWR model 1 for UI mechanics, not biology."""
-    lines = (ROOT / "config" / "policies" / "source-assets" / "6QWR.pdb").read_text().splitlines()
-    inside = False
-    atoms = []
-    for line in lines:
-        if line.startswith("MODEL"):
-            inside = True
-            continue
-        if inside and line.startswith("ENDMDL"):
-            break
-        if inside and line.startswith("ATOM"):
-            atoms.append(line)
-    assert sum(line[17:20] == "HIS" for line in atoms) > 0
-    with path.open("w") as output:
-        output.write("REMARK 900 TWO-SITE SOFTWARE FIXTURE; NOT SCIENTIFIC SUITABILITY EVIDENCE\n")
-        serial = 0
-        for chain, shift in (("A", 0), ("B", 80)):
-            for line in atoms:
-                serial += 1
-                x = float(line[30:38]) + shift
-                output.write(f"{line[:6]}{serial:5d}{line[11:21]}{chain}{line[22:30]}"
-                             f"{x:8.3f}{line[38:]}\n")
-            output.write("TER\n")
-        output.write("END\n")
-
-
 def density_state(base: dict, standing: str) -> dict:
     state = deepcopy(base)
+    state["preparationPlan"] = None
     protein = state["protein"]
     review = state["preparationReview"]
     assert protein and review and state["inspection"]
@@ -120,6 +94,7 @@ def density_state(base: dict, standing: str) -> dict:
 def distinct_meanings_state(base: dict, declined_bond: bool = False) -> dict:
     """Presentation-only options with different decision meanings and counts."""
     state = deepcopy(base)
+    state["preparationPlan"] = None
     review = state["preparationReview"]
     protein = state["protein"]
     assert review and protein
@@ -188,13 +163,14 @@ def distinct_meanings_state(base: dict, declined_bond: bool = False) -> dict:
 
 
 class DecisionReviewBrowserTests(unittest.TestCase):
-    def test_optional_focus_failure_and_late_response_do_not_change_the_choice(self):
+    def test_optional_focus_failure_and_late_response_do_not_change_the_plan_choice(self):
+        """A local view failure cannot authorize or rewrite the checked plan."""
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            source = directory / "two-histidine-software-fixture.pdb"
-            two_site_fixture(source)
-            with running_host(directory / "workspace") as base, sync_playwright() as playwright:
+            source = directory / "two-histidines-software-fixture.pdb"
+            two_histidine_fixture(source)
+            with running_host(directory / "workspace", CURRENT_POLICY) as base, sync_playwright() as playwright:
                 browser = chromium(playwright)
                 try:
                     page = browser.new_page(viewport={"width": 1024, "height": 768})
@@ -203,17 +179,19 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                     page.locator("#upload-provenance").select_option("experimental")
                     page.get_by_role("button", name="Upload source").click()
                     expect(page.locator(".source-context")).to_contain_text("Structure displayed", timeout=120000)
-                    expect(page.locator(".sole-model")).to_contain_text("selected for this draft")
                     page.get_by_label("Chain A").check()
                     page.get_by_role("button", name="Assess selected protein").click()
-                    expect(page.locator(".review-progress")).to_contain_text("1 site choice", timeout=120000)
+                    ready = until(page, lambda current: (current.get("preparationPlan") or {}).get("standing")
+                                  == "ready", "current checked two-histidine plan")
+                    first_digest = ready["preparationPlan"]["planSha256"]
+                    self.assertEqual(ready["preparationPlan"]["stateChoiceCount"], 2)
+                    page.get_by_role("button", name="Review or change choices").click()
+                    expect(page.locator(".review-site-list .review-site")).to_have_count(2)
+                    page.locator(".review-site-list .review-site").first.click()
                     review = page.request.get(base + "/api/state").json()["preparationReview"]
                     site = next(item for item in review["decisions"] if item["kind"] == "residueState")
                     hid = next(item["proposalId"] for item in site["options"] if item["proposedChange"] == "HID")
-                    hie = next(item["proposalId"] for item in site["options"] if item["proposedChange"] == "HIE")
                     page.locator(".review-option").filter(has_text="HID").locator("input").check()
-                    confirm = page.get_by_role("button", name="Confirm state")
-                    expect(confirm).to_be_enabled()
                     expect(page.locator(".viewer-mount[data-camera-ready='true']")).to_be_visible(timeout=120000)
                     before_camera = page.evaluate("""() => {
                       const viewer = document.querySelector('.viewer-mount')?.[Symbol.for('molstar.viewer')];
@@ -232,8 +210,9 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                     page.locator(".review-option.picked").get_by_role("button", name="Focus on this residue").click()
                     expect(page.locator(".protein-review-panel .review-blocker-inline")).to_contain_text(
                         "Fixture evidence service unavailable.")
-                    expect(confirm).to_be_enabled()
-                    page.screenshot(path=str(ARTIFACTS / "real-evidence-failed-1024.png"), full_page=True)
+                    self.assertEqual(page.request.get(base + "/api/state").json()["preparationPlan"]["planSha256"],
+                                     first_digest)
+                    page.screenshot(path=str(ARTIFACTS / "plan-evidence-failed-1024.png"), full_page=True)
                     page.unroute("**/api/commands", refuse_evidence)
 
                     page.evaluate("""id => {
@@ -250,131 +229,60 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                         };
                     }""", hid)
                     page.locator(".review-option.picked").get_by_role("button", name="Focus on this residue").click()
-                    page.locator(".review-option").filter(has_text="HIE").locator("input").check()
-                    expect(page.locator(".review-option.picked")).to_contain_text("HIE")
+                    page.locator(".review-option").filter(has_text="HIP").locator("input").check()
+                    expect(page.locator(".review-option.picked")).to_contain_text("HIP")
                     page.wait_for_timeout(1600)
-                    expect(page.locator(".review-option.picked")).to_contain_text(
-                        "Neutral histidine with its ring proton on NE2")
+                    expect(page.locator(".review-option.picked")).to_contain_text("Positively charged histidine")
                     expect(page.get_by_label("Selected option explanation and evidence")).to_contain_text(
                         "has not measured which state is best")
-                    expect(confirm).to_be_enabled()
-                    self.assertEqual(page.request.get(base + "/api/state").json()["inspection"]["subjectId"], hid)
-                    self.assertIsNone(page.request.get(base + "/api/state").json()["inspection"]["focusId"])
                     self.assertEqual(before_camera, page.evaluate("""() => {
                       const viewer = document.querySelector('.viewer-mount')?.[Symbol.for('molstar.viewer')];
                       return viewer?.plugin.canvas3d?.camera.getSnapshot().target;
                     }"""))
-                    page.screenshot(path=str(ARTIFACTS / "real-stale-evidence-1024.png"), full_page=True)
+                    page.screenshot(path=str(ARTIFACTS / "plan-stale-evidence-1024.png"), full_page=True)
                     page.evaluate("window.fetch = window.__realReviewFetch")
                     self.assertEqual(page.request.get(base + "/api/state").json()["preparationReview"]["confirmedCount"], 0)
-                    confirm.click()
-                    expect(page.locator(".review-receipt")).to_contain_text("HIE confirmed", timeout=120000)
-                    self.assertEqual(page.request.get(base + "/api/state").json()["preparationReview"]["confirmedCount"], 1)
+                    page.get_by_role("button", name="Use this choice").click()
+                    updated = until(page, lambda current: (current.get("preparationPlan") or {}).get("standing")
+                                    == "ready" and current["preparationPlan"]["planSha256"] != first_digest,
+                                    "rechecked HIP override")
+                    self.assertTrue(updated["preparationPlan"]["hasOverrides"])
+                    self.assertEqual(updated["preparationReview"]["confirmedCount"], 0)
+                    self.assertIsNone(updated["proteinTask"]["preparedProteinId"])
                 finally:
                     browser.close()
 
-    def test_two_site_continuation_and_labelled_density_states(self):
+    def test_controlled_density_and_distinct_decision_states(self):
+        """Use a current real selection to anchor labelled presentation fixtures."""
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            source = directory / "two-histidine-software-fixture.pdb"
-            two_site_fixture(source)
-            with running_host(directory / "workspace") as base, sync_playwright() as playwright:
+            source = directory / "two-histidines-software-fixture.pdb"
+            two_histidine_fixture(source)
+            with running_host(directory / "workspace", CURRENT_POLICY) as base, sync_playwright() as playwright:
                 browser = chromium(playwright)
                 try:
                     page = browser.new_page(viewport={"width": 1672, "height": 950}, device_scale_factor=1)
-                    requests = []
-                    page.on("request", lambda request: requests.append(json.loads(request.post_data))
-                            if request.url.endswith("/api/commands") and request.post_data else None)
                     page.goto(base)
-                    expect(page.locator(".workspace-body")).to_be_visible(timeout=30000)
                     page.locator("#source-upload").set_input_files(str(source))
                     page.locator("#upload-provenance").select_option("experimental")
                     page.get_by_role("button", name="Upload source").click()
                     expect(page.locator(".source-context")).to_contain_text("Structure displayed", timeout=120000)
-                    expect(page.locator(".sole-model")).to_contain_text("selected for this draft")
                     page.get_by_label("Chain A").check()
-                    page.get_by_label("Chain B").check()
                     page.get_by_role("button", name="Assess selected protein").click()
-                    expect(page.locator(".review-progress")).to_contain_text("2 site choices", timeout=120000)
-                    account = page.request.get(base + "/api/state").json()
-                    review = account["preparationReview"]
-                    self.assertEqual((len(account["protein"]["changes"]), len(review["decisions"])), (8, 4))
-                    site_a = next(item for item in review["decisions"] if item["kind"] == "residueState" and item["residue"]["chain"] == "A")
-                    site_b = next(item for item in review["decisions"] if item["kind"] == "residueState" and item["residue"]["chain"] == "B")
-                    hid = next(item["proposalId"] for item in site_a["options"] if item["proposedChange"] == "HID")
-                    hie = next(item["proposalId"] for item in site_b["options"] if item["proposedChange"] == "HIE")
-                    page.screenshot(path=str(ARTIFACTS / "real-two-site-pending-1672.png"), full_page=True)
-
-                    page.locator(".review-site-list .review-site").first.click()
-                    page.locator(".review-option").filter(has_text="HID").locator("input").check()
-                    confirm = page.get_by_role("button", name="Confirm state")
-                    expect(confirm).to_be_enabled()
-                    page.evaluate("window.__reviewViewer = document.querySelector('.viewer-mount')?.[Symbol.for('molstar.viewer')]")
-                    confirm.click()
-                    expect(page.locator(".review-receipt")).to_contain_text("HID confirmed", timeout=30000)
-                    page.screenshot(path=str(ARTIFACTS / "real-two-site-confirmed-1672.png"), full_page=True)
-                    review = page.request.get(base + "/api/state").json()["preparationReview"]
-                    self.assertEqual((review["confirmedCount"], review["remainingCount"]), (1, 3))
-                    self.assertEqual(sum(option["disposition"] == "notChosen" for option in
-                                         next(item for item in review["decisions"] if item["id"] == site_a["id"])["options"]), 2)
-
-                    page.get_by_role("button", name="Next unresolved site").click()
-                    expect(page.locator(".review-site-title")).to_contain_text("Histidine 108 · Chain B")
-                    radio = page.locator(".review-option").filter(has_text="HIE").locator("input")
-                    radio.focus()
-                    radio.press("Space")
-                    expect(confirm).to_be_enabled()
-                    self.assertTrue(page.evaluate("window.__reviewViewer === document.querySelector('.viewer-mount')?.[Symbol.for('molstar.viewer')]"))
-                    confirm.press("Enter")
-                    expect(page.locator(".review-receipt")).to_contain_text("HIE confirmed", timeout=30000)
-                    self.assertEqual([(item["kind"], item["data"].get("proposalId")) for item in requests
-                                      if item["kind"] == "approvePreparationChange"],
-                                     [("approvePreparationChange", hid), ("approvePreparationChange", hie)])
-                    self.assertEqual([item["data"]["subjectId"] for item in requests
-                                      if item["kind"] == "selectInspectionSubject"], [])
-
-                    page.get_by_role("button", name="Next unresolved repair").click()
-                    expect(page.locator(".review-site-scope")).to_contain_text("Missing-atom repair")
-                    expect(page.locator(".review-other")).to_have_attribute("open", "")
-                    page.locator(".review-site-list .review-site").first.click()
-
-                    slow_page = browser.new_page(viewport={"width": 1024, "height": 768})
-                    slow_page.route("**/api/structures/**", lambda route: (time.sleep(1.2), route.continue_()))
-                    slow_page.goto(base, wait_until="domcontentloaded")
-                    expect(slow_page.locator(".scene-loading")).to_be_visible(timeout=5000)
-                    slow_page.screenshot(path=str(ARTIFACTS / "real-two-site-loading-1024.png"), full_page=True)
-                    expect(slow_page.locator(".viewer-mount[data-camera-ready='true']")).to_be_visible(timeout=120000)
-                    slow_page.close()
-
-                    failed_page = browser.new_page(viewport={"width": 1024, "height": 768})
-                    failed_page.route("**/api/structures/**", lambda route: route.abort("failed"))
-                    failed_page.goto(base)
-                    expect(failed_page.locator(".scene-error")).to_contain_text("Structure unavailable", timeout=30000)
-                    failed_page.screenshot(path=str(ARTIFACTS / "real-two-site-visualization-failed-1024.png"), full_page=True)
-                    failed_page.locator(".review-site-list .review-site").first.click()
-                    expect(failed_page.locator(".review-site-title")).to_contain_text("Histidine 108 · Chain A")
-                    failed_page.close()
-
-                    page.get_by_role("button", name="Reviewed sites (2)").click()
-                    self.assertEqual(page.locator(".review-site-list .review-site").count(), 2)
-                    page.get_by_role("button", name="Open sites (0)").click()
-                    self.assertEqual(page.locator(".review-site-list .review-site").count(), 0)
-                    page.get_by_role("button", name="All sites (2)").click()
-                    page.locator(".review-site-list .review-site").first.press("Enter")
-                    expect(page.locator(".review-receipt")).to_contain_text("HID confirmed")
-                    page.set_viewport_size({"width": 1024, "height": 768})
-                    page.screenshot(path=str(ARTIFACTS / "real-two-site-confirmed-1024.png"), full_page=True)
-                    page.set_viewport_size({"width": 820, "height": 720})
-                    page.screenshot(path=str(ARTIFACTS / "real-two-site-confirmed-820.png"), full_page=True)
-                    self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth - innerWidth"), 0)
-                    page.get_by_role("button", name="Collapse inputs").click()
-                    page.screenshot(path=str(ARTIFACTS / "real-two-site-collapsed-820.png"), full_page=True)
-                    page.get_by_role("button", name="Show inputs").click()
-                    expect(page.locator(".review-receipt")).to_contain_text("HID confirmed")
-
-                    base_account = page.request.get(base + "/api/state").json()
+                    base_account = until(page, lambda current: (current.get("preparationPlan") or {}).get("standing")
+                                         == "ready", "current two-histidine plan")
+                    self.assertEqual(base_account["preparationPlan"]["stateChoiceCount"], 2)
+                    self.assertEqual(len(base_account["preparationReview"]["decisions"]), 2)
+                    self.assertIsNone(base_account["proteinTask"]["preparedProteinId"])
+                    expect(page.get_by_role("button", name="Prepare with recommendations")).to_be_enabled()
                     fixture = {"value": density_state(base_account, "pending")}
+                    # View restoration sends an inspection command after reload.
+                    # Return the same labelled account so its real two-site
+                    # response cannot replace this controlled presentation state.
+                    page.route("**/api/commands", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps(fixture["value"])))
                     page.route("**/api/state", lambda route: route.fulfill(
                         status=200, content_type="application/json", body=json.dumps(fixture["value"])))
                     for standing in ("pending", "confirmed", "blocked", "preparing", "failed"):
@@ -383,12 +291,13 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                             page.set_viewport_size({"width": width, "height": height})
                             page.reload()
                             if standing in ("preparing", "failed"):
-                                expect(page.get_by_role("region", name="Protein task outcome"))\
+                                expect(page.get_by_role("region", name="Current protein result"))\
                                     .to_contain_text("Fixture", timeout=30000)
                                 expect(page.locator(".review-progress")).to_have_count(0)
                             else:
                                 expect(page.locator(".review-progress"))\
                                     .to_contain_text("38 site choices", timeout=30000)
+                                expect(page.locator(".review-progress")).to_be_visible()
                             if standing == "confirmed":
                                 page.locator(".review-site-list .review-site").first.click()
                                 expect(page.locator(".review-receipt")).to_contain_text("HID confirmed")
@@ -435,6 +344,21 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                         has_text="informational geometry note").locator("button").count(), 0)
                     page.screenshot(path=str(ARTIFACTS / "fixture-distinct-decision-types-1024.png"), full_page=True)
 
+                    model_five = distinct_meanings_state(base_account)
+                    model_five["sourceModels"][0]["sourceModelId"] = "5"
+                    model_five["preparationReview"]["decisions"][0]["options"][1]["evidence"][0]["applicability"] = (
+                        f"Study revision {model_five['study']['id']}; model 0; policy fixture-policy-secret")
+                    fixture["value"] = model_five
+                    page.reload()
+                    page.locator(".review-site-list .review-site").filter(has_text="Aspartate 901 · Chain A").click()
+                    page.locator(".review-option").filter(has_text="ASH").locator("input").check()
+                    explanation = page.get_by_label("Selected option explanation and evidence")
+                    explanation.get_by_text("Method, scope and limits").click()
+                    expect(explanation).to_contain_text("Selected source model 5")
+                    self.assertNotIn("model 1", explanation.inner_text())
+                    self.assertNotIn("Study revision ", explanation.inner_text())
+                    self.assertNotIn("fixture-policy-secret", explanation.inner_text())
+
                     fixture["value"] = distinct_meanings_state(base_account, declined_bond=True)
                     page.set_viewport_size({"width": 820, "height": 720})
                     page.reload()
@@ -447,6 +371,7 @@ class DecisionReviewBrowserTests(unittest.TestCase):
                     page.screenshot(path=str(ARTIFACTS / "fixture-declined-bond-820.png"), full_page=True)
 
                     no_choice = deepcopy(base_account)
+                    no_choice["preparationPlan"] = None
                     no_choice["protein"]["changes"] = []
                     no_choice["protein"]["status"] = "review"
                     no_choice["inspection"].update({

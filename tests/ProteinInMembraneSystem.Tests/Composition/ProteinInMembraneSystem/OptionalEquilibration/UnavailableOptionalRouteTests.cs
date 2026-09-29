@@ -20,25 +20,21 @@ public sealed class UnavailableOptionalRouteTests
         var product = Product(fixture, worker, http);
         Assert.Null(fixture.Policy.OptionalEquilibration);
 
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await Until(() => product.Snapshot().Attempt?.Status == "readyForMinimization");
-        var candidate = product.Snapshot().Attempt!;
-        Assert.True((await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = candidate.AttemptId,
-                constructedSubjectId = candidate.Constructed!.SubjectId })).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize,
+            new { policyId = fixture.Policy.Id })).Established);
         await worker.MinimizationEntered.Task.WaitAsync(TimeSpan.FromSeconds(10),
             TestContext.Current.CancellationToken);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1 &&
             product.Snapshot().Actions.Single(action =>
-                action.Kind == ActorActionKind.StartPreparation).Enabled);
+                action.Kind == ActorActionKind.BuildAndMinimize).Enabled);
 
         var before = Assert.Single(product.Snapshot().Stages);
         var assessment = Assert.IsType<PreparationAssessmentResult>(before.Assessment);
         Assert.Equal(StageKind.Minimization, before.Kind);
         Assert.Equal("completed", before.Status);
         Assert.True(assessment.CurrentlyApplicable);
-        Assert.Equal(PreparationQualification.Indeterminate, assessment.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, assessment.CheckStanding);
         var optionalAction = product.Snapshot().Actions.Single(action =>
             action.Kind == ActorActionKind.RequestEquilibration &&
             action.SubjectId == before.StageId);
@@ -126,7 +122,7 @@ public sealed class UnavailableOptionalRouteTests
         Field<Dictionary<string, StudyRevision>>(product, "_revisions").Add(revision.Id, revision);
         Field<LocalRunWorkspace>(product, "_workspace").RetainStudy(revision);
         Assert.True(product.Snapshot().Actions.Single(action =>
-            action.Kind == ActorActionKind.StartPreparation).Enabled);
+            action.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         return product;
     }
 

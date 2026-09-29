@@ -157,23 +157,80 @@ public partial class ExternalSourceExchange
         throw new InvalidDataException("The selected source kind has no established retrieval route.");
     }
 
-    // OPM's oriented PDB asset is optional reference evidence, not an orientation
-    // for the prepared construct. The exact correspondence still belongs to
-    // Placement Assessment; missing or uninterpretable records stay unavailable.
-    public virtual async Task<OpmReferenceRecord?> TryRetrieveOpmReferenceAsync(
+    // OPM's record lookup and oriented PDB download are separate observations.
+    // A missing static asset does not establish that the database has no entry.
+    // Exact construct correspondence still belongs to Placement Assessment.
+    public virtual async Task<OpmLookupResult> TryRetrieveOpmReferenceAsync(
         string pdbAccession,
         string targetDirectory,
         CancellationToken cancellationToken)
     {
-        if (!PdbId().IsMatch(pdbAccession)) return null;
+        if (!PdbId().IsMatch(pdbAccession))
+            return new OpmLookupResult(OpmLookupStanding.Failed, null, "The OPM lookup needs an exact PDB identifier.");
         var accession = pdbAccession.ToLowerInvariant();
+        var metadataAddress = new Uri($"https://opm-back.cc.lehigh.edu/opm-backend/primary_structures/pdbid/{accession}");
         var address = new Uri($"https://biomembhub.org/shared/opm-assets/pdb/{accession}.pdb");
         try
         {
+            using var metadata = await _http.GetAsync(metadataAddress, cancellationToken);
+            if (!metadata.IsSuccessStatusCode)
+                return new OpmLookupResult(metadata.StatusCode == HttpStatusCode.NotFound
+                    ? OpmLookupStanding.Unobserved : OpmLookupStanding.Failed, null,
+                    $"The exact OPM record lookup returned HTTP {(int)metadata.StatusCode}; record absence was not established.");
+            using var document = await JsonDocument.ParseAsync(
+                await metadata.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            var record = document.RootElement;
+            if (record.ValueKind == JsonValueKind.Array)
+            {
+                if (record.GetArrayLength() == 0)
+                    return new OpmLookupResult(OpmLookupStanding.NoMatch, null,
+                        "The completed exact OPM record lookup found no matching entry.");
+                if (record.GetArrayLength() != 1)
+                    return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                        "The exact OPM record lookup returned ambiguous entries.");
+                record = record[0];
+            }
+            else if (record.ValueKind == JsonValueKind.Object &&
+                     record.TryGetProperty("objects", out var entries))
+            {
+                if (entries.ValueKind != JsonValueKind.Array)
+                    return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                        "The exact OPM record lookup returned an uninterpretable entry list.");
+                if (entries.GetArrayLength() == 0)
+                    return new OpmLookupResult(OpmLookupStanding.NoMatch, null,
+                        "The completed exact OPM record lookup found no matching entry.");
+                if (entries.GetArrayLength() != 1)
+                    return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                        "The exact OPM record lookup returned ambiguous entries.");
+                record = entries[0];
+            }
+            if (record.ValueKind != JsonValueKind.Object ||
+                !record.TryGetProperty("pdbid", out var recordId) ||
+                recordId.ValueKind != JsonValueKind.String ||
+                !string.Equals(recordId.GetString(), accession, StringComparison.OrdinalIgnoreCase))
+                return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                    "The exact OPM record lookup did not return a corresponding identified entry.");
+            var membraneContext = "OPM oriented reference; provider membrane assumption not identified";
+            if (record.TryGetProperty("membrane_name_cache", out var membraneName) &&
+                membraneName.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(membraneName.GetString()))
+                membraneContext = $"OPM {membraneName.GetString()} membrane model";
+            double? tilt = null;
+            if (record.TryGetProperty("tilt", out var tiltValue) &&
+                tiltValue.ValueKind == JsonValueKind.Number &&
+                tiltValue.TryGetDouble(out var measuredTilt) && double.IsFinite(measuredTilt))
+                tilt = measuredTilt;
+
             using var response = await _http.GetAsync(address, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (response.StatusCode == HttpStatusCode.NotFound) return null;
-            response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength is > MaximumCoordinateBytes) return null;
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                    "The OPM entry was found, but its oriented coordinate asset was missing at the identified address.");
+            if (!response.IsSuccessStatusCode)
+                return new OpmLookupResult(OpmLookupStanding.Failed, null,
+                    $"The OPM coordinate download returned HTTP {(int)response.StatusCode}.");
+            if (response.Content.Headers.ContentLength is > MaximumCoordinateBytes)
+                return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                    "The OPM coordinate record exceeds the accepted local intake size.");
             Directory.CreateDirectory(targetDirectory);
             var path = Path.Combine(targetDirectory, $"opm-{accession}-{Guid.NewGuid():N}.pdb");
             await using (var target = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -189,19 +246,60 @@ public partial class ExternalSourceExchange
                     await target.WriteAsync(buffer.AsMemory(0, count), cancellationToken);
                 }
             }
-            var hasCoordinates = File.ReadLines(path).Any(line => line.StartsWith("ATOM  ", StringComparison.Ordinal) ||
-                line.StartsWith("HETATM", StringComparison.Ordinal));
-            if (!hasCoordinates) return null;
+            var lines = File.ReadAllLines(path);
+            var header = lines.FirstOrDefault(line => line.StartsWith("HEADER", StringComparison.Ordinal));
+            if (header is null || header.Length < 66 ||
+                !string.Equals(header.Substring(62, 4).Trim(), accession,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !lines.Any(line => line.StartsWith("ATOM  ", StringComparison.Ordinal)))
+                return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                    "The OPM coordinate asset lacks the expected PDB identity or molecular coordinates.");
+            // OPM supplies planar DUM markers and a half-thickness REMARK in the
+            // oriented PDB itself. Metadata supplies only descriptive context.
+            var markerZ = lines.Where(line => line.StartsWith("HETATM", StringComparison.Ordinal) &&
+                    line.Length >= 54 && line.Substring(17, 3) == "DUM")
+                .Select(line => double.TryParse(line.Substring(46, 8),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var z)
+                    ? (double?)z : null).Where(value => value is not null)
+                .Select(value => value!.Value).ToArray();
+            var halfThickness = lines.Where(line => line.StartsWith("REMARK", StringComparison.Ordinal) &&
+                    line.Contains("1/2 of bilayer thickness:", StringComparison.OrdinalIgnoreCase))
+                .Select(line => double.TryParse(line.Split(':').Last().Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var half)
+                    ? (double?)half : null).FirstOrDefault();
+            if (markerZ.Length < 2 || halfThickness is not > 0 ||
+                Math.Abs(markerZ.Max() - markerZ.Min() - 2 * halfThickness.Value) > 0.05)
+                return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                    "The OPM coordinate asset lacks a coherent observed membrane boundary.");
+            var midplane = (markerZ.Min() + markerZ.Max()) / 2;
             await using var stream = File.OpenRead(path);
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
-            return new OpmReferenceRecord(pdbAccession.ToUpperInvariant(), address.ToString(), path, hash,
+            var reference = new OpmReferenceRecord(pdbAccession.ToUpperInvariant(), address.ToString(), path, hash,
                 null, ImmutableArray<ChainSelection>.Empty, ImmutableArray<string>.Empty,
-                ImmutableArray<string>.Empty, "OPM oriented PDB; exact assembly and membrane context not established",
-                null, null);
+                ImmutableArray<string>.Empty, membraneContext,
+                2 * halfThickness.Value, tilt, null, false, midplane);
+            return new OpmLookupResult(OpmLookupStanding.Found, reference, null);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidDataException)
+        catch (OperationCanceledException exception)
         {
-            return null;
+            return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                $"The OPM lookup outcome could not be observed after interruption: {exception.Message}");
+        }
+        catch (JsonException exception)
+        {
+            return new OpmLookupResult(OpmLookupStanding.Unobserved, null,
+                $"The OPM record response could not be interpreted: {exception.Message}");
+        }
+        catch (InvalidDataException exception)
+        {
+            return new OpmLookupResult(OpmLookupStanding.Unobserved, null, exception.Message);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            return new OpmLookupResult(OpmLookupStanding.Failed, null,
+                $"The OPM lookup or coordinate retrieval failed: {exception.Message}");
         }
     }
 

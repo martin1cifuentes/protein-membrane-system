@@ -45,10 +45,7 @@ class MappedPopcProductionBrowserTests(unittest.TestCase):
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Membrane").click()
                     for side in ("Upper", "Lower"):
                         page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option("POPC")
-                    page.get_by_role("button", name="Propose membrane model").click()
-                    until(page, lambda current: (current.get("membrane") or {}).get("status") == "proposed",
-                          "proposed POPC")
-                    page.get_by_role("button", name="Adopt and assess displayed proposal").click()
+                    page.get_by_role("button", name="Use this membrane").click()
                     until(page, lambda current: (current.get("membrane") or {}).get("status") == "assessed",
                           "checked POPC")
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Placement").click()
@@ -60,27 +57,28 @@ class MappedPopcProductionBrowserTests(unittest.TestCase):
                     until(page, lambda current: current["study"]["adoptedPlacementProposalId"] ==
                           positioned["placement"]["proposalId"], "adopted pose")
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Preparation").click()
-                    expect(page.get_by_role("button", name="Construct system")).to_be_enabled()
-                    page.get_by_role("button", name="Construct system").click()
-                    candidate = until(page, lambda current: (current.get("attempt") or {}).get("status") in
-                                      ("readyForMinimization", "failed", "resourceRefused", "unobserved"),
-                                      "real native candidate or attributable failure", seconds=1100)
-                    self.assertEqual(candidate["attempt"]["status"], "readyForMinimization",
-                                     candidate["attempt"])
+                    route = page.locator(".construction-route").filter(has_text="OpenMM native: POPC")
+                    expect(route.get_by_role("button", name="Build and minimize")).to_be_enabled()
+                    route.get_by_role("button", name="Build and minimize").click()
+                    candidate = until(page, lambda current: (current.get("attempt") or {}).get("constructed")
+                                      is not None or (current.get("attempt") or {}).get("status") in
+                                      ("failed", "resourceRefused", "unobserved"),
+                                      "checked native construction or attributable failure", seconds=1100)
                     self.assertEqual(candidate["attempt"]["policyId"],
                                      "canonical-protein-pure-popc-mapped-zenodo-construction")
                     self.assertIsNotNone(candidate["attempt"]["constructed"])
                     self.assertGreater(candidate["attempt"]["constructed"]["atomCount"],
                                        candidate["protein"]["atomCount"])
+                    page.get_by_role("button", name="Review attempt").click()
+                    page.get_by_role("button", name="Inspect verified constructed system").click()
                     until(page, lambda current: (current.get("inspection") or {}).get("subjectId") ==
                           candidate["attempt"]["constructed"]["subjectId"], "candidate inspection")
                     expect(page.locator(".viewer-mount canvas")).to_have_count(1, timeout=180000)
                     expect(page.locator(".scene-loading")).not_to_be_visible(timeout=240000)
                     page.screenshot(path=str(ARTIFACTS / "mapped-popc-native-candidate-1672.png"),
                                     full_page=True, animations="disabled")
-                    continue_button = page.get_by_role("button", name="Authorize minimization of this candidate")
-                    expect(continue_button).to_be_enabled()
-                    continue_button.click()
+                    if candidate["attempt"]["status"] != "completed":
+                        self.assertFalse(any(item["status"] == "completed" for item in candidate["stages"]))
                     completed = until(page, lambda current: (current.get("attempt") or {}).get("status") in
                                       ("completed", "failed", "stopped", "unobserved") and
                                       (current.get("attempt") or {}).get("stageKind") == "Minimization",
@@ -94,6 +92,7 @@ class MappedPopcProductionBrowserTests(unittest.TestCase):
                                      candidate["attempt"]["constructed"]["subjectId"])
                     self.assertEqual(minimized["observation"]["termination"], "converged")
                     page.get_by_role("navigation", name="Research work areas").get_by_role("button", name="Results").click()
+                    page.locator(".result-stage-list button").first.click()
                     until(page, lambda current: (current.get("inspection") or {}).get("subjectId") ==
                           minimized["stageId"], "minimized stage inspection")
                     expect(page.locator(".scene-loading")).not_to_be_visible(timeout=240000)
@@ -124,7 +123,7 @@ class MappedPopcProductionBrowserTests(unittest.TestCase):
                         self.assertEqual(manifest["construction"]["achievedComposition"], [
                             {"physicalSide": side, "speciesId": "POPC", "count": 63,
                              "intendedFraction": 1} for side in ("upper", "lower")])
-                        self.assertEqual(manifest["assessment"]["qualification"], "Indeterminate")
+                        self.assertEqual(manifest["assessment"]["checkStanding"], "checksIncomplete")
                         self.assertTrue(manifest["readBack"]["readBackMatched"])
                         values = {item["name"]: item["value"] for item in
                                   manifest["observation"]["localState"]["measurements"]}

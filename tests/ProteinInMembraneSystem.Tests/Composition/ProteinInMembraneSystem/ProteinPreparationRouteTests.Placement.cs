@@ -13,8 +13,11 @@ namespace ProteinInMembraneSystem.Tests;
 public sealed partial class ProteinPreparationRouteTests
 {
     private const string PlacementSourceText = "ATOM      1  CA  ALA A   1       0.000   0.000  15.000  1.00 50.00           C\n" +
-        "ATOM      2  CA  ALA A   2       0.000   0.000   0.000  1.00 50.00           C\n" +
-        "ATOM      3  CA  ALA A   3       0.000   0.000 -15.000  1.00 50.00           C\nEND\n";
+        "ATOM      2  CA  ALA A   2       3.000   0.000   0.000  1.00 50.00           C\n" +
+        "ATOM      3  CA  ALA A   3       0.000   3.000 -15.000  1.00 50.00           C\nEND\n";
+    private static readonly string OpmReferenceText = PlacementSourceText.Replace("END\n", "", StringComparison.Ordinal) +
+        "HETATM    4  O   DUM A   4       0.000   0.000 -10.000  1.00  0.00           O\n" +
+        "HETATM    5  O   DUM A   5       0.000   0.000  10.000  1.00  0.00           O\nEND\n";
     private static readonly ImmutableArray<ResidueAddress> PlacementResidues =
         ImmutableArray.Create(new ResidueAddress(0, "A", 1, "", "A"),
             new ResidueAddress(0, "A", 2, "", "A"),
@@ -46,7 +49,7 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal(proposed.Value.Membrane!.ModelId, account.MembraneModelId);
         Assert.Equal(PlacementPhysicalSide.Both, account.PhysicalSide);
         Assert.Equal(0, account.MidplaneAngstrom);
-        Assert.Equal(20, account.ThicknessAngstrom);
+        Assert.Equal(46, account.ThicknessAngstrom);
         Assert.Contains(account.Evidence, evidence => evidence.Method == "Measured placement geometry" &&
             evidence.Bearing == EvidenceBearing.Context);
         Assert.DoesNotContain(account.Evidence, evidence => evidence.Bearing == EvidenceBearing.Supports);
@@ -101,30 +104,30 @@ public sealed partial class ProteinPreparationRouteTests
     }
 
     [Fact]
-    public async Task Chosen_unassessed_membrane_still_allows_an_inspectable_position_without_support()
+    public async Task Chosen_membrane_without_a_support_assessment_still_allows_geometric_positioning()
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
         var product = PlacementProduct(directory.Path, worker);
         await EstablishProteinAndMembrane(product);
-        var replacement = await Command(product, ActorActionKind.ProposeMembrane,
-            new { upper = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } },
-                lower = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } },
-                scientificPurpose = "Unqualified explicit membrane choice" });
-        var chosen = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = replacement.Value!.Membrane!.ModelId });
-        Assert.Equal("notEstablished", chosen.Value!.Membrane!.Status);
-        Assert.Equal("assessed", chosen.Value.Protein!.Status);
+        var chosenId = product.Snapshot().Membrane!.ModelId;
+        typeof(ProductRoot).GetField("_membrane", System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!.SetValue(product, null);
 
         var proposed = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
         Assert.True(proposed.Established, proposed.Reason);
-        Assert.Equal("notEstablished", proposed.Value!.Placement!.Status);
-        Assert.Equal(chosen.Value.Membrane.ModelId, proposed.Value.Placement.MembraneModelId);
-        Assert.Empty(worker.MeasurementRequests);
+        Assert.Equal("supported", proposed.Value!.Placement!.Status);
+        Assert.Equal(chosenId, proposed.Value.Placement.MembraneModelId);
+        Assert.Single(worker.MeasurementRequests);
         var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
             new { subjectId = proposed.Value.Placement.ProposalId });
         Assert.True(inspected.Established, inspected.Reason);
         Assert.NotEmpty(inspected.Value!.Inspection!.Metrics);
+        var adopted = await Command(product, ActorActionKind.AdoptPlacement,
+            new { proposalId = proposed.Value.Placement.ProposalId });
+        Assert.True(adopted.Established, adopted.Reason);
+        Assert.DoesNotContain(adopted.Value!.Actions, action =>
+            action.Kind == ActorActionKind.BuildAndMinimize && action.Enabled);
     }
 
     [Fact]
@@ -139,11 +142,15 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(attempted.Established, attempted.Reason);
         Assert.Null(attempted.Value!.Placement);
         Assert.Equal("noProposal", attempted.Value.PlacementTask?.Standing);
-        Assert.Contains("orientation failed", attempted.Value.PlacementTask?.Message,
+        Assert.Equal("unobserved", attempted.Value.PlacementTask?.RouteOutcome?.Standing);
+        Assert.Contains("orientation failed without a corresponding output", attempted.Value.PlacementTask?.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("orientation failed", attempted.Value.PlacementTask?.LatestAttemptIssue,
             StringComparison.OrdinalIgnoreCase);
         Assert.Single(worker.PpmRequests);
         Assert.Contains(attempted.Value.Notices, notice =>
-            notice.Message.Contains("orientation failed", StringComparison.OrdinalIgnoreCase));
+            notice.ConditionKey?.StartsWith("orientation-route:", StringComparison.Ordinal) == true &&
+            notice.Message.Contains("orientation failed without a corresponding output", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -191,7 +198,8 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(second.Established, second.Reason);
         Assert.Equal(priorId, second.Value!.Placement?.ProposalId);
         Assert.Equal("supported", second.Value.Placement?.Status);
-        Assert.Equal("supported", second.Value.PlacementTask?.Standing);
+        Assert.Equal("noProposal", second.Value.PlacementTask?.Standing);
+        Assert.Equal("unobserved", second.Value.PlacementTask?.RouteOutcome?.Standing);
         Assert.Contains("orientation failed", second.Value.PlacementTask?.LatestAttemptIssue,
             StringComparison.OrdinalIgnoreCase);
     }
@@ -199,12 +207,12 @@ public sealed partial class ProteinPreparationRouteTests
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
-    public async Task Absent_or_ambiguous_biological_policy_does_not_block_a_technically_checked_position(
-        int policyCopies)
+    public async Task Absent_or_ambiguous_biological_witness_does_not_block_a_technically_checked_position(
+        int witnessCopies)
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
-        var product = PlacementProduct(directory.Path, worker, policyCopies);
+        var product = PlacementProduct(directory.Path, worker, witnessCopies);
         await EstablishProteinAndMembrane(product);
         var proposed = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
         Assert.True(proposed.Established, proposed.Reason);
@@ -256,10 +264,12 @@ public sealed partial class ProteinPreparationRouteTests
             action.Kind == ActorActionKind.ProposePlacement && action.Enabled);
 
         var refused = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
-        Assert.True(refused.Established, refused.Reason);
-        Assert.Null(refused.Value!.Placement);
+        Assert.False(refused.Established);
+        Assert.Contains("hash-verified", refused.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(product.Snapshot().Placement);
         Assert.Empty(worker.PpmRequests);
-        Assert.Contains(refused.Value.Notices, notice => notice.Message.Contains("residue library", StringComparison.Ordinal));
+        Assert.Contains(product.Snapshot().PlacementMethods, method =>
+            method.Method == "PPM" && method.Standing == "unavailable");
     }
 
     [Fact]
@@ -268,15 +278,17 @@ public sealed partial class ProteinPreparationRouteTests
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
         var catalogue = WritePlacementCatalogue(directory.Path);
+        var opmPath = Path.Combine(directory.Path, "opm-reference.pdb");
+        File.WriteAllText(opmPath, OpmReferenceText);
         var ppm = Path.Combine(directory.Path, "immers");
         File.AppendAllText(ppm, "unavailable");
         using var http = new HttpClient(new RespondingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         { Content = new ByteArrayContent(Encoding.ASCII.GetBytes(PlacementSourceText)) }));
         var sources = new ControlledOpmExchange(http, () =>
-            new OpmReferenceRecord("6QWR", "controlled OPM reference", worker.PreparedPath,
-                worker.PreparedHash, null, ImmutableArray.Create(new ChainSelection("A", "A")),
-                ImmutableArray<string>.Empty, ImmutableArray.Create("source-1", "source-2", "source-3"),
-                "implicit symmetric POPC", 20, 8, "POPC", true, 0));
+            new OpmLookupResult(OpmLookupStanding.Found, new OpmReferenceRecord("6QWR", "controlled OPM reference", opmPath,
+                Hash(opmPath), null, ImmutableArray.Create(new ChainSelection("A", "A")),
+                ImmutableArray<string>.Empty, ImmutableArray.Create("0:A:A:1::CA", "0:A:A:2::CA", "0:A:A:3::CA"),
+                "implicit symmetric POPC", 20, 8, "POPC", true, 0), null));
         var product = new ProductRoot(worker, sources, Path.Combine(directory.Path, "workspace"),
             catalogue, ppm, () => null);
         var selected = await Command(product, ActorActionKind.SelectSource,
@@ -294,14 +306,14 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(proposed.Established, proposed.Reason);
         Assert.Equal("supported", proposed.Value!.Placement!.Status);
         Assert.Contains(proposed.Value.Placement.Evidence,
-            evidence => evidence.Method == "OPM exact-coordinate orientation candidate" &&
+            evidence => evidence.Method == "OPM mapped rigid orientation candidate" &&
                 evidence.Bearing == EvidenceBearing.Context);
         Assert.Empty(worker.PpmRequests);
         Assert.Single(worker.MeasurementRequests);
     }
 
     [Fact]
-    public async Task Contextual_opm_reference_and_fresh_ppm_position_keep_distinct_provenance()
+    public async Task Noncorresponding_opm_reference_does_not_silently_start_ppm_or_join_its_later_evidence()
     {
         using var directory = new TemporaryDirectory();
         var worker = new PlacementRouteWorker();
@@ -311,10 +323,10 @@ public sealed partial class ProteinPreparationRouteTests
         using var http = new HttpClient(new RespondingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         { Content = new ByteArrayContent(Encoding.ASCII.GetBytes(PlacementSourceText)) }));
         var sources = new ControlledOpmExchange(http, () =>
-            new OpmReferenceRecord("6QWR", "controlled OPM reference", opmPath,
+            new OpmLookupResult(OpmLookupStanding.Found, new OpmReferenceRecord("6QWR", "controlled OPM reference", opmPath,
                 Hash(opmPath), null, ImmutableArray.Create(new ChainSelection("A", "A")),
-                ImmutableArray<string>.Empty, ImmutableArray.Create("source-1", "source-2", "source-3"),
-                "implicit symmetric POPC", 20, 8, "POPC", true, 0));
+                ImmutableArray<string>.Empty, ImmutableArray.Create("0:A:A:1::CA", "0:A:A:2::CA", "0:A:A:3::CA"),
+                "implicit symmetric POPC", 20, 8, "POPC", true, 0), null));
         var product = new ProductRoot(worker, sources, Path.Combine(directory.Path, "workspace"),
             catalogue, Path.Combine(directory.Path, "immers"), () => null);
         var selected = await Command(product, ActorActionKind.SelectSource,
@@ -322,21 +334,101 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(selected.Established, selected.Reason);
         await EstablishSelectedProteinAndMembrane(product);
 
-        var proposed = await Command(product, ActorActionKind.ProposePlacement, new
+        var opm = await Command(product, ActorActionKind.ProposePlacement, new
         {
-            orientationRoute = "auto", topologyKind = "membrane-spanning", physicalSide = "both",
-            biologicalSidedness = "extracellular upper", ppmNterminalSide = "out"
+            orientationRoute = "opm", topologyKind = "membrane-spanning", physicalSide = "both",
+            biologicalSidedness = "extracellular upper"
         });
-        Assert.True(proposed.Established, proposed.Reason);
-        Assert.Equal("supported", proposed.Value!.Placement!.Status);
-        Assert.Contains(proposed.Value.Placement.Evidence,
-            evidence => evidence.Method == "OPM oriented-structure reference" &&
-                evidence.Bearing == EvidenceBearing.Context);
-        Assert.Contains(proposed.Value.Placement.Evidence,
+        Assert.True(opm.Established, opm.Reason);
+        Assert.Null(opm.Value!.Placement);
+        Assert.Equal("noncorresponding", opm.Value.PlacementTask?.RouteOutcome?.Standing);
+        var correspondenceCause = opm.Value.PlacementTask?.RouteOutcome?.Message ?? "";
+        Assert.True(correspondenceCause.Contains("differ", StringComparison.OrdinalIgnoreCase) ||
+            correspondenceCause.Contains("cannot be mapped", StringComparison.OrdinalIgnoreCase) ||
+            correspondenceCause.Contains("unavailable or changed", StringComparison.OrdinalIgnoreCase),
+            correspondenceCause);
+        Assert.Empty(worker.PpmRequests);
+
+        var ppm = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
+        Assert.True(ppm.Established, ppm.Reason);
+        Assert.Equal("supported", ppm.Value!.Placement!.Status);
+        Assert.Contains(ppm.Value.Placement.Evidence,
             evidence => evidence.Method == "PPM orientation candidate" &&
                 evidence.Bearing == EvidenceBearing.Context);
+        Assert.DoesNotContain(ppm.Value.Placement.Evidence,
+            evidence => evidence.Method == "OPM oriented-structure reference");
         Assert.Single(worker.PpmRequests);
         Assert.Single(worker.MeasurementRequests);
+    }
+
+    [Fact]
+    public async Task Exact_opm_no_match_keeps_earlier_position_and_never_uses_ppm_implicitly()
+    {
+        using var directory = new TemporaryDirectory();
+        var worker = new PlacementRouteWorker();
+        var catalogue = WritePlacementCatalogue(directory.Path);
+        using var http = new HttpClient(new RespondingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new ByteArrayContent(Encoding.ASCII.GetBytes(PlacementSourceText)) }));
+        var lookup = new OpmLookupResult(OpmLookupStanding.NoMatch, null,
+            "No exact OPM entry in the controlled metadata response.");
+        var sources = new ControlledOpmExchange(http, () => lookup);
+        var ppmPath = Path.Combine(directory.Path, "immers");
+        var product = new ProductRoot(worker, sources, Path.Combine(directory.Path, "workspace"),
+            catalogue, ppmPath, () => null);
+        var selected = await Command(product, ActorActionKind.SelectSource,
+            new { sourceKind = "rcsb", exactIdentifier = "6QWR" });
+        Assert.True(selected.Established, selected.Reason);
+        await EstablishSelectedProteinAndMembrane(product);
+        Assert.Contains(product.Snapshot().PlacementMethods, method =>
+            method.Method == "PPM" && method.Standing == "configured");
+
+        var earlier = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
+        Assert.True(earlier.Established, earlier.Reason);
+        Assert.Equal("supported", earlier.Value!.Placement!.Status);
+        var earlierId = earlier.Value.Placement.ProposalId;
+        Assert.Single(worker.PpmRequests);
+        Assert.Single(worker.MeasurementRequests);
+
+        var noMatch = await Command(product, ActorActionKind.ProposePlacement, new
+        {
+            orientationRoute = "opm", topologyKind = "membrane-spanning", physicalSide = "both",
+            biologicalSidedness = "extracellular upper"
+        });
+        Assert.True(noMatch.Established, noMatch.Reason);
+        Assert.Equal("noMatch", noMatch.Value!.PlacementTask?.RouteOutcome?.Standing);
+        Assert.Contains("controlled metadata response", noMatch.Value.PlacementTask?.RouteOutcome?.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(earlierId, noMatch.Value.Placement!.ProposalId);
+        Assert.Single(worker.PpmRequests);
+        Assert.Single(worker.MeasurementRequests);
+        Assert.DoesNotContain(noMatch.Value.Notices, notice =>
+            notice.ConditionKey?.StartsWith("orientation-route:", StringComparison.Ordinal) == true);
+
+        File.AppendAllText(ppmPath, "controlled local PPM digest mismatch");
+        var unavailable = product.Snapshot();
+        Assert.Contains(unavailable.PlacementMethods, method =>
+            method.Method == "PPM" && method.Standing == "unavailable");
+        Assert.Equal("noMatch", unavailable.PlacementTask?.RouteOutcome?.Standing);
+        Assert.Equal(earlierId, unavailable.Placement!.ProposalId);
+        Assert.Single(worker.PpmRequests);
+        Assert.Contains(unavailable.Actions, action =>
+            action.Kind == ActorActionKind.AdoptPlacement && action.Enabled);
+        var adoptedEarlier = await Command(product, ActorActionKind.AdoptPlacement,
+            new { proposalId = earlierId });
+        Assert.True(adoptedEarlier.Established, adoptedEarlier.Reason);
+        Assert.Equal(earlierId, adoptedEarlier.Value!.Study!.AdoptedPlacementProposalId);
+        lookup = new OpmLookupResult(OpmLookupStanding.Failed, null,
+            "The controlled OPM coordinate download returned HTTP 503.");
+        var failed = await Command(product, ActorActionKind.ProposePlacement, new
+        {
+            orientationRoute = "opm", topologyKind = "membrane-spanning", physicalSide = "both",
+            biologicalSidedness = "extracellular upper"
+        });
+        Assert.True(failed.Established, failed.Reason);
+        Assert.Equal("failed", failed.Value!.PlacementTask?.RouteOutcome?.Standing);
+        Assert.Contains("HTTP 503", failed.Value.PlacementTask?.RouteOutcome?.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(earlierId, failed.Value.Study!.AdoptedPlacementProposalId);
     }
 
     [Fact]
@@ -349,13 +441,9 @@ public sealed partial class ProteinPreparationRouteTests
         var positioned = await Command(product, ActorActionKind.ProposePlacement, PlacementChoice());
         Assert.Equal("supported", positioned.Value!.Placement!.Status);
         var priorProposalId = positioned.Value.Placement.ProposalId;
-        var replacement = await Command(product, ActorActionKind.ProposeMembrane,
-            new { upper = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } },
-                lower = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } },
-                scientificPurpose = "A new exact bilayer premise" });
-        Assert.True(replacement.Established, replacement.Reason);
         var changed = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = replacement.Value!.Membrane!.ModelId });
+            new { upper = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } },
+                lower = new[] { new { speciesId = "UNKNOWN", fraction = 1.0 } } });
         Assert.True(changed.Established, changed.Reason);
         Assert.Null(changed.Value!.Placement);
         Assert.Equal("notEstablished", changed.Value.Membrane!.Status);
@@ -447,9 +535,9 @@ public sealed partial class ProteinPreparationRouteTests
     };
 
     private static ProductRoot PlacementProduct(string directory, PlacementRouteWorker worker,
-        int placementPolicyCopies = 1)
+        int witnessCopies = 1)
     {
-        var catalogue = WritePlacementCatalogue(directory, placementPolicyCopies);
+        var catalogue = WritePlacementCatalogue(directory, witnessCopies);
         using var http = new HttpClient(new NoNetworkHandler());
         return new ProductRoot(worker, new ExternalSourceExchange(http),
             Path.Combine(directory, "workspace"), catalogue,
@@ -481,19 +569,15 @@ public sealed partial class ProteinPreparationRouteTests
         var prepared = await Command(product, ActorActionKind.StartProteinPreparation, new { });
         Assert.True(prepared.Established, prepared.Reason);
         Assert.Equal("assessed", prepared.Value!.Protein!.Status);
-        var proposed = await Command(product, ActorActionKind.ProposeMembrane,
-            new { upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
-                lower = new[] { new { speciesId = "POPC", fraction = 1.0 } },
-                scientificPurpose = "Controlled exact POPC bilayer" });
-        Assert.True(proposed.Established, proposed.Reason);
         var adopted = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = proposed.Value!.Membrane!.ModelId });
+            new { upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
+                lower = new[] { new { speciesId = "POPC", fraction = 1.0 } } });
         Assert.True(adopted.Established, adopted.Reason);
         Assert.Equal("assessed", adopted.Value!.Membrane!.Status);
         Assert.Equal("assessed", adopted.Value.Protein!.Status);
     }
 
-    private static string WritePlacementCatalogue(string directory, int placementPolicyCopies = 1)
+    private static string WritePlacementCatalogue(string directory, int witnessCopies = 1)
     {
         var ff = Path.Combine(directory, "protein-forcefield.xml");
         var lipidFf = Path.Combine(directory, "lipid-forcefield.xml");
@@ -523,7 +607,8 @@ public sealed partial class ProteinPreparationRouteTests
             ImmutableArray.Create("Independently witnessed placement relationship"),
             ImmutableArray.Create(new PlacementMeasurementCriterion("atomsWithinCore", "atoms", 1, null)),
             3, null, ImmutableArray.Create("independent experimental topology"),
-            ImmutableArray.Create("Controlled POPC policy has a contextual source limit."));
+            ImmutableArray.Create("Controlled POPC policy has a contextual source limit."),
+            OuterLeafletEnvelopeAngstrom: 23);
         var upper = new LeafletComposition(LeafletSide.Upper,
             ImmutableArray.Create(new LipidFraction("POPC", 1)));
         var lower = new LeafletComposition(LeafletSide.Lower,
@@ -553,9 +638,10 @@ public sealed partial class ProteinPreparationRouteTests
             lipids = new[] { lipid }, proteinChemicalStates = new[] { chemical },
             proteinStructuralPolicies = new[] { StructuralPolicy() },
             membranePolicies = new[] { membranePolicy },
-            placementPolicies = Enumerable.Range(0, placementPolicyCopies).Select(index => index == 0
-                ? placementPolicy : placementPolicy with { Id = $"placement-popc-{index}" }).ToArray(),
-            placementWitnesses = new[] { witness }, preparationPolicies = Array.Empty<object>(),
+            placementPolicies = new[] { placementPolicy },
+            placementWitnesses = Enumerable.Range(0, witnessCopies).Select(index => index == 0
+                ? witness : witness with { Id = $"source-topology-{index}" }).ToArray(),
+            preparationPolicies = Array.Empty<object>(),
             equilibrationQualifications = Array.Empty<object>(), ppmVersion = "2.0",
             ppmExecutableSha256 = Hash(ppm), ppmResidueLibraryPath = "res.lib",
             ppmResidueLibrarySha256 = Hash(residueLibrary),
@@ -633,7 +719,7 @@ public sealed partial class ProteinPreparationRouteTests
             PreparedHash = Hash(prepared);
             var correspondence = new SourceToResultCorrespondence(request.Payload.SourceSha256,
                 PreparedHash, PlacementResidues.Select((address, index) => new AtomCorrespondence(index,
-                    $"{index}:A:{address.Residue}::CA", $"source-{index + 1}", AtomOriginKind.Source,
+                    $"{index}:A:{address.Residue}::CA", $"0:A:A:{address.Residue}::CA", AtomOriginKind.Source,
                     MoleculeRoleKind.Protein, AtomRoleKind.Backbone, "C", address, null)).ToImmutableArray(), true);
             File.WriteAllText(mapping, JsonSerializer.Serialize(correspondence,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -733,11 +819,11 @@ public sealed partial class ProteinPreparationRouteTests
             throw new InvalidOperationException("An unrelated scientific operation was invoked.");
     }
 
-    private sealed class ControlledOpmExchange(HttpClient http, Func<OpmReferenceRecord> reference)
+    private sealed class ControlledOpmExchange(HttpClient http, Func<OpmLookupResult> lookup)
         : ExternalSourceExchange(http)
     {
-        public override Task<OpmReferenceRecord?> TryRetrieveOpmReferenceAsync(string pdbAccession,
+        public override Task<OpmLookupResult> TryRetrieveOpmReferenceAsync(string pdbAccession,
             string targetDirectory, CancellationToken cancellationToken) =>
-            Task.FromResult<OpmReferenceRecord?>(reference());
+            Task.FromResult(lookup());
     }
 }

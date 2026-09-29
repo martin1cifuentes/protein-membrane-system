@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ProteinInMembrane.Host;
 using ProteinInMembrane.Host.ProteinInMembraneSystem;
 using ConstructionOwner = ProteinInMembrane.Host.ProteinInMembraneSystem.ExplicitPreparation.ExplicitPreparation;
@@ -11,6 +13,40 @@ namespace ProteinInMembraneSystem.Tests;
 
 public sealed class PreparationPolicyRouteTests
 {
+    [Fact]
+    public void Current_general_route_binds_the_complete_provider_and_all_selected_species_without_a_protein_whitelist()
+    {
+        var cataloguePath = Path.Combine(RepositoryRoot(), "config/policies/protein-membrane-current.json");
+        using var catalogue = JsonDocument.Parse(File.ReadAllText(cataloguePath));
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        var policies = catalogue.RootElement.GetProperty("preparationPolicies").EnumerateArray()
+            .Select(item => item.Deserialize<ApplicablePreparationPolicy>(options)!).ToArray();
+        var general = Assert.Single(policies, item =>
+            item.Construction.Route == ConstructionRouteKind.PackmolMemgen);
+        Assert.Null(general.Scope);
+        Assert.Equal(SaltConventionKind.MemgenChargeCompensated, general.Construction.SaltConvention);
+        Assert.Equal(900, general.Construction.MaximumConstructionSeconds);
+        Assert.Equal(20000, general.MaximumMinimizationIterations);
+        Assert.Equal(10, general.FinalUnrestrainedRmsForceTargetKjMolNm);
+        Assert.Equal(23, general.Construction.Memgen?.LeafletEnvelopeAngstrom);
+        Assert.Equal(2, general.Construction.Memgen?.MaximumGeometryRetries);
+        Assert.Equal(13, general.Construction.ProviderAssets.Length);
+        Assert.Equal(13, general.ForceFieldFiles.Length);
+        Assert.Equal(new[] { "CHL1", "CL", "DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "HOH", "NA", "POPC", "POPE" },
+            general.Construction.CoveredSpeciesIds.Order(StringComparer.Ordinal));
+        var validator = typeof(ConstructionOwner).GetMethod("ValidConstructionPolicy",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.True((bool)validator.Invoke(null, [general.Construction])!);
+        foreach (var asset in general.Construction.ProviderAssets)
+        {
+            var path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(cataloguePath)!, asset.Path));
+            Assert.True(File.Exists(path), $"Pinned provider asset missing: {asset.Id}");
+            Assert.Equal(asset.Sha256.ToLowerInvariant(),
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant());
+        }
+    }
+
     [Fact]
     public void Native_popc_mechanism_requires_its_own_exact_installed_patch_and_policy_species()
     {
@@ -50,24 +86,6 @@ public sealed class PreparationPolicyRouteTests
 
         var derivedPath = Path.Combine(fixture.Directory, "POPC-63x63.pdb");
         File.WriteAllText(derivedPath, "controlled derived POPC patch bytes");
-        var custom = popc with
-        {
-            NativePatchMode = "popc-62-109-deletion",
-            NativePatchPath = derivedPath,
-            NativePatchSha256 = ConstructionFixture.Hash(derivedPath),
-            NativeSourcePatchPath = popcPath,
-            NativeSourcePatchSha256 = popc.NativePatchSha256,
-            RemovedNativeLipidResidueIds = ImmutableArray.Create("62", "109")
-        };
-        Assert.True(Valid(custom));
-        Assert.Contains("popc-62-109-deletion", JsonSerializer.Serialize(custom,
-            new JsonSerializerOptions(JsonSerializerDefaults.Web)), StringComparison.Ordinal);
-        Assert.True(Matches(custom, installed));
-        Assert.False(Valid(custom with { RemovedNativeLipidResidueIds = ImmutableArray.Create("109") }));
-        Assert.False(Valid(custom with { NativePatchMode = "other" }));
-        Assert.False(Matches(custom with { NativeSourcePatchSha256 = new string('0', 64) }, installed));
-        Assert.False(Matches(custom with { NativeSourcePatchPath = derivedPath }, installed));
-
         var mapped = popc with
         {
             NativePatchMode = "mapped-lipid21-zenodo-popc",
@@ -146,7 +164,7 @@ public sealed class PreparationPolicyRouteTests
             AssessedPreparedProtein selectedProtein, AssessedMembraneModel selectedMembrane,
             PlacementProposal selectedProposal) =>
             (ApplicablePreparationPolicy?)selector.Invoke(product,
-                [selectedRevision, selectedProtein, selectedProposal, selectedMembrane]);
+                [selectedRevision, selectedProtein, selectedProposal, selectedMembrane, policy.Id]);
         Assert.Equal(policy.Id, Selected(revision, protein, membrane, proposal)?.Id);
 
         SetPrivate(product, "_study", revision);
@@ -211,22 +229,26 @@ public sealed class PreparationPolicyRouteTests
         preparationPolicies.SetValue(catalogue, ImmutableArray.Create(policy with
             { Construction = policy.Construction with
                 { NativePatchSha256 = new string('0', 64) } }));
-        Assert.Null(Selected(revision, protein, membrane, proposal));
+        Assert.Equal(policy.Id, Selected(revision, protein, membrane, proposal)?.Id);
+        Assert.False(StartAction(product).Enabled);
         preparationPolicies.SetValue(catalogue, ImmutableArray.Create(policy with
             { ForceFieldFiles = policy.ForceFieldFiles.SetItem(0,
                 policy.ForceFieldFiles[0] with { Sha256 = new string('0', 64) }) }));
-        Assert.Null(Selected(revision, protein, membrane, proposal));
+        Assert.Equal(policy.Id, Selected(revision, protein, membrane, proposal)?.Id);
+        Assert.False(StartAction(product).Enabled);
         preparationPolicies.SetValue(catalogue, ImmutableArray.Create(policy with
             { Water = policy.Water with { CoordinateTemplateSha256 = new string('0', 64) } }));
-        Assert.Null(Selected(revision, protein, membrane, proposal));
-        preparationPolicies.SetValue(catalogue, policies.Add(policy with { Id = "equally-applicable" }));
-        Assert.Null(Selected(revision, protein, membrane, proposal));
+        Assert.Equal(policy.Id, Selected(revision, protein, membrane, proposal)?.Id);
         Assert.False(StartAction(product).Enabled);
+        preparationPolicies.SetValue(catalogue, policies.Add(policy with { Id = "equally-applicable" }));
+        Assert.Equal(policy.Id, Selected(revision, protein, membrane, proposal)?.Id);
+        Assert.Contains(product.Snapshot().Actions, action => action.Kind == ActorActionKind.BuildAndMinimize &&
+            action.SubjectId == policy.Id && action.Enabled);
 
     }
 
     private static AvailableAction StartAction(ProductRoot product) => product.Snapshot().Actions
-        .Single(item => item.Kind == ActorActionKind.StartPreparation);
+        .Single(item => item.Kind == ActorActionKind.BuildAndMinimize);
 
     private static T Private<T>(ProductRoot product, string name) =>
         (T)typeof(ProductRoot).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!

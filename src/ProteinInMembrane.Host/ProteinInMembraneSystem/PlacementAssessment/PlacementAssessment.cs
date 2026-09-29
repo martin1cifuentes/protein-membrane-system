@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 
 namespace ProteinInMembrane.Host.ProteinInMembraneSystem.PlacementAssessment;
@@ -23,40 +24,27 @@ public sealed class PlacementAssessment
         if (!string.Equals(protein.Intended.Source.Accession, reference.PdbAccession,
                 StringComparison.OrdinalIgnoreCase))
             limitations.Add("The OPM PDB accession differs from the selected source.");
-        if (protein.Intended.BiologicalAssemblyId != reference.BiologicalAssemblyId ||
+        if (reference.BiologicalAssemblyId is not null &&
+            protein.Intended.BiologicalAssemblyId != reference.BiologicalAssemblyId ||
+            !reference.ChainCopies.IsDefaultOrEmpty &&
             !protein.Intended.Chains.ToHashSet().SetEquals(reference.ChainCopies))
             limitations.Add("The OPM assembly or exact retained chain copies differ from the selected protein.");
         var retainedPartners = protein.Intended.Partners.Where(item => item.Retain)
             .Select(item => item.SourceId).ToHashSet(StringComparer.Ordinal);
-        if (!retainedPartners.SetEquals(reference.RetainedPartnerSourceIds))
+        if (!reference.RetainedPartnerSourceIds.IsDefaultOrEmpty &&
+            !retainedPartners.SetEquals(reference.RetainedPartnerSourceIds))
             limitations.Add("The OPM retained partners differ from the selected construct.");
         var sourceAtoms = protein.Correspondence.Atoms.Where(atom => atom.SourceAtomId is not null)
             .Select(atom => atom.SourceAtomId!).ToArray();
-        if (sourceAtoms.Length == 0 || reference.SourceAtomIds.IsDefaultOrEmpty ||
-            sourceAtoms.Length != reference.SourceAtomIds.Length ||
-            sourceAtoms.Distinct(StringComparer.Ordinal).Count() != sourceAtoms.Length ||
-            reference.SourceAtomIds.Distinct(StringComparer.Ordinal).Count() != reference.SourceAtomIds.Length ||
-            !sourceAtoms.ToHashSet(StringComparer.Ordinal).SetEquals(reference.SourceAtomIds))
+        if (sourceAtoms.Length == 0 ||
+            !reference.SourceAtomIds.IsDefaultOrEmpty &&
+            (sourceAtoms.Length != reference.SourceAtomIds.Length ||
+             sourceAtoms.Distinct(StringComparer.Ordinal).Count() != sourceAtoms.Length ||
+             reference.SourceAtomIds.Distinct(StringComparer.Ordinal).Count() != reference.SourceAtomIds.Length ||
+             !sourceAtoms.ToHashSet(StringComparer.Ordinal).SetEquals(reference.SourceAtomIds)))
             limitations.Add("The OPM oriented coordinate atoms cannot be mapped exactly to the retained source atoms.");
-        if (string.IsNullOrWhiteSpace(reference.SourceUrl) ||
-            string.IsNullOrWhiteSpace(reference.OrientedCoordinateSha256) ||
-            !File.Exists(reference.OrientedCoordinatePath))
-            limitations.Add("The identified OPM oriented-coordinate artifact is unavailable.");
-        else
-        {
-            try
-            {
-                using var stream = File.OpenRead(reference.OrientedCoordinatePath);
-                var actualHash = Convert.ToHexString(SHA256.HashData(stream));
-                if (!actualHash.Equals(reference.OrientedCoordinateSha256,
-                        StringComparison.OrdinalIgnoreCase))
-                    limitations.Add("The OPM coordinate bytes no longer match their identified source hash.");
-            }
-            catch (IOException)
-            {
-                limitations.Add("The identified OPM oriented-coordinate artifact could not be read.");
-            }
-        }
+        if (!TryOpmAlignment(protein, reference, out _, out var mappingIssue))
+            limitations.Add(mappingIssue);
         var corresponds = limitations.Count == 0;
         var upper = membrane.Upper.Fractions.Where(item => item.Fraction > 0).ToArray();
         var lower = membrane.Lower.Fractions.Where(item => item.Fraction > 0).ToArray();
@@ -68,16 +56,14 @@ public sealed class PlacementAssessment
             lower[0].SpeciesId == reference.AssumedMembraneSpeciesId &&
             Math.Abs(upper[0].Fraction - 1) <= 1e-9 &&
             Math.Abs(lower[0].Fraction - 1) <= 1e-9;
-        if (!membraneContextApplicable)
-            limitations.Add("The OPM implicit membrane context is unidentified or differs from the selected explicit membrane.");
         var evidence = ImmutableArray.Create(new ScientificEvidence(Guid.NewGuid().ToString("N"),
             protein.Id, reference.SourceUrl, "OPM oriented-structure reference",
             $"PDB {reference.PdbAccession}; membrane context {reference.MembraneContext}; " +
             $"hydrophobic thickness/depth {reference.HydrophobicThicknessAngstrom?.ToString("G6") ?? "unavailable"} Å; " +
             $"tilt {reference.TiltDegrees?.ToString("G6") ?? "unavailable"}°",
             $"Selected protein {protein.Id}; chosen membrane {membrane.Id}; exact construct correspondence {corresponds}; " +
-            $"implicit membrane assumption consistent with selected species {membraneContextApplicable}",
-            "This reference is contextual; it neither positions the prepared construct nor proves support for the chosen explicit lipid mixture.",
+            $"provider membrane assumption matches selected pure species {membraneContextApplicable}",
+            "The provider membrane assumption is reference provenance; the selected construct needs an independently verified rigid mapping.",
             EvidenceBearing.Context));
         return BoundaryOutcome<OpmReferenceReview>.Success(new OpmReferenceReview(
             protein.Id, membrane.Id, corresponds, evidence, limitations.ToImmutable(), membraneContextApplicable));
@@ -85,6 +71,7 @@ public sealed class PlacementAssessment
 
     public BoundaryOutcome<PlacementProposal> ProposeFromOpmReference(
         StudyRevision revision, AssessedPreparedProtein protein, MembraneModel membrane,
+        PlacementSupportPolicy framePolicy,
         OpmReferenceRecord reference, OpmReferenceReview review,
         ProteinTopologyKind topologyKind, PlacementPhysicalSide physicalSide,
         string? biologicalSidedness)
@@ -92,44 +79,311 @@ public sealed class PlacementAssessment
         if (revision.Id != protein.StudyRevisionId || revision.IntendedProtein?.Id != protein.Intended.Id ||
             revision.Membrane?.Id != membrane.Id || review.PreparedProteinId != protein.Id ||
             review.MembraneModelId != membrane.Id || !review.CorrespondsToSelectedConstruct ||
-            !review.MembraneContextApplicable ||
             ReviewOpmReference(revision, protein, membrane, reference).Value is not
-                { CorrespondsToSelectedConstruct: true, MembraneContextApplicable: true } ||
-            !((topologyKind == ProteinTopologyKind.MembraneSpanning && physicalSide == PlacementPhysicalSide.Both) ||
-              (topologyKind == ProteinTopologyKind.OneSurfaceAssociated &&
-                  physicalSide is PlacementPhysicalSide.Upper or PlacementPhysicalSide.Lower)) ||
+                { CorrespondsToSelectedConstruct: true } ||
+            !ValidFramePolicy(framePolicy, topologyKind, membrane) ||
+            !Enum.IsDefined(topologyKind) || !Enum.IsDefined(physicalSide) ||
             reference.MidplaneAngstrom is not double midplane || !double.IsFinite(midplane) ||
             reference.HydrophobicThicknessAngstrom is not double thickness ||
             !double.IsFinite(thickness) || thickness <= 0 ||
             reference.TiltDegrees is double tilt && !double.IsFinite(tilt) ||
-            !reference.OrientedCoordinateSha256.Equals(protein.Molecule.CoordinateSha256,
-                StringComparison.OrdinalIgnoreCase) ||
-            !ArtifactMatches(new WorkerArtifact("orientedPdb", reference.OrientedCoordinatePath,
-                reference.OrientedCoordinateSha256)) ||
-            !ArtifactMatches(new WorkerArtifact("preparedPdb", protein.Molecule.CoordinatePath,
-                protein.Molecule.CoordinateSha256)))
+            !TryOpmAlignment(protein, reference, out var transform, out _))
             return BoundaryOutcome<PlacementProposal>.Unavailable(
-                "The OPM reference does not identify these exact prepared coordinates in its observed membrane frame.");
+                "The OPM reference has no verified rigid mapping from this exact prepared construct into its membrane frame.");
         var proposalId = Guid.NewGuid().ToString("N");
+        var output = Path.Combine(Path.GetDirectoryName(reference.OrientedCoordinatePath)!,
+            $"opm-proposal-{proposalId}.pdb");
+        try
+        {
+            var transformed = File.ReadAllLines(protein.Molecule.CoordinatePath);
+            for (var i = 0; i < transformed.Length; i++)
+            {
+                var line = transformed[i];
+                if (!IsPdbAtom(line)) continue;
+                if (!TryPdbPoint(line, out var point))
+                    return BoundaryOutcome<PlacementProposal>.Unavailable(
+                        "The prepared PDB has an uninterpretable atom coordinate.");
+                var oriented = transform!(point);
+                var moved = oriented with { Z = oriented.Z - midplane };
+                if (!double.IsFinite(moved.X) || !double.IsFinite(moved.Y) ||
+                    !double.IsFinite(moved.Z) ||
+                    new[] { moved.X, moved.Y, moved.Z }.Any(value => Math.Abs(value) >= 10000))
+                    return BoundaryOutcome<PlacementProposal>.Unavailable(
+                        "The mapped OPM orientation exceeds the PDB coordinate representation.");
+                transformed[i] = line[..30] +
+                    string.Format(CultureInfo.InvariantCulture, "{0,8:F3}{1,8:F3}{2,8:F3}",
+                        moved.X, moved.Y, moved.Z) + line[54..];
+            }
+            File.WriteAllLines(output, transformed);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return BoundaryOutcome<PlacementProposal>.Unavailable(
+                "The mapped OPM proposal could not be written as a separate prepared-construct artifact.");
+        }
+        using var outputStream = File.OpenRead(output);
+        var outputHash = Convert.ToHexString(SHA256.HashData(outputStream)).ToLowerInvariant();
+        var molecule = new MolecularArtifact(proposalId, output, outputHash,
+            protein.Molecule.TopologyPath, null, null, protein.Molecule.AtomCount,
+            null, protein.Molecule.TopologySha256);
         var evidence = ImmutableArray.Create(new ScientificEvidence(Guid.NewGuid().ToString("N"),
-            proposalId, reference.SourceUrl, "OPM exact-coordinate orientation candidate",
-            $"The prepared coordinate digest equals the independently identified OPM oriented digest; " +
-            $"midplane {midplane:G6} Å; hydrophobic thickness {thickness:G6} Å; tilt {reference.TiltDegrees?.ToString("G6") ?? "unavailable"}°",
+            proposalId, reference.SourceUrl, "OPM mapped rigid orientation candidate",
+            $"Every retained source heavy atom mapped within 0.05 Å under one proper rigid transform; " +
+            $"OPM midplane {midplane:G6} Å and hydrophobic thickness {thickness:G6} Å; " +
+            $"chosen outer leaflet envelope ±{framePolicy.OuterLeafletEnvelopeAngstrom:G6} Å; " +
+            $"tilt {reference.TiltDegrees?.ToString("G6") ?? "unavailable"}°",
             $"Prepared protein {protein.Id}; selected membrane {membrane.Id}; " +
-            $"implicit {reference.AssumedMembraneSpeciesId} reference context",
-            "This is a contextual position of already identical prepared coordinates; it does not establish support for the selected explicit bilayer.",
+            $"OPM reference context {reference.MembraneContext}; source digest {reference.OrientedCoordinateSha256}",
+            "The OPM membrane assumption describes the reference; this candidate keeps the selected prepared atoms and bonds.",
             EvidenceBearing.Context));
         return BoundaryOutcome<PlacementProposal>.Success(new PlacementProposal(proposalId,
             protein.Id, membrane.Id, topologyKind,
-            protein.Molecule with { Id = proposalId }, midplane, thickness, reference.TiltDegrees,
+            molecule, 0, 2 * framePolicy.OuterLeafletEnvelopeAngstrom, reference.TiltDegrees,
             physicalSide, biologicalSidedness, ImmutableArray<string>.Empty, evidence,
-            ImmutableArray.Create("OPM implicit membrane reference; exact selected-bilayer support requires independent assessment.")));
+            ImmutableArray<string>.Empty, FramePolicyId: framePolicy.Id,
+            FramePolicyVersion: framePolicy.Version));
+    }
+
+    private readonly record struct PdbPoint(double X, double Y, double Z);
+    private readonly record struct PdbAtom(string Key, string Element, PdbPoint Position);
+
+    private static bool ValidFramePolicy(PlacementSupportPolicy policy,
+        ProteinTopologyKind topology, MembraneModel membrane) =>
+        !string.IsNullOrWhiteSpace(policy.Id) && !string.IsNullOrWhiteSpace(policy.Version) &&
+        policy.OuterLeafletEnvelopeAngstrom is double envelope &&
+        double.IsFinite(envelope) && envelope is > 0 and <= 80 &&
+        policy.CoveredTopologyKinds.Contains(topology) &&
+        membrane.Upper.Fractions.Concat(membrane.Lower.Fractions)
+            .Where(fraction => fraction.Fraction > 0)
+            .All(fraction => policy.CoveredSpeciesIds.Contains(fraction.SpeciesId));
+
+    private static bool IsPdbAtom(string line) =>
+        line.StartsWith("ATOM  ", StringComparison.Ordinal) ||
+        line.StartsWith("HETATM", StringComparison.Ordinal);
+
+    private static bool TryPdbPoint(string line, out PdbPoint point)
+    {
+        point = default;
+        if (line.Length < 54 ||
+            !double.TryParse(line.Substring(30, 8), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var x) ||
+            !double.TryParse(line.Substring(38, 8), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var y) ||
+            !double.TryParse(line.Substring(46, 8), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var z) ||
+            !double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(z))
+            return false;
+        point = new PdbPoint(x, y, z);
+        return true;
+    }
+
+    private static bool TryPdbAtom(string line, out PdbAtom atom)
+    {
+        atom = default;
+        if (!IsPdbAtom(line) || line.Length < 54 ||
+            !int.TryParse(line.Substring(22, 4), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var residue) ||
+            !TryPdbPoint(line, out var point)) return false;
+        var chain = line.Substring(21, 1).Trim();
+        var insertion = line.Substring(26, 1).Trim();
+        var name = line.Substring(12, 4).Trim();
+        var element = line.Length >= 78 ? line.Substring(76, 2).Trim() :
+            name.TrimStart('0', '1', '2', '3').FirstOrDefault().ToString();
+        if (name.Length == 0 || element.Length == 0) return false;
+        atom = new PdbAtom($"{chain}:{residue}:{insertion}:{name}", element, point);
+        return true;
+    }
+
+    private static bool TryWriteShiftedPdb(string source, string output, double zShift,
+        out string sha256)
+    {
+        sha256 = string.Empty;
+        if (!double.IsFinite(zShift)) return false;
+        try
+        {
+            var lines = File.ReadAllLines(source);
+            var atomCount = 0;
+            for (var index = 0; index < lines.Length; index++)
+            {
+                var line = lines[index];
+                if (!IsPdbAtom(line)) continue;
+                if (!TryPdbPoint(line, out var point) ||
+                    !double.IsFinite(point.Z + zShift) ||
+                    Math.Abs(point.Z + zShift) >= 10000) return false;
+                lines[index] = line[..46] +
+                    string.Format(CultureInfo.InvariantCulture, "{0,8:F3}", point.Z + zShift) +
+                    line[54..];
+                atomCount++;
+            }
+            if (atomCount == 0) return false;
+            File.WriteAllLines(output, lines);
+            using var stream = File.OpenRead(output);
+            sha256 = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { return false; }
+    }
+
+    private static PdbPoint Add(PdbPoint a, PdbPoint b) =>
+        new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+    private static PdbPoint Sub(PdbPoint a, PdbPoint b) =>
+        new(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+    private static PdbPoint Scale(PdbPoint a, double factor) =>
+        new(a.X * factor, a.Y * factor, a.Z * factor);
+    private static double Dot(PdbPoint a, PdbPoint b) =>
+        a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+    private static PdbPoint Cross(PdbPoint a, PdbPoint b) =>
+        new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z,
+            a.X * b.Y - a.Y * b.X);
+    private static double Length(PdbPoint a) => Math.Sqrt(Dot(a, a));
+
+    private static bool TryOpmAlignment(AssessedPreparedProtein protein,
+        OpmReferenceRecord reference, out Func<PdbPoint, PdbPoint>? transform,
+        out string issue)
+    {
+        transform = null;
+        issue = "The OPM oriented coordinate atoms cannot be mapped as one rigid transform to the exact selected prepared construct.";
+        if (protein.Intended.Source.Kind != SourceRouteKind.Rcsb ||
+            string.IsNullOrWhiteSpace(reference.SourceUrl) ||
+            !protein.Correspondence.Complete ||
+            !string.Equals(protein.Correspondence.ResultId,
+                protein.Molecule.CoordinateSha256, StringComparison.OrdinalIgnoreCase) ||
+            protein.Correspondence.Atoms.IsDefault ||
+            protein.Correspondence.Atoms.Length != protein.Molecule.AtomCount ||
+            !ArtifactMatches(new WorkerArtifact("preparedPdb", protein.Molecule.CoordinatePath,
+                protein.Molecule.CoordinateSha256)) ||
+            !ArtifactMatches(new WorkerArtifact("opmPdb", reference.OrientedCoordinatePath,
+                reference.OrientedCoordinateSha256)))
+        {
+            issue = "The identified prepared or OPM coordinate bytes and correspondence are unavailable or changed.";
+            return false;
+        }
+        string[] preparedLines;
+        string[] opmLines;
+        try
+        {
+            preparedLines = File.ReadAllLines(protein.Molecule.CoordinatePath);
+            opmLines = File.ReadAllLines(reference.OrientedCoordinatePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { return false; }
+        var prepared = new List<PdbAtom>();
+        foreach (var line in preparedLines.Where(IsPdbAtom))
+        {
+            if (!TryPdbAtom(line, out var atom)) return false;
+            prepared.Add(atom);
+        }
+        if (prepared.Count != protein.Molecule.AtomCount) return false;
+        var hasModels = opmLines.Any(line => line.StartsWith("MODEL ", StringComparison.Ordinal));
+        if (!hasModels && protein.Intended.ModelIndex != 0) return false;
+        var selectedModel = !hasModels;
+        var opm = new List<PdbAtom>();
+        var markers = new List<double>();
+        foreach (var line in opmLines)
+        {
+            if (line.StartsWith("MODEL ", StringComparison.Ordinal))
+            {
+                selectedModel = int.TryParse(line[6..].Trim(), out var model) &&
+                    model == protein.Intended.ModelIndex + 1;
+                continue;
+            }
+            if (line.StartsWith("ENDMDL", StringComparison.Ordinal))
+            {
+                selectedModel = false;
+                continue;
+            }
+            if (!selectedModel || !IsPdbAtom(line)) continue;
+            if (line.Length >= 20 && line.Substring(17, 3) == "DUM")
+            {
+                if (!TryPdbPoint(line, out var marker)) return false;
+                markers.Add(marker.Z);
+                continue;
+            }
+            if (!TryPdbAtom(line, out var atom)) return false;
+            if (!string.Equals(atom.Element, "H", StringComparison.OrdinalIgnoreCase))
+                opm.Add(atom);
+        }
+        if (markers.Count < 2 || reference.MidplaneAngstrom is not double midplane ||
+            reference.HydrophobicThicknessAngstrom is not double thickness ||
+            !double.IsFinite(midplane) || !double.IsFinite(thickness) || thickness <= 0 ||
+            Math.Abs(midplane - (markers.Min() + markers.Max()) / 2) > 0.05 ||
+            Math.Abs(thickness - (markers.Max() - markers.Min())) > 0.05)
+            return false;
+        var opmByKey = opm.GroupBy(atom => atom.Key).ToDictionary(group => group.Key,
+            group => group.ToArray(), StringComparer.Ordinal);
+        var matched = new List<(PdbPoint Prepared, PdbPoint Oriented)>();
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mapping in protein.Correspondence.Atoms)
+        {
+            if (mapping.ResultAtomIndex < 0 || mapping.ResultAtomIndex >= prepared.Count)
+                return false;
+            var atom = prepared[mapping.ResultAtomIndex];
+            if (mapping.SourceAtomId is null ||
+                string.Equals(atom.Element, "H", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var fields = mapping.SourceAtomId.Split(':');
+            if (fields.Length != 6 || !int.TryParse(fields[0], out var model) ||
+                model != protein.Intended.ModelIndex ||
+                !int.TryParse(fields[3], out var residue)) return false;
+            var key = $"{fields[1]}:{residue}:{fields[4]}:{fields[5]}";
+            if (!used.Add(key) || !opmByKey.TryGetValue(key, out var candidates) ||
+                candidates.Length != 1 ||
+                !string.Equals(atom.Element, candidates[0].Element,
+                    StringComparison.OrdinalIgnoreCase)) return false;
+            matched.Add((atom.Position, candidates[0].Position));
+        }
+        if (matched.Count < 3 || opmByKey.Count != matched.Count) return false;
+        var source0 = matched[0].Prepared;
+        var target0 = matched[0].Oriented;
+        var farthest = matched.Select((pair, index) =>
+            (Index: index, Distance: Dot(Sub(pair.Prepared, source0),
+                Sub(pair.Prepared, source0)))).MaxBy(item => item.Distance);
+        if (farthest.Distance < 1) return false;
+        var sourceAxis = Scale(Sub(matched[farthest.Index].Prepared, source0),
+            1 / Math.Sqrt(farthest.Distance));
+        var targetAxisVector = Sub(matched[farthest.Index].Oriented, target0);
+        if (Math.Abs(Length(targetAxisVector) - Math.Sqrt(farthest.Distance)) > 0.05)
+            return false;
+        var targetAxis = Scale(targetAxisVector, 1 / Length(targetAxisVector));
+        var third = matched.Select((pair, index) =>
+        {
+            var difference = Sub(pair.Prepared, source0);
+            var perpendicular = Sub(difference, Scale(sourceAxis, Dot(difference, sourceAxis)));
+            return (Index: index, Distance: Dot(perpendicular, perpendicular));
+        }).MaxBy(item => item.Distance);
+        if (third.Distance < 1) return false;
+        var sourceSecondVector = Sub(matched[third.Index].Prepared, source0);
+        var sourceSecond = Scale(Sub(sourceSecondVector,
+            Scale(sourceAxis, Dot(sourceSecondVector, sourceAxis))),
+            1 / Math.Sqrt(third.Distance));
+        var targetSecondVector = Sub(matched[third.Index].Oriented, target0);
+        var targetPerpendicular = Sub(targetSecondVector,
+            Scale(targetAxis, Dot(targetSecondVector, targetAxis)));
+        if (Math.Abs(Length(targetPerpendicular) - Math.Sqrt(third.Distance)) > 0.05)
+            return false;
+        var targetSecond = Scale(targetPerpendicular, 1 / Length(targetPerpendicular));
+        var sourceThird = Cross(sourceAxis, sourceSecond);
+        var targetThird = Cross(targetAxis, targetSecond);
+        PdbPoint Apply(PdbPoint point)
+        {
+            var relative = Sub(point, source0);
+            return Add(target0, Add(Scale(targetAxis, Dot(relative, sourceAxis)),
+                Add(Scale(targetSecond, Dot(relative, sourceSecond)),
+                    Scale(targetThird, Dot(relative, sourceThird)))));
+        }
+        if (matched.Any(pair => Length(Sub(Apply(pair.Prepared), pair.Oriented)) > 0.05))
+            return false;
+        transform = Apply;
+        issue = string.Empty;
+        return true;
     }
 
     public async Task<BoundaryOutcome<PlacementProposal>> ProposeWithPpmAsync(
         StudyRevision revision,
         AssessedPreparedProtein protein,
         MembraneModel membrane,
+        PlacementSupportPolicy framePolicy,
         ProteinTopologyKind topologyKind,
         PlacementPhysicalSide physicalSide,
         string? biologicalSidedness,
@@ -145,7 +399,8 @@ public sealed class PlacementAssessment
         if (protein.StudyRevisionId != revision.Id || revision.Membrane?.Id != membrane.Id ||
             revision.IntendedProtein?.Id != protein.Intended.Id)
             return BoundaryOutcome<PlacementProposal>.Unavailable("Protein and membrane must belong to the exact current study revision.");
-        if (!((topologyKind == ProteinTopologyKind.MembraneSpanning && physicalSide == PlacementPhysicalSide.Both) ||
+        if (!ValidFramePolicy(framePolicy, topologyKind, membrane) ||
+            !((topologyKind == ProteinTopologyKind.MembraneSpanning && physicalSide == PlacementPhysicalSide.Both) ||
               (topologyKind == ProteinTopologyKind.OneSurfaceAssociated &&
                   physicalSide is PlacementPhysicalSide.Upper or PlacementPhysicalSide.Lower)) ||
             !Enum.IsDefined(ppmNterminalSide) ||
@@ -179,55 +434,67 @@ public sealed class PlacementAssessment
             return BoundaryOutcome<PlacementProposal>.Unavailable("PPM did not supply a corresponding positioned molecular model and membrane-boundary account.");
 
         var proposalId = Guid.NewGuid().ToString("N");
+        var framedPath = Path.Combine(workingDirectory, $"ppm-framed-{proposalId}.pdb");
+        if (!TryWriteShiftedPdb(oriented.Path, framedPath,
+                -observed.MidplaneAngstrom.Value, out var framedSha256))
+            return BoundaryOutcome<PlacementProposal>.Unavailable(
+                "The PPM orientation could not be placed in the chosen membrane frame without changing the construct.");
         var molecule = new MolecularArtifact(
-            proposalId, oriented.Path, oriented.Sha256, protein.Molecule.TopologyPath, null, null,
+            proposalId, framedPath, framedSha256, protein.Molecule.TopologyPath, null, null,
             protein.Molecule.AtomCount, null, protein.Molecule.TopologySha256);
         var evidence = ImmutableArray.Create(new ScientificEvidence(
             Guid.NewGuid().ToString("N"), proposalId, "PPM " + ppmVersion,
             "PPM orientation candidate",
-            $"Midplane {observed.MidplaneAngstrom.Value:G6} Å; thickness {observed.ThicknessAngstrom.Value:G6} Å",
-            $"Prepared protein {protein.Id}; assumed membrane {observed.AssumedMembrane}",
+            $"PPM midplane {observed.MidplaneAngstrom.Value:G6} Å and thickness " +
+            $"{observed.ThicknessAngstrom.Value:G6} Å; chosen outer leaflet envelope " +
+            $"±{framePolicy.OuterLeafletEnvelopeAngstrom:G6} Å",
+            $"Prepared protein {protein.Id}; assumed membrane {observed.AssumedMembrane}; " +
+            $"frame policy {framePolicy.Id} version {framePolicy.Version}",
             "Implicit symmetric-membrane orientation is not itself support for the chosen explicit bilayer or biological sidedness.",
             EvidenceBearing.Context));
         return BoundaryOutcome<PlacementProposal>.Success(new PlacementProposal(
             proposalId, protein.Id, membrane.Id, topologyKind, molecule,
-            observed.MidplaneAngstrom, observed.ThicknessAngstrom, observed.TiltDegrees,
+            0, 2 * framePolicy.OuterLeafletEnvelopeAngstrom, observed.TiltDegrees,
             physicalSide, biologicalSidedness, ImmutableArray<string>.Empty,
-            evidence, observed.InterpretationWarnings));
+            evidence, observed.InterpretationWarnings,
+            FramePolicyId: framePolicy.Id, FramePolicyVersion: framePolicy.Version));
     }
 
     public async Task<BoundaryOutcome<PlacementProposal>> ProposeManualAsync(
-        StudyRevision revision, AssessedPreparedProtein protein, AssessedMembraneModel membrane,
+        StudyRevision revision, AssessedPreparedProtein protein, MembraneModel membrane,
+        IReadOnlyDictionary<string, MolecularRepresentation> frameSpecies,
+        PlacementSupportPolicy framePolicy,
         PlacementStartingPosition startingPosition,
         double offsetXAngstrom, double offsetYAngstrom, double offsetZAngstrom,
         double rotationXDegrees, double rotationYDegrees, double rotationZDegrees,
         int maximumAtomCount, string workingDirectory, CancellationToken cancellationToken)
     {
-        if (revision.Id != protein.StudyRevisionId || revision.Id != membrane.StudyRevisionId ||
+        if (revision.Id != protein.StudyRevisionId ||
             revision.IntendedProtein?.Id != protein.Intended.Id ||
-            revision.Membrane?.Id != membrane.Intended.Id || !Enum.IsDefined(startingPosition) ||
+            revision.Membrane?.Id != membrane.Id || !Enum.IsDefined(startingPosition) ||
+            !ValidFramePolicy(framePolicy, ProteinTopologyKind.Unclassified, membrane) ||
             !new[] { offsetXAngstrom, offsetYAngstrom, offsetZAngstrom,
                 rotationXDegrees, rotationYDegrees, rotationZDegrees }.All(double.IsFinite) ||
             maximumAtomCount <= 0 || protein.Molecule.AtomCount > maximumAtomCount)
             return BoundaryOutcome<PlacementProposal>.Unavailable(
                 "Choose a current prepared protein, membrane and finite starting transform within the atom limit.");
-        var speciesIds = membrane.Intended.Upper.Fractions.Concat(membrane.Intended.Lower.Fractions)
+        var speciesIds = membrane.Upper.Fractions.Concat(membrane.Lower.Fractions)
             .Where(fraction => fraction.Fraction > 0).Select(fraction => fraction.SpeciesId)
             .Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
-        var species = membrane.SpeciesRepresentations.Where(item => speciesIds.Contains(item.SpeciesId)).ToImmutableArray();
-        if (species.Length != speciesIds.Count || species.Any(item =>
-                !ArtifactMatches(new WorkerArtifact("lipidCoordinateTemplate", item.CoordinateTemplatePath,
-                    item.CoordinateTemplateSha256))) ||
+        var species = speciesIds.Where(frameSpecies.ContainsKey).Select(id => frameSpecies[id]).ToImmutableArray();
+        if (species.Length != speciesIds.Count ||
+            !species.Any(item => item.Category == "lipid") ||
             !ArtifactMatches(new WorkerArtifact("preparedPdb", protein.Molecule.CoordinatePath,
                 protein.Molecule.CoordinateSha256)))
             return BoundaryOutcome<PlacementProposal>.Unavailable(
-                "The exact prepared coordinates or chosen membrane starting templates are missing or changed.");
+                "The exact prepared coordinates or chosen membrane frame species are unavailable.");
         var request = new ScientificWorkRequest<ManualPlacementPayload>(Guid.NewGuid().ToString("N"),
             workingDirectory, new ManualPlacementPayload(revision.Id, protein.Id,
                 protein.Molecule.CoordinatePath, protein.Molecule.CoordinateSha256,
                 protein.Molecule.AtomCount, species, startingPosition,
                 offsetXAngstrom, offsetYAngstrom, offsetZAngstrom,
-                rotationXDegrees, rotationYDegrees, rotationZDegrees, maximumAtomCount));
+                rotationXDegrees, rotationYDegrees, rotationZDegrees, maximumAtomCount,
+                framePolicy.OuterLeafletEnvelopeAngstrom));
         var result = await _worker.PlaceManualAsync(request, cancellationToken);
         if (result.RequestId != request.RequestId || result.StudyRevisionId != revision.Id ||
             result.Standing != WorkerResultStanding.Observed || result.Observations is null)
@@ -241,7 +508,8 @@ public sealed class PlacementAssessment
             !new[] { observed.AppliedTranslationXAngstrom, observed.AppliedTranslationYAngstrom,
                 observed.AppliedTranslationZAngstrom, observed.HeadgroupBoundaryAngstrom,
                 observed.MaximumRigidDeviationAngstrom }.All(double.IsFinite) ||
-            observed.HeadgroupBoundaryAngstrom is < 5 or > 80 ||
+            Math.Abs(observed.HeadgroupBoundaryAngstrom -
+                framePolicy.OuterLeafletEnvelopeAngstrom!.Value) > 0.001 ||
             observed.MaximumRigidDeviationAngstrom is < 0 or > 0.001 ||
             !observed.GeometryWarnings.IsDefaultOrEmpty)
             return BoundaryOutcome<PlacementProposal>.Unavailable(
@@ -257,8 +525,10 @@ public sealed class PlacementAssessment
             $"{transform.AppliedTranslationYAngstrom:G6}, {transform.AppliedTranslationZAngstrom:G6}) Å; " +
             $"rotation X/Y/Z ({rotationXDegrees:G6}, {rotationYDegrees:G6}, {rotationZDegrees:G6})°; " +
             $"maximum written-coordinate deviation {observed.MaximumRigidDeviationAngstrom:G6} Å",
-            $"Prepared protein {protein.Id}; intended membrane {membrane.Intended.Id}; " +
-            $"frame from verified {string.Join(", ", species.Select(item => item.SpeciesId))} coordinate templates",
+            $"Prepared protein {protein.Id}; intended membrane {membrane.Id}; " +
+            $"declared outer leaflet envelope {framePolicy.OuterLeafletEnvelopeAngstrom:G6} Å; " +
+            $"frame policy {framePolicy.Id} version {framePolicy.Version}; " +
+            $"selected species {string.Join(", ", species.Select(item => item.SpeciesId))}",
             "This is an adjustable geometric starting position for construction.", EvidenceBearing.Context));
         var molecule = new MolecularArtifact(id, oriented.Path, oriented.Sha256,
             protein.Molecule.TopologyPath, null, null, protein.Molecule.AtomCount,
@@ -270,104 +540,11 @@ public sealed class PlacementAssessment
             _ => PlacementPhysicalSide.Both
         };
         return BoundaryOutcome<PlacementProposal>.Success(new PlacementProposal(id, protein.Id,
-            membrane.Intended.Id, ProteinTopologyKind.Unclassified, molecule, 0,
-            2 * observed.HeadgroupBoundaryAngstrom, null, side, null,
-            ImmutableArray<string>.Empty, evidence, ImmutableArray<string>.Empty, transform));
+            membrane.Id, ProteinTopologyKind.Unclassified, molecule, 0,
+            2 * framePolicy.OuterLeafletEnvelopeAngstrom, null, side, null,
+            ImmutableArray<string>.Empty, evidence, ImmutableArray<string>.Empty, transform,
+            framePolicy.Id, framePolicy.Version));
     }
-
-    public BoundaryOutcome<PlacementProposal> ReframePpmProposalWithPolicy(
-        StudyRevision revision,
-        AssessedPreparedProtein protein,
-        MembraneModel membrane,
-        PlacementProposal ppmProposal,
-        PlacementSupportPolicy policy)
-    {
-        var frame = policy.PureLipidCoreFrame;
-        var ppmEvidence = ppmProposal.Evidence.IsDefaultOrEmpty ? null : ppmProposal.Evidence.FirstOrDefault(item =>
-            item.SubjectId == ppmProposal.Id && item.Method == "PPM orientation candidate" &&
-            item.Bearing == EvidenceBearing.Context &&
-            item.Applicability?.Contains("DOPC", StringComparison.Ordinal) == true);
-        if (frame is null ||
-            revision.Id != protein.StudyRevisionId || revision.IntendedProtein?.Id != protein.Intended.Id ||
-            revision.Membrane?.Id != membrane.Id || revision.Conditions != membrane.Conditions ||
-            ppmProposal.PreparedProteinId != protein.Id || ppmProposal.MembraneModelId != membrane.Id ||
-            ppmProposal.MidplaneAngstrom is not double ppmMidplane || !double.IsFinite(ppmMidplane) ||
-            ppmProposal.ThicknessAngstrom is not double ppmThickness || !double.IsFinite(ppmThickness) ||
-            ppmThickness <= 0 || ppmProposal.Evidence.Length != 1 || ppmEvidence is null ||
-            ppmProposal.OrientedProtein.AtomCount != protein.Molecule.AtomCount ||
-            ppmProposal.OrientedProtein.TopologySha256 != protein.Molecule.TopologySha256 ||
-            !ArtifactMatches(new WorkerArtifact("orientedPdb", ppmProposal.OrientedProtein.CoordinatePath,
-                ppmProposal.OrientedProtein.CoordinateSha256)) ||
-            string.IsNullOrWhiteSpace(policy.Id) || string.IsNullOrWhiteSpace(policy.Version) ||
-            policy.EvidenceReferences.IsDefaultOrEmpty ||
-            !policy.CoveredTopologyKinds.Contains(ppmProposal.TopologyKind) ||
-            !policy.CoveredSpeciesIds.Contains(frame.SpeciesId) ||
-            string.IsNullOrWhiteSpace(frame.Id) || string.IsNullOrWhiteSpace(frame.Version) ||
-            string.IsNullOrWhiteSpace(frame.SpeciesId) ||
-            !double.IsFinite(frame.HydrocarbonThicknessAngstrom) ||
-            frame.HydrocarbonThicknessAngstrom <= 0 ||
-            !double.IsFinite(frame.ThicknessUncertaintyAngstrom) ||
-            frame.ThicknessUncertaintyAngstrom <= 0 ||
-            !double.IsFinite(frame.ReferenceTemperatureKelvin) || frame.ReferenceTemperatureKelvin <= 0 ||
-            !double.IsFinite(frame.MidplaneOffsetFromPpmAngstrom) ||
-            !double.IsFinite(ppmMidplane + frame.MidplaneOffsetFromPpmAngstrom) ||
-            string.IsNullOrWhiteSpace(frame.ReferenceCondition) ||
-            string.IsNullOrWhiteSpace(frame.ReferenceCitation) ||
-            string.IsNullOrWhiteSpace(frame.SourceToTargetReviewReference) ||
-            string.IsNullOrWhiteSpace(frame.SourceToTargetReviewRationale) ||
-            frame.SourceToTargetReviewReference == frame.ReferenceCitation ||
-            !Uri.TryCreate(frame.ReferenceCitation, UriKind.Absolute, out var citationUri) ||
-            citationUri.Scheme != Uri.UriSchemeHttps ||
-            !policy.EvidenceReferences.Contains(frame.ReferenceCitation) ||
-            !policy.EvidenceReferences.Contains(frame.SourceToTargetReviewReference) ||
-            frame.IntendedConditions != membrane.Conditions ||
-            !PureSymmetricSpecies(membrane, frame.SpeciesId))
-            return BoundaryOutcome<PlacementProposal>.Unavailable(
-                "An exact PPM orientation and a separately identified, reviewed pure-lipid hydrocarbon frame for this chosen membrane are required.");
-
-        var proposalId = Guid.NewGuid().ToString("N");
-        var evidence = ImmutableArray.Create(ppmEvidence with
-            {
-                Id = Guid.NewGuid().ToString("N"), SubjectId = proposalId,
-                Observation = $"From PPM proposal {ppmProposal.Id}; {ppmEvidence.Observation}"
-            }).Add(new ScientificEvidence(Guid.NewGuid().ToString("N"), proposalId,
-            frame.ReferenceCitation, "pure-lipid hydrocarbon core reference",
-            $"2D_C {frame.HydrocarbonThicknessAngstrom:G6} ± " +
-                $"{frame.ThicknessUncertaintyAngstrom:G6} Å; proposed midplane " +
-                $"{ppmMidplane + frame.MidplaneOffsetFromPpmAngstrom:G6} Å, offset " +
-                $"{frame.MidplaneOffsetFromPpmAngstrom:G6} Å from PPM midplane {ppmMidplane:G6} Å",
-            $"Policy {policy.Id} version {policy.Version}; frame {frame.Id} version {frame.Version}; " +
-                $"pure {frame.SpeciesId}; chosen membrane {membrane.Id}; intended conditions " +
-                $"pH {membrane.Conditions.NominalPh:G6}, NaCl {membrane.Conditions.TargetNaClMolar:G6} M, " +
-                $"temperature {membrane.Conditions.OptionalTemperatureKelvin:G6} K",
-            $"Reference {frame.ReferenceTemperatureKelvin:G6} K, {frame.ReferenceCondition}. " +
-                $"Context review {frame.SourceToTargetReviewReference}: {frame.SourceToTargetReviewRationale}. " +
-                "This is an intended pure-lipid core frame, not a measured local protein-containing bilayer or placement support.",
-            EvidenceBearing.Context));
-        return BoundaryOutcome<PlacementProposal>.Success(ppmProposal with
-        {
-            Id = proposalId,
-            MidplaneAngstrom = ppmMidplane + frame.MidplaneOffsetFromPpmAngstrom,
-            ThicknessAngstrom = frame.HydrocarbonThicknessAngstrom,
-            OrientedProtein = ppmProposal.OrientedProtein with { Id = proposalId },
-            Evidence = evidence,
-            Limitations = (ppmProposal.Limitations.IsDefault
-                ? ImmutableArray<string>.Empty : ppmProposal.Limitations).Add(
-                "The intended pure-lipid hydrocarbon frame is a sourced proposal assumption; " +
-                "PPM's implicit DOPC boundaries and any protein-local POPC boundary remain distinct.")
-        });
-    }
-
-    private static bool PureSymmetricSpecies(MembraneModel membrane, string speciesId) =>
-        membrane.Upper.PhysicalSide == LeafletSide.Upper &&
-        membrane.Lower.PhysicalSide == LeafletSide.Lower &&
-        membrane.Upper.Fractions.Length == 1 && membrane.Lower.Fractions.Length == 1 &&
-        membrane.Upper.Fractions[0].SpeciesId == speciesId &&
-        membrane.Lower.Fractions[0].SpeciesId == speciesId &&
-        double.IsFinite(membrane.Upper.Fractions[0].Fraction) &&
-        double.IsFinite(membrane.Lower.Fractions[0].Fraction) &&
-        Math.Abs(membrane.Upper.Fractions[0].Fraction - 1) <= 1e-9 &&
-        Math.Abs(membrane.Lower.Fractions[0].Fraction - 1) <= 1e-9;
 
     public async Task<BoundaryOutcome<PlacementProposal>> ReviseProposalAsync(
         StudyRevision revision,
@@ -421,28 +598,30 @@ public sealed class PlacementAssessment
         return BoundaryOutcome<PlacementProposal>.Success(new PlacementProposal(
             proposalId, source.PreparedProteinId, source.MembraneModelId,
             source.TopologyKind, artifact,
-            source.MidplaneAngstrom is null ? null : source.MidplaneAngstrom + observed.AppliedDepthShiftAngstrom,
+            source.MidplaneAngstrom,
             source.ThicknessAngstrom,
             // A scalar tilt cannot be updated by adding one Euler rotation. The
             // adjusted construct requires a fresh axis-based tilt observation.
             null,
             source.PhysicalSide, source.BiologicalSidedness, source.ContactingRegions,
-            evidence, ImmutableArray.Create("Manual placement adjustment; new support assessment required.")));
+            evidence, ImmutableArray.Create("Manual placement adjustment; new support assessment required."),
+            FramePolicyId: source.FramePolicyId,
+            FramePolicyVersion: source.FramePolicyVersion));
     }
 
     public async Task<BoundaryOutcome<PlacementMeasurementReport>> MeasureAgainstMembraneAsync(
         StudyRevision revision,
         AssessedPreparedProtein protein,
-        AssessedMembraneModel membrane,
+        MembraneModel membrane,
         PlacementProposal proposal,
         PlacementSupportPolicy? policy,
         PlacementStructuralWitness? witness,
         string workingDirectory,
         CancellationToken cancellationToken)
     {
-        if (revision.Id != protein.StudyRevisionId || revision.Id != membrane.StudyRevisionId ||
-            revision.Membrane?.Id != membrane.Intended.Id || proposal.PreparedProteinId != protein.Id ||
-            proposal.MembraneModelId != membrane.Intended.Id || proposal.MidplaneAngstrom is not double midplane ||
+        if (revision.Id != protein.StudyRevisionId ||
+            revision.Membrane?.Id != membrane.Id || proposal.PreparedProteinId != protein.Id ||
+            proposal.MembraneModelId != membrane.Id || proposal.MidplaneAngstrom is not double midplane ||
             proposal.ThicknessAngstrom is not double thickness || !double.IsFinite(midplane) ||
             !double.IsFinite(thickness) || thickness <= 0 ||
             !ArtifactMatches(new WorkerArtifact("orientedPdb", proposal.OrientedProtein.CoordinatePath,
@@ -561,67 +740,6 @@ public sealed class PlacementAssessment
             summary.RecordId == asset.RecordId ? summary : null;
     }
 
-    private static bool PredictionAdequate(AssessedPreparedProtein protein,
-        ImmutableArray<PlacementResidueObservation> residues, PlacementStructuralWitness? witness,
-        PlacementPredictionCriterion? criterion, PredictionRegionSummaryObservations? summary,
-        bool witnessed)
-    {
-        if (protein.Intended.Source.Kind == SourceRouteKind.Upload)
-            // Actor-declared provenance is not a mapped prediction-evidence asset.
-            // A predicted or unknown upload cannot silently take the experimental route.
-            return protein.Intended.Source.UploadProvenance == UploadOriginKind.Experimental;
-        if (protein.Intended.Source.Kind != SourceRouteKind.AlphaFold) return true;
-        if (protein.Intended.Source.Prediction is not { } predictionAsset ||
-            protein.Prediction is not { } observedPrediction ||
-            observedPrediction.RecordId != predictionAsset.RecordId ||
-            observedPrediction.CoordinateSha256 != predictionAsset.CoordinateSha256 ||
-            summary is not null && summary.RecordId != predictionAsset.RecordId)
-            return false;
-        if (criterion is null || !double.IsFinite(criterion.MinimumLocalConfidence) ||
-            criterion.MinimumLocalConfidence < 0 || criterion.MinimumLocalConfidence > 100 ||
-            !double.IsFinite(criterion.MinimumLocalCoverageFraction) ||
-            criterion.MinimumLocalCoverageFraction <= 0 || criterion.MinimumLocalCoverageFraction > 1 ||
-            !double.IsFinite(criterion.MaximumDirectionalPaeAngstrom) ||
-            criterion.MaximumDirectionalPaeAngstrom < 0 ||
-            !double.IsFinite(criterion.MinimumPaePairCoverageFraction) ||
-            criterion.MinimumPaePairCoverageFraction <= 0 || criterion.MinimumPaePairCoverageFraction > 1)
-            return false;
-        var affected = ContactingPredictionResidues(residues, witness)
-            .Concat(witness?.Residues.Where(item => item.Role is PlacementWitnessRoleKind.Sidedness or PlacementWitnessRoleKind.Topology)
-                .Select(item => item.Residue with { CopyId = string.Empty }) ?? Enumerable.Empty<ResidueAddress>())
-            .Distinct().ToHashSet();
-        if (affected.Count == 0) return false;
-        var local = protein.Prediction?.LocalConfidence
-            .Where(item => affected.Contains(item.Residue))
-            .GroupBy(item => item.Residue).ToDictionary(group => group.Key, group => group.ToArray());
-        var observedLocal = local is null ? Array.Empty<PredictedResidueConfidence>() :
-            local.Values.Where(group => group.Length == 1 && group[0].Standing == PredictionObservationStanding.Observed &&
-                group[0].PLddt is double value && double.IsFinite(value) && value is >= 0 and <= 100)
-                .Select(group => group[0]).ToArray();
-        var localAdequate = (double)observedLocal.Length / affected.Count >=
-            criterion.MinimumLocalCoverageFraction &&
-            observedLocal.All(item => item.PLddt >= criterion.MinimumLocalConfidence);
-        static bool DirectionAdequate(DirectionalPredictionSummary? direction,
-            PlacementPredictionCriterion rule) =>
-            direction is { PossiblePairCount: > 0, ValidPairCount: > 0, MaximumAngstrom: double maximum } &&
-            direction.ValidPairCount <= direction.PossiblePairCount &&
-            (double)direction.ValidPairCount / direction.PossiblePairCount >=
-                rule.MinimumPaePairCoverageFraction &&
-            double.IsFinite(maximum) && maximum <= rule.MaximumDirectionalPaeAngstrom;
-        var relativeAdequate = summary is { Standing: PredictionObservationStanding.Observed } &&
-            DirectionAdequate(summary.FirstAlignedOnSecond, criterion) &&
-            DirectionAdequate(summary.SecondAlignedOnFirst, criterion);
-        if (localAdequate && relativeAdequate) return true;
-        if (!criterion.IndependentWitnessCanResolvePredictionLimitations || !witnessed || witness is null ||
-            witness.PredictionResolutions.IsDefaultOrEmpty) return false;
-        var exactResolutions = witness.PredictionResolutions.Where(resolution =>
-            witness.EvidenceReferences.Contains(resolution.EvidenceReference) &&
-            affected.IsSubsetOf(resolution.ResolvedResidues
-                .Select(item => item with { CopyId = string.Empty }).ToHashSet())).ToArray();
-        return (localAdequate || exactResolutions.Any(item => item.LocalStructureResolved)) &&
-            (relativeAdequate || exactResolutions.Any(item => item.RelativePositionResolved));
-    }
-
     private static ImmutableArray<ResidueAddress> ContactingPredictionResidues(
         ImmutableArray<PlacementResidueObservation> residues, PlacementStructuralWitness? witness)
     {
@@ -712,7 +830,7 @@ public sealed class PlacementAssessment
     public AssessedProteinMembranePlacement Assess(
         StudyRevision revision,
         AssessedPreparedProtein protein,
-        AssessedMembraneModel? membrane,
+        MembraneModel? membrane,
         PlacementProposal proposal,
         PlacementSupportPolicy? policy,
         PlacementMeasurementReport? measurement,
@@ -728,8 +846,16 @@ public sealed class PlacementAssessment
 
         if (proposal.PreparedProteinId != protein.Id || protein.StudyRevisionId != revision.Id ||
             revision.Membrane?.Id != proposal.MembraneModelId ||
-            membrane?.StudyRevisionId != revision.Id || membrane.Intended.Id != proposal.MembraneModelId)
+            membrane?.Id != proposal.MembraneModelId)
             reason = "Prepared protein, membrane, placement and study revision do not correspond.";
+        else if (policy is null || !ValidFramePolicy(policy, proposal.TopologyKind, membrane!) ||
+                 proposal.FramePolicyId != policy.Id ||
+                 proposal.FramePolicyVersion != policy.Version ||
+                 proposal.MidplaneAngstrom is not double midplane ||
+                 Math.Abs(midplane) > 0.001 ||
+                 proposal.ThicknessAngstrom is not double thickness ||
+                 Math.Abs(thickness - 2 * policy.OuterLeafletEnvelopeAngstrom!.Value) > 0.001)
+            reason = "The proposed position no longer corresponds to the chosen membrane frame policy.";
         else if (findings.Any(finding => finding.Material && finding.Disposition == FindingDisposition.Disqualifies &&
                      finding.SubjectId == proposal.Id) ||
                  allEvidence.Any(evidence => evidence.SubjectId == proposal.Id && evidence.Bearing == EvidenceBearing.Contradicts))
@@ -762,173 +888,6 @@ public sealed class PlacementAssessment
             standing, reason,
             findings.IsDefault ? ImmutableArray<ScientificFinding>.Empty : findings,
             DateTimeOffset.UtcNow);
-    }
-
-    private static bool WitnessMatches(
-        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
-        PlacementProposal proposal, PlacementSupportPolicy? policy,
-        PlacementStructuralWitness? witness, PlacementMeasurementReport report)
-    {
-        if (!WitnessScopeMatches(protein, membrane, proposal, policy, witness, report))
-            return false;
-        var midplane = proposal.MidplaneAngstrom!.Value;
-        var thickness = proposal.ThicknessAngstrom!.Value;
-        var lower = midplane - thickness / 2.0;
-        var upper = midplane + thickness / 2.0;
-        foreach (var marker in witness!.Residues)
-        {
-            var observed = report.Residues.First(item => item.Address == marker.Residue);
-            var match = marker.ExpectedRegion switch
-            {
-                "upper-water" => observed.MinZAngstrom > upper,
-                "lower-water" => observed.MaxZAngstrom < lower,
-                "core-contact" => observed.AtomsWithinCore > 0,
-                "upper-interface" => Math.Abs(observed.MeanZAngstrom - upper) <= policy!.InterfaceBandAngstrom,
-                "lower-interface" => Math.Abs(observed.MeanZAngstrom - lower) <= policy!.InterfaceBandAngstrom,
-                _ => false
-            };
-            if (!match) return false;
-        }
-
-        var topology = witness.Residues.Where(item => item.Role == PlacementWitnessRoleKind.Topology).ToArray();
-        var contact = witness.Residues.Where(item => item.Role == PlacementWitnessRoleKind.Contact).ToArray();
-        var sidedness = witness.Residues.Where(item => item.Role == PlacementWitnessRoleKind.Sidedness).ToArray();
-        if (proposal.TopologyKind == ProteinTopologyKind.MembraneSpanning)
-            return proposal.PhysicalSide == PlacementPhysicalSide.Both &&
-                witness.ChainCopies.All(chain =>
-                    topology.Any(item => OnSelectedChain(item, chain) &&
-                        item.ExpectedRegion == "upper-water") &&
-                    topology.Any(item => OnSelectedChain(item, chain) &&
-                        item.ExpectedRegion == "lower-water") &&
-                    contact.Any(item => OnSelectedChain(item, chain) &&
-                        item.ExpectedRegion == "core-contact") &&
-                    sidedness.Any(item => OnSelectedChain(item, chain) &&
-                        item.ExpectedRegion is "upper-water" or "lower-water"));
-        if (proposal.TopologyKind == ProteinTopologyKind.OneSurfaceAssociated)
-        {
-            var side = proposal.PhysicalSide;
-            var waterRegion = side switch
-            {
-                PlacementPhysicalSide.Upper => "upper-water",
-                PlacementPhysicalSide.Lower => "lower-water",
-                _ => null
-            };
-            var interfaceRegion = side == PlacementPhysicalSide.Upper ? "upper-interface" : "lower-interface";
-            var oppositeWaterRegion = side == PlacementPhysicalSide.Upper ? "lower-water" : "upper-water";
-            return waterRegion is not null &&
-                topology.Any(item => item.ExpectedRegion == waterRegion) &&
-                contact.Any(item => item.ExpectedRegion == interfaceRegion) &&
-                sidedness.Any(item => item.ExpectedRegion == waterRegion) &&
-                !witness.Residues.Any(item => item.ExpectedRegion == oppositeWaterRegion);
-        }
-        return false;
-    }
-
-    private static bool OnSelectedChain(PlacementResidueWitness marker, ChainSelection chain) =>
-        marker.Residue.Chain == chain.SourceChain && marker.Residue.CopyId == chain.CopyId;
-
-    private static bool WitnessScopeMatches(
-        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
-        PlacementProposal proposal, PlacementSupportPolicy? policy,
-        PlacementStructuralWitness? witness, PlacementMeasurementReport report)
-    {
-        if (policy is null || witness is null || report.ProposalId != proposal.Id ||
-            string.IsNullOrWhiteSpace(witness.Id) || string.IsNullOrWhiteSpace(witness.Version) ||
-            string.IsNullOrWhiteSpace(witness.Source) || witness.EvidenceReferences.IsDefaultOrEmpty ||
-            !witness.Limitations.IsDefaultOrEmpty || witness.Residues.IsDefaultOrEmpty ||
-            policy.EvidenceReferences.IsDefaultOrEmpty || policy.GeometryCriteria.IsDefaultOrEmpty ||
-            policy.GeometryCriteria.Any(criterion =>
-                !report.Measurements.Any(measurement =>
-                    measurement.Name == criterion.MeasurementName && measurement.Unit == criterion.Unit &&
-                    double.IsFinite(measurement.Value) &&
-                    (criterion.Minimum is null || measurement.Value >= criterion.Minimum) &&
-                    (criterion.Maximum is null || measurement.Value <= criterion.Maximum))) ||
-            !policy.CoveredTopologyKinds.Contains(proposal.TopologyKind) ||
-            membrane.Intended.Upper.Fractions.Concat(membrane.Intended.Lower.Fractions)
-                .Where(item => item.Fraction > 0)
-                .Any(item => !policy.CoveredSpeciesIds.Contains(item.SpeciesId)) ||
-            !policy.AllowsMixtures && (membrane.Intended.Upper.Fractions.Count(item => item.Fraction > 0) > 1 ||
-                                       membrane.Intended.Lower.Fractions.Count(item => item.Fraction > 0) > 1) ||
-            !policy.AllowsAsymmetry && !SameSymmetricLeaflets(membrane.Intended.Upper, membrane.Intended.Lower) ||
-            !double.IsFinite(policy.InterfaceBandAngstrom) || policy.InterfaceBandAngstrom <= 0 ||
-            witness.SourceCoordinateSha256 != protein.Intended.Source.Sha256 ||
-            witness.SourceModelIndex != protein.Intended.ModelIndex ||
-            witness.BiologicalAssemblyId != protein.Intended.BiologicalAssemblyId ||
-            witness.ChainCopies.IsDefaultOrEmpty ||
-            !witness.ChainCopies.ToHashSet().SetEquals(protein.Intended.Chains) ||
-            !witness.RetainedPartnerSourceIds.ToHashSet(StringComparer.Ordinal).SetEquals(
-                protein.Intended.Partners.Where(item => item.Retain).Select(item => item.SourceId)) ||
-            protein.Intended.Partners.Any(item => item.Retain) ||
-            (witness.PreparedCoordinateSha256 is not null &&
-                witness.PreparedCoordinateSha256 != protein.Molecule.CoordinateSha256) ||
-            string.IsNullOrWhiteSpace(witness.PreparedBondGraphSha256) ||
-            witness.PreparedBondGraphSha256 != protein.Molecule.TopologySha256 ||
-            !protein.Correspondence.Complete ||
-            !SameLeaflet(witness.Upper, membrane.Intended.Upper) ||
-            !SameLeaflet(witness.Lower, membrane.Intended.Lower) ||
-            witness.Conditions != membrane.Intended.Conditions ||
-            witness.TopologyKind != proposal.TopologyKind ||
-            string.IsNullOrWhiteSpace(proposal.BiologicalSidedness) ||
-            witness.BiologicalSidedness != proposal.BiologicalSidedness ||
-            proposal.MidplaneAngstrom is not double midplane ||
-            proposal.ThicknessAngstrom is not double thickness ||
-            !double.IsFinite(midplane) || !double.IsFinite(thickness) || thickness <= 0 ||
-            witness.Residues.Any(item => !Enum.IsDefined(item.Role)) ||
-            !witness.Residues.Any(item => item.Role == PlacementWitnessRoleKind.Topology) ||
-            !witness.Residues.Any(item => item.Role == PlacementWitnessRoleKind.Contact) ||
-            !witness.Residues.Any(item => item.Role == PlacementWitnessRoleKind.Sidedness) ||
-            report.Residues.IsDefaultOrEmpty ||
-            report.Residues.Select(item => item.Address).Distinct().Count() != report.Residues.Length ||
-            witness.Residues.Any(item => !witness.EvidenceReferences.Contains(item.EvidenceReference) ||
-                !protein.Correspondence.Atoms.Any(atom => atom.SourceResidue == item.Residue) ||
-                !report.Residues.Any(observed => observed.Address == item.Residue && observed.AtomCount > 0)))
-            return false;
-        return true;
-    }
-
-    private static bool HasAttributableWitnessContradiction(
-        AssessedPreparedProtein protein, AssessedMembraneModel membrane,
-        PlacementProposal proposal, PlacementSupportPolicy? policy,
-        PlacementStructuralWitness? witness, PlacementMeasurementReport report)
-    {
-        if (!WitnessScopeMatches(protein, membrane, proposal, policy, witness, report)) return false;
-        var lower = proposal.MidplaneAngstrom!.Value - proposal.ThicknessAngstrom!.Value / 2;
-        var upper = proposal.MidplaneAngstrom!.Value + proposal.ThicknessAngstrom!.Value / 2;
-        return witness!.Residues.Any(marker =>
-        {
-            var observed = report.Residues.First(item => item.Address == marker.Residue);
-            return marker.ExpectedRegion switch
-            {
-                "upper-water" => observed.MaxZAngstrom < lower,
-                "lower-water" => observed.MinZAngstrom > upper,
-                "core-contact" => observed.MaxZAngstrom < lower || observed.MinZAngstrom > upper,
-                "upper-interface" => observed.MaxZAngstrom < lower,
-                "lower-interface" => observed.MinZAngstrom > upper,
-                _ => false
-            };
-        });
-    }
-
-    private static bool SameSymmetricLeaflets(LeafletComposition upper, LeafletComposition lower) =>
-        SameDistinctFractions(upper.Fractions, lower.Fractions);
-
-    private static bool SameLeaflet(LeafletComposition witness, LeafletComposition selected) =>
-        witness.PhysicalSide == selected.PhysicalSide &&
-        SameDistinctFractions(witness.Fractions, selected.Fractions);
-
-    private static bool SameDistinctFractions(ImmutableArray<LipidFraction> first,
-        ImmutableArray<LipidFraction> second)
-    {
-        if (first.IsDefaultOrEmpty || second.IsDefaultOrEmpty || first.Length != second.Length ||
-            first.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() != first.Length ||
-            second.Select(item => item.SpeciesId).Distinct(StringComparer.Ordinal).Count() != second.Length)
-            return false;
-        var orderedFirst = first.OrderBy(item => item.SpeciesId, StringComparer.Ordinal).ToArray();
-        var orderedSecond = second.OrderBy(item => item.SpeciesId, StringComparer.Ordinal).ToArray();
-        return orderedFirst.Zip(orderedSecond).All(pair =>
-            pair.First.SpeciesId == pair.Second.SpeciesId &&
-            double.IsFinite(pair.First.Fraction) && double.IsFinite(pair.Second.Fraction) &&
-            Math.Abs(pair.First.Fraction - pair.Second.Fraction) <= 1e-9);
     }
 
     private static bool ArtifactMatches(WorkerArtifact artifact)

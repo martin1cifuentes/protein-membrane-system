@@ -668,11 +668,19 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal("declined", declined.Value!.Protein!.Status);
         Assert.Contains(proposal.Id, declined.Value.Protein.Summary);
         Assert.Contains(revisionId, declined.Value.Protein.Summary);
-        Assert.Contains(declined.Value.Notices, notice => notice.SubjectId == proposal.Id &&
-            notice.Message.Contains("no assessed prepared protein", StringComparison.Ordinal));
+        Assert.Contains(declined.Value.Notices, notice =>
+            notice.ConditionKey.StartsWith("preparation-blocker-", StringComparison.Ordinal) &&
+            notice.Message.Contains("declined", StringComparison.Ordinal) &&
+            notice.AffectedAreas.Contains("placement"));
         Assert.Equal(0, worker.PrepareProteinCalls);
         Assert.DoesNotContain(declined.Value.Actions, action =>
             action.Kind == ActorActionKind.ProposePlacement && action.Enabled);
+        var refusedPlacement = await Command(product, ActorActionKind.ProposePlacement,
+            new { orientationRoute = "manual", startingPosition = "center",
+                offsetXAngstrom = 0, offsetYAngstrom = 0, offsetZAngstrom = 0,
+                rotationXDegrees = 0, rotationYDegrees = 0, rotationZDegrees = 0 });
+        Assert.False(refusedPlacement.Established);
+        Assert.Contains("assessed protein", refusedPlacement.Reason, StringComparison.OrdinalIgnoreCase);
 
         var stale = await product.ExecuteAsync(new ActorCommand(ActorActionKind.ApprovePreparationChange,
             JsonSerializer.SerializeToElement(new { proposalId = proposal.Id, approve = true }),
@@ -690,6 +698,8 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal(replaced.Value.Study.SelectedSourceId, replaced.Value.Inspection?.SubjectId);
         Assert.Equal(replaced.Value.Study.Id, replaced.Value.Inspection?.StudyRevisionId);
         Assert.Null(replaced.Value.Protein);
+        Assert.DoesNotContain(replaced.Value.Notices, notice =>
+            notice.ConditionKey.StartsWith("preparation-blocker-", StringComparison.Ordinal));
         var oldFocus = await Command(product, ActorActionKind.SelectInspectionSubject,
             new { subjectId = proposal.Id });
         Assert.False(oldFocus.Established);

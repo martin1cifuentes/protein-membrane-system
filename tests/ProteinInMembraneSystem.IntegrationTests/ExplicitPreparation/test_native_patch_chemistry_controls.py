@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "src/ProteinInMembrane.Host"))
 
 from ProteinInMembraneSystem.ExplicitPreparation.worker.construction import (
     _native_atom_name, _native_molecule_bonds, _native_molecule_matches,
-    _native_provider_identity, _native_verified_deleted_patch,
+    _native_provider_identity,
 )
 from ProteinInMembraneSystem.worker.exchange import WorkError
 
@@ -114,8 +114,7 @@ class NativePatchChemistryControls(unittest.TestCase):
             self.check(species, residue, moved)
         self.assertEqual("providerMismatch", refused.exception.code)
 
-    def test_identified_balanced_derivatives_preserve_every_survivor(self):
-        from openmm.app import PDBFile
+    def test_superseded_deletion_derivatives_are_not_selectable(self):
         import hashlib
         import openmm
 
@@ -140,16 +139,9 @@ class NativePatchChemistryControls(unittest.TestCase):
                            "nativePatchPath": str(derived_path),
                            "nativePatchSha256": derived_sha,
                            "removedNativeLipidResidueIds": removed}
-                self.assertEqual(derived_path.resolve(), _native_provider_identity(payload)[0])
-                _native_verified_deleted_patch(self.patch[species], PDBFile(str(derived_path)),
-                                               self.reference[species],
-                                               self.representations[species]["stereoChecks"],
-                                               removed, species, residue_name)
-                with self.assertRaises(WorkError):
-                    _native_provider_identity(dict(payload, nativePatchSha256="0" * 64))
-                with self.assertRaises(WorkError):
-                    _native_provider_identity(dict(payload,
-                                                   removedNativeLipidResidueIds=list(reversed(removed))))
+                with self.assertRaises(WorkError) as refused:
+                    _native_provider_identity(payload)
+                self.assertEqual("unsupportedPolicy", refused.exception.code)
 
 
 if __name__ == "__main__":

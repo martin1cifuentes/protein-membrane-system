@@ -31,11 +31,11 @@ public sealed class PreparationAttemptRouteTests
 
         Assert.Equal(1, calls);
         Assert.False(product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         Assert.Equal(1, calls);
-        var refused = await Command(product, ActorActionKind.StartPreparation, new { });
+        var refused = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.False(refused.Established);
-        Assert.Contains("OpenMM", refused.Reason ?? "", StringComparison.Ordinal);
+        Assert.Contains("provider", refused.Reason ?? "", StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, calls);
         Assert.Null(product.Snapshot().Attempt);
         Assert.Empty(worker.ConstructionRequests);
@@ -58,18 +58,49 @@ public sealed class PreparationAttemptRouteTests
         });
         Assert.Equal(1, calls);
         Assert.True(product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         Assert.Equal(1, calls);
 
+        var notifications = 0;
+        product.Changed += () => notifications++;
         installed = installed with { FullVersion = installed.FullVersion + ".changed" };
-        var refused = await Command(product, ActorActionKind.StartPreparation, new { });
+        var refused = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.False(refused.Established);
         Assert.Contains("changed", refused.Reason ?? "", StringComparison.Ordinal);
         Assert.Equal(2, calls);
-        Assert.False(product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+        var current = product.Snapshot();
+        Assert.False(current.ConstructionRoutes.Single().Available);
+        Assert.Contains("restart", current.ConstructionRoutes.Single().Reason ?? "",
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(current.Actions.Single(item =>
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+        Assert.True(notifications > 0);
         Assert.Null(product.Snapshot().Attempt);
         Assert.Empty(worker.ConstructionRequests);
+    }
+
+    [Fact]
+    public async Task Unwritable_attempt_workspace_is_a_pre_admission_resource_refusal_without_an_attempt_id()
+    {
+        using var fixture = new ConstructionFixture();
+        var worker = new AttemptRouteWorker(fixture);
+        using var http = new HttpClient();
+        var product = Product(fixture, worker, http);
+        var attemptsPath = Path.Combine(fixture.Directory, "root-workspace", "attempts");
+        Assert.False(Directory.Exists(attemptsPath));
+        File.WriteAllText(attemptsPath, "A file prevents creation of the attempts directory.");
+
+        var submitted = await Command(product, ActorActionKind.BuildAndMinimize,
+            new { policyId = fixture.Policy.Id });
+        Assert.True(submitted.Established, submitted.Reason);
+        await Until(() => product.Snapshot().Attempt?.Status == "resourceRefused");
+        var refusal = Assert.IsType<AttemptAccount>(product.Snapshot().Attempt);
+        Assert.Equal(string.Empty, refusal.AttemptId);
+        Assert.Null(refusal.StudyRevisionId);
+        Assert.Contains("workspace", refusal.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(worker.ConstructionRequests);
+        Assert.Empty(worker.MinimizationRequests);
+        Assert.Empty(product.Snapshot().Stages);
     }
 
     [Fact]
@@ -82,27 +113,27 @@ public sealed class PreparationAttemptRouteTests
         var stale = fixture.Revision with { AdoptedPlacementProposalId = "another-proposal" };
         Set(product, "_study", stale);
         Assert.False(product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
-        var refused = await Command(product, ActorActionKind.StartPreparation, new { });
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+        var refused = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.False(refused.Established);
         Assert.Empty(worker.ConstructionRequests);
         Assert.Empty(worker.MinimizationRequests);
     }
 
     [Fact]
-    public async Task Root_exposes_native_candidate_before_exact_continue_and_reports_completed_stage_separately()
+    public async Task One_build_action_binds_the_candidate_and_automatically_minimizes_the_same_attempt()
     {
         using var fixture = new ConstructionFixture();
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
 
-        var started = await Command(product, ActorActionKind.StartPreparation, new { });
+        var started = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.True(started.Established, started.Reason);
-        await WaitForReady(product);
-        var ready = product.Snapshot();
-        var attempt = Assert.IsType<AttemptAccount>(ready.Attempt);
-        Assert.Equal("readyForMinimization", attempt.Status);
+        await WaitForMinimization(product, worker);
+        var running = product.Snapshot();
+        var attempt = Assert.IsType<AttemptAccount>(running.Attempt);
+        Assert.Equal("running", attempt.Status);
         Assert.Equal(fixture.Revision.Id, attempt.StudyRevisionId);
         Assert.Equal(fixture.Policy.Id, attempt.PolicyId);
         Assert.Equal(fixture.Policy.Version, attempt.PolicyVersion);
@@ -129,19 +160,17 @@ public sealed class PreparationAttemptRouteTests
         Assert.Equal(367, constructed.WaterCount);
         Assert.Equal(2, constructed.SodiumCount);
         Assert.Equal(1, constructed.ChlorideCount);
-        Assert.Empty(ready.Stages);
-        var continueAction = ready.Actions.Single(item => item.Kind == ActorActionKind.ContinueMinimization);
-        Assert.True(continueAction.Enabled);
-        Assert.Equal(attempt.AttemptId, continueAction.SubjectId);
-        Assert.False(ready.Actions.Single(item => item.Kind == ActorActionKind.StartPreparation).Enabled);
-        Assert.False((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
+        Assert.Equal(0.0, constructed.MaximumProteinCoordinateDeviationAngstrom);
+        Assert.Empty(running.Stages);
+        Assert.False(running.Actions.Single(item => item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+        Assert.False((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
         Assert.Single(worker.ConstructionRequests);
         Assert.Equal(fixture.NativePatchSha, worker.ConstructionRequests[0].Payload.NativePatchSha256);
         Assert.Equal(fixture.Policy.Construction.ProviderVersion,
             worker.ConstructionRequests[0].Payload.ProviderVersion);
         Assert.Equal(fixture.Policy.Construction.MinimumPaddingNanometers,
             worker.ConstructionRequests[0].Payload.MinimumPaddingNanometers);
-        Assert.Empty(worker.MinimizationRequests);
+        Assert.Single(worker.MinimizationRequests);
         Assert.Empty(worker.ObservationRequests);
         var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
             new { subjectId = constructed.SubjectId });
@@ -149,10 +178,6 @@ public sealed class PreparationAttemptRouteTests
         Assert.Equal("constructedSystem", inspected.Value!.Inspection?.RepresentationKind);
         Assert.NotNull(inspected.Value.Inspection?.StructureUrl);
 
-        var continued = await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = attempt.AttemptId, constructedSubjectId = constructed.SubjectId });
-        Assert.True(continued.Established, continued.Reason);
-        await WaitForMinimization(product, worker);
         Assert.Equal("running", product.Snapshot().Attempt?.Status);
         Assert.Single(worker.MinimizationRequests);
 
@@ -172,14 +197,114 @@ public sealed class PreparationAttemptRouteTests
         Assert.Equal(fixture.Revision.Id, stage.StudyRevisionId);
         Assert.Equal(StageKind.Minimization, stage.Kind);
         Assert.Equal(StageTermination.Converged, stage.Observation?.Termination);
-        Assert.Equal(PreparationQualification.Indeterminate, stage.Assessment?.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, stage.Assessment?.CheckStanding);
         Assert.True(stage.Assessment?.CurrentlyApplicable);
         Assert.Equal(constructed.SubjectId, stage.Constructed?.SubjectId);
         Assert.Equal(constructed.AchievedComposition, stage.Constructed?.AchievedComposition);
         Assert.Equal("completed", completed.Attempt?.Status);
         Assert.Single(worker.ObservationRequests);
         Assert.False(completed.Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+    }
+
+    [Fact]
+    public async Task Trial_diagnostics_keep_their_attempt_identity_and_refuse_changed_bytes()
+    {
+        using var fixture = new ConstructionFixture();
+        var worker = new AttemptRouteWorker(fixture);
+        using var http = new HttpClient();
+        var product = Product(fixture, worker, http);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize,
+            new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
+        var attemptId = Assert.IsType<AttemptAccount>(product.Snapshot().Attempt).AttemptId;
+        var directory = Path.Combine(fixture.Directory, "root-workspace", "attempts", attemptId,
+            "trial-0");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "provider-packed.pdb");
+        const string originalPdb =
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n";
+        File.WriteAllText(path, originalPdb);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+        var diagnostic = new TrialDiagnosticArtifact("providerPacked", digest,
+            Path.GetFileName(path), PreparationPhase.ProviderPacking, LocalPath: path);
+        var trial = new ConstructionTrialSummary("trial-0", 0, ConstructionTrialStanding.Failed,
+            15, 17.5, ImmutableArray<SpeciesCount>.Empty, ImmutableArray<SpeciesCount>.Empty,
+            ImmutableArray<SpeciesCount>.Empty, ImmutableArray<double>.Empty,
+            ImmutableArray<double>.Empty, null, "packingFailed", "The trial failed packing.",
+            ImmutableArray.Create(diagnostic));
+        var previous = (StageExecutionState)typeof(ProductRoot)
+            .GetField("_execution", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)!.GetValue(product)!;
+        typeof(ProductRoot).GetMethod("SetExecution", System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!.Invoke(product,
+            [previous with { Trial = trial, UpdatedAt = DateTimeOffset.UtcNow }]);
+
+        var shown = Assert.Single(product.Snapshot().Attempt!.Trials);
+        var artifact = Assert.Single(shown.DiagnosticArtifacts);
+        Assert.Equal("trial-0", shown.TrialId);
+        Assert.Equal("providerPacked", artifact.Role);
+        Assert.NotNull(artifact.DownloadUrl);
+        Assert.NotNull(artifact.StructureUrl);
+        Assert.NotNull(artifact.SubjectId);
+        Assert.DoesNotContain(path, JsonSerializer.Serialize(artifact));
+        var token = artifact.DownloadUrl!.Split('/').Last();
+        Assert.Equal(Path.GetFileName(path), product.VerifiedDiagnosticContent(token)?.FileName);
+        var selected = await Command(product, ActorActionKind.SelectInspectionSubject,
+            new { subjectId = artifact.SubjectId });
+        Assert.True(selected.Established, selected.Reason);
+        Assert.Equal("providerDiagnostic", selected.Value?.Inspection?.RepresentationKind);
+        Assert.Null(selected.Value?.Inspection?.Assessment);
+
+        File.AppendAllText(path, "changed after the diagnostic was bound\n");
+        Assert.Null(product.VerifiedDiagnosticContent(token));
+        Assert.Null(product.VerifiedStructureContent(artifact.StructureUrl!.Split('/').Last().Split('?')[0]));
+        File.WriteAllText(path, originalPdb);
+        Assert.NotNull(product.VerifiedDiagnosticContent(token));
+        worker.ReleaseMinimization();
+        await Until(() => product.Snapshot().Stages.Length == 1);
+        await Until(() => product.Snapshot().Actions.Single(item =>
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize,
+            new { policyId = fixture.Policy.Id })).Established);
+        await Until(() => product.Snapshot().Stages.Length == 2);
+        var later = product.Snapshot();
+        Assert.NotEqual(attemptId, later.Attempt?.AttemptId);
+        var historical = Assert.Single(later.PriorAttempts);
+        Assert.Equal(attemptId, historical.AttemptId);
+        Assert.Equal(fixture.Revision.Id, historical.StudyRevisionId);
+        Assert.Equal(token, Assert.Single(Assert.Single(historical.Trials)
+            .DiagnosticArtifacts).DownloadUrl!.Split('/').Last());
+        Assert.True((await Command(product, ActorActionKind.SelectInspectionSubject,
+            new { subjectId = artifact.SubjectId })).Established);
+        Assert.Equal(fixture.Revision.Id, product.Snapshot().Inspection?.StudyRevisionId);
+
+        // A resource failure before a third admission must not erase either
+        // earlier attempt or relabel the newly refused work as a stage.
+        if (!OperatingSystem.IsLinux()) return;
+        var secondAttemptId = later.Attempt!.AttemptId;
+        var attemptsPath = Path.Combine(fixture.Directory, "root-workspace", "attempts");
+        var originalMode = File.GetUnixFileMode(attemptsPath);
+        File.SetUnixFileMode(attemptsPath, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            await Until(() => product.Snapshot().Actions.Single(item =>
+                item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
+            Assert.True((await Command(product, ActorActionKind.BuildAndMinimize,
+                new { policyId = fixture.Policy.Id })).Established);
+            await Until(() => product.Snapshot().Attempt?.Status == "resourceRefused");
+            var refused = product.Snapshot();
+            Assert.Equal(string.Empty, refused.Attempt?.AttemptId);
+            Assert.Equal(2, refused.Stages.Length);
+            Assert.Equal(secondAttemptId, refused.PriorAttempts[0].AttemptId);
+            Assert.Equal(attemptId, refused.PriorAttempts[1].AttemptId);
+            Assert.Equal(token, Assert.Single(Assert.Single(refused.PriorAttempts[1].Trials)
+                .DiagnosticArtifacts).DownloadUrl!.Split('/').Last());
+        }
+        finally
+        {
+            File.SetUnixFileMode(attemptsPath, originalMode);
+        }
     }
 
     [Fact]
@@ -189,9 +314,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -215,9 +339,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -249,12 +372,11 @@ public sealed class PreparationAttemptRouteTests
         Assert.False((await Command(product, ActorActionKind.ExportStage,
             new { stageId = "not-yet-constructed" })).Established);
 
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         var candidateId = product.Snapshot().Attempt!.Constructed!.SubjectId;
-        await RefusePartial(candidateId, "readyForMinimization");
+        await RefusePartial(candidateId, "running");
 
-        Assert.True((await Continue(product)).Established);
         await WaitForMinimization(product, worker);
         var unfinishedStageId = Assert.Single(worker.MinimizationRequests).Payload.StageId;
         await RefusePartial(unfinishedStageId, "running");
@@ -287,9 +409,8 @@ public sealed class PreparationAttemptRouteTests
         { MinimizationStanding = WorkerResultStanding.Unobserved };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         var unfinishedStageId = Assert.Single(worker.MinimizationRequests).Payload.StageId;
         worker.ReleaseMinimization();
@@ -309,9 +430,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -350,15 +470,14 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
         var stage = Assert.Single(product.Snapshot().Stages);
         var assessment = Assert.IsType<PreparationAssessmentResult>(stage.Assessment);
-        Assert.Equal(PreparationQualification.Indeterminate, assessment.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, assessment.CheckStanding);
 
         var exportDirectory = Path.Combine(fixture.Directory, "root-workspace", "exports",
             stage.StageId + "-" + assessment.Id);
@@ -402,7 +521,7 @@ public sealed class PreparationAttemptRouteTests
             Assert.Equal(stage.StageId, root.GetProperty("stage").GetProperty("id").GetString());
             Assert.Equal(stage.AttemptId, root.GetProperty("attempt").GetProperty("id").GetString());
             Assert.Equal(assessment.Id, root.GetProperty("assessment").GetProperty("id").GetString());
-            Assert.Equal("Indeterminate", root.GetProperty("assessment").GetProperty("qualification").GetString());
+            Assert.Equal("checksIncomplete", root.GetProperty("assessment").GetProperty("checkStanding").GetString());
             Assert.Equal(fixture.Protein.Intended.Source.Sha256,
                 root.GetProperty("lineage").GetProperty("sourceCoordinateSha256").GetString());
             Assert.Equal(fixture.Placement.Proposal.OrientedProtein.CoordinateSha256,
@@ -444,9 +563,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture) { FailNextExport = true };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -479,19 +597,17 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
         var first = Assert.Single(product.Snapshot().Stages);
         await Until(() => product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
 
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await Until(() => product.Snapshot().Stages.Length == 2);
         var stages = product.Snapshot().Stages;
         var second = stages.Single(item => item.StageId != first.StageId);
@@ -525,9 +641,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture) { ChangeNextExportArtifactAfterHash = true };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -556,9 +671,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -591,9 +705,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -601,7 +714,7 @@ public sealed class PreparationAttemptRouteTests
         var assessed = stage.Assessment! with
         {
             Id = "controlled-not-qualified-assessment",
-            Qualification = PreparationQualification.NotQualified,
+            CheckStanding = PreparationCheckStanding.IssuesFound,
             Reason = "Controlled disqualifying scientific assessment premise",
             Limitations = ImmutableArray.Create("Controlled limitation remains disclosed")
         };
@@ -619,14 +732,14 @@ public sealed class PreparationAttemptRouteTests
             new { stageId = stage.StageId });
         Assert.True(delivered.Established, delivered.Reason);
         var resultingStage = Assert.Single(delivered.Value!.Stages);
-        Assert.Equal(PreparationQualification.NotQualified, resultingStage.Assessment?.Qualification);
+        Assert.Equal(PreparationCheckStanding.IssuesFound, resultingStage.Assessment?.CheckStanding);
         Assert.Equal(assessed.Reason, resultingStage.Assessment?.Reason);
         var content = product.VerifiedExportContent(stage.StageId, resultingStage.Export?.Sha256);
         Assert.Equal(ExportDeliveryStanding.Available, content.Standing);
         using var archive = new ZipArchive(new MemoryStream(content.Bytes!), ZipArchiveMode.Read);
         using var manifest = JsonDocument.Parse(archive.GetEntry("manifest.json")!.Open());
         var declared = manifest.RootElement.GetProperty("assessment");
-        Assert.Equal("NotQualified", declared.GetProperty("qualification").GetString());
+        Assert.Equal("issuesFound", declared.GetProperty("checkStanding").GetString());
         Assert.Equal(assessed.Reason, declared.GetProperty("reason").GetString());
         Assert.Equal(assessed.Limitations[0],
             manifest.RootElement.GetProperty("limitations")[0].GetString());
@@ -639,9 +752,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -660,7 +772,7 @@ public sealed class PreparationAttemptRouteTests
         var renewed = stage.Assessment! with
         {
             Id = "renewed-assessment",
-            Qualification = PreparationQualification.NotQualified,
+            CheckStanding = PreparationCheckStanding.IssuesFound,
             Reason = "Current material finding disqualifies this stage.",
             Findings = stage.Assessment.Findings.Add(finding),
             Limitations = stage.Assessment.Limitations.Add("Later material finding applies.")
@@ -682,7 +794,7 @@ public sealed class PreparationAttemptRouteTests
         Assert.True(redelivered.Established, redelivered.Reason);
         var current = Assert.Single(redelivered.Value!.Stages);
         Assert.Equal("renewed-assessment", current.Export?.AssessmentId);
-        Assert.Equal(PreparationQualification.NotQualified, current.Assessment?.Qualification);
+        Assert.Equal(PreparationCheckStanding.IssuesFound, current.Assessment?.CheckStanding);
         Assert.NotEqual(oldExport.Sha256, current.Export?.Sha256);
         var content = product.VerifiedExportContent(stage.StageId, current.Export?.Sha256);
         using var archive = new ZipArchive(new MemoryStream(content.Bytes!), ZipArchiveMode.Read);
@@ -702,9 +814,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -780,9 +891,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -840,13 +950,12 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         var running = product.Snapshot();
         var id = running.Attempt!.AttemptId;
-        var second = await Command(product, ActorActionKind.StartPreparation, new { });
+        var second = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.False(second.Established);
         var wrong = await Command(product, ActorActionKind.StopAttempt,
             new { attemptId = "other" });
@@ -865,35 +974,6 @@ public sealed class PreparationAttemptRouteTests
     }
 
     [Fact]
-    public async Task Ready_candidate_can_be_declined_without_starting_minimization()
-    {
-        using var fixture = new ConstructionFixture();
-        var worker = new AttemptRouteWorker(fixture);
-        using var http = new HttpClient();
-        var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        var ready = product.Snapshot();
-        var candidateId = ready.Attempt!.Constructed!.SubjectId;
-        Assert.True(ready.Actions.Single(item => item.Kind == ActorActionKind.StopAttempt).Enabled);
-
-        var declined = await Command(product, ActorActionKind.StopAttempt,
-            new { attemptId = ready.Attempt.AttemptId });
-        Assert.True(declined.Established, declined.Reason);
-        var stopped = product.Snapshot();
-        Assert.Equal("stopped", stopped.Attempt?.Status);
-        Assert.Equal(candidateId, stopped.Attempt?.Constructed?.SubjectId);
-        Assert.Empty(stopped.Stages);
-        Assert.Empty(worker.MinimizationRequests);
-        Assert.False(stopped.Actions.Single(item => item.Kind == ActorActionKind.ContinueMinimization).Enabled);
-        Assert.True(stopped.Actions.Single(item => item.Kind == ActorActionKind.StartPreparation).Enabled);
-        Assert.False((await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.Attempt.AttemptId, constructedSubjectId = candidateId })).Established);
-        Assert.True((await Command(product, ActorActionKind.SelectInspectionSubject,
-            new { subjectId = candidateId })).Established);
-    }
-
-    [Fact]
     public async Task Stop_during_active_construction_cancels_only_the_exact_attempt()
     {
         using var fixture = new ConstructionFixture();
@@ -901,7 +981,14 @@ public sealed class PreparationAttemptRouteTests
             HoldCancellationObservation = true };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
+        var publishedTerminalStopFlags = new System.Collections.Concurrent.ConcurrentQueue<bool>();
+        product.Changed += () =>
+        {
+            var observed = product.Snapshot().Attempt;
+            if (observed is { Status: "stopped" })
+                publishedTerminalStopFlags.Enqueue(observed.StopRequested);
+        };
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
         await worker.ConstructionEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
         var active = product.Snapshot();
@@ -919,10 +1006,45 @@ public sealed class PreparationAttemptRouteTests
         Assert.False((await Command(product, ActorActionKind.StopAttempt, new { attemptId = id })).Established);
         worker.ReleaseCancellationObservation();
         await Until(() => product.Snapshot().Attempt?.Status == "stopped");
+        await Until(() => !publishedTerminalStopFlags.IsEmpty);
+        Assert.All(publishedTerminalStopFlags, flag => Assert.False(flag));
         Assert.False(product.Snapshot().Attempt?.StopRequested);
         Assert.Null(product.Snapshot().Attempt?.Constructed);
         Assert.Empty(product.Snapshot().Stages);
         Assert.Empty(worker.MinimizationRequests);
+    }
+
+    [Fact]
+    public async Task Completed_stage_winning_a_late_stop_request_publishes_no_pending_stop()
+    {
+        using var fixture = new ConstructionFixture();
+        var worker = new AttemptRouteWorker(fixture) { HoldStageObservation = true };
+        using var http = new HttpClient();
+        var product = Product(fixture, worker, http);
+        var publishedCompletionStopFlags = new System.Collections.Concurrent.ConcurrentQueue<bool>();
+        product.Changed += () =>
+        {
+            var observed = product.Snapshot().Attempt;
+            if (observed is { Status: "completed" })
+                publishedCompletionStopFlags.Enqueue(observed.StopRequested);
+        };
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize,
+            new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
+        await WaitForMinimization(product, worker);
+        worker.ReleaseMinimization();
+        await worker.StageObservationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
+        var id = product.Snapshot().Attempt!.AttemptId;
+        var requested = await Command(product, ActorActionKind.StopAttempt, new { attemptId = id });
+        Assert.True(requested.Established, requested.Reason);
+        Assert.True(requested.Value!.Attempt?.StopRequested);
+        worker.ReleaseStageObservation();
+        await Until(() => product.Snapshot().Stages.Length == 1);
+        await Until(() => !publishedCompletionStopFlags.IsEmpty);
+        Assert.All(publishedCompletionStopFlags, flag => Assert.False(flag));
+        Assert.Equal("completed", product.Snapshot().Attempt?.Status);
+        Assert.False(product.Snapshot().Attempt?.StopRequested);
     }
 
     [Fact]
@@ -933,7 +1055,7 @@ public sealed class PreparationAttemptRouteTests
         using var http = new HttpClient();
         var product = Product(fixture, worker, http, maximumConstructionSeconds: 1);
 
-        var started = await Command(product, ActorActionKind.StartPreparation, new { });
+        var started = await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id });
         Assert.True(started.Established, started.Reason);
         await worker.ConstructionEntered.Task.WaitAsync(TimeSpan.FromSeconds(3),
             TestContext.Current.CancellationToken);
@@ -951,84 +1073,77 @@ public sealed class PreparationAttemptRouteTests
     }
 
     [Fact]
-    public async Task Continue_requires_exact_current_candidate_and_refuses_duplicate_or_stale_binding()
+    public void Terminal_construction_account_retains_the_last_correlated_provider_phase()
     {
         using var fixture = new ConstructionFixture();
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        var ready = product.Snapshot().Attempt!;
-        Assert.False((await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = "other", constructedSubjectId = ready.Constructed!.SubjectId })).Established);
-        Assert.False((await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId, constructedSubjectId = "other" })).Established);
-        Assert.Empty(worker.MinimizationRequests);
-
-        Assert.True((await Continue(product)).Established);
-        await WaitForMinimization(product, worker);
-        Assert.False((await Continue(product)).Established);
-        Assert.Single(worker.MinimizationRequests);
-        worker.ReleaseMinimization();
-        await Until(() => product.Snapshot().Stages.Length == 1 &&
-            product.Snapshot().Actions.Single(item => item.Kind == ActorActionKind.StartPreparation).Enabled);
-    }
-
-    [Theory]
-    [InlineData("coordinates")]
-    [InlineData("topology")]
-    [InlineData("system")]
-    [InlineData("state")]
-    [InlineData("correspondence")]
-    public async Task Continue_refuses_changed_constructed_artifact_bytes(string artifact)
-    {
-        using var fixture = new ConstructionFixture();
-        var worker = new AttemptRouteWorker(fixture);
-        using var http = new HttpClient();
-        var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        var ready = product.Snapshot().Attempt!;
-        var candidates = (Dictionary<string, ConstructedExplicitSystem>)typeof(ProductRoot)
-            .GetField("_constructedByAttempt", System.Reflection.BindingFlags.Instance |
+        var workspace = (ProteinInMembrane.Host.ProteinInMembraneSystem.LocalRunWorkspace.LocalRunWorkspace)
+            typeof(ProductRoot).GetField("_workspace", System.Reflection.BindingFlags.Instance |
                 System.Reflection.BindingFlags.NonPublic)!.GetValue(product)!;
-        var molecule = candidates[ready.AttemptId].Molecule;
-        var path = artifact switch
+        workspace.RetainAttempt(fixture.Attempt);
+        Set(product, "_currentAttempt", fixture.Attempt);
+        var setExecution = typeof(ProductRoot).GetMethod("SetExecution",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!;
+        var observeProgress = typeof(ProductRoot).GetMethod("ObserveConstructionProgress",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!;
+        JsonElement Progress(string trialId, int trialIndex) => JsonSerializer.SerializeToElement(new
         {
-            "coordinates" => molecule.CoordinatePath,
-            "topology" => molecule.TopologyPath!,
-            "system" => molecule.SystemXmlPath!,
-            "state" => molecule.StateXmlPath!,
-            "correspondence" => molecule.CorrespondencePath!,
-            _ => throw new ArgumentOutOfRangeException(nameof(artifact))
+            operation = "construct_system", attemptId = fixture.Attempt.Id,
+            studyRevisionId = fixture.Attempt.StudyRevisionId,
+            stage = "providerPacking", detail = new
+            {
+                trialId, trialIndex, message = "Provider packing observed."
+            }
+        });
+
+        var population = new StageExecutionState(fixture.Attempt.Id, null, null,
+            StageExecutionStanding.Running, "Population observed.", null,
+            DateTimeOffset.UtcNow, PreparationPhase.ProviderPopulation, "trial-a", 0);
+        setExecution.Invoke(product, [population]);
+        observeProgress.Invoke(product, ["wrong-request", Progress("other-trial", 0)]);
+        observeProgress.Invoke(product, ["wrong-request", Progress("trial-a", 1)]);
+        Assert.Equal(PreparationPhase.ProviderPopulation, product.Snapshot().Attempt?.Phase);
+        observeProgress.Invoke(product, ["worker-request", Progress("trial-a", 0)]);
+        Assert.Equal(PreparationPhase.ProviderPacking, product.Snapshot().Attempt?.Phase);
+
+        var nextTrial = population with
+        {
+            TrialId = "trial-b", TrialIndex = 1, Phase = PreparationPhase.ProviderPopulation,
+            Message = "The next trial is deriving its population."
         };
-        File.AppendAllText(path, "changed after candidate review");
+        setExecution.Invoke(product, [nextTrial]);
+        Assert.Equal(PreparationPhase.ProviderPopulation, product.Snapshot().Attempt?.Phase);
 
-        var refused = await Continue(product);
-        Assert.False(refused.Established);
-        Assert.Contains("changed", refused.Reason, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("readyForMinimization", product.Snapshot().Attempt?.Status);
+        var conditioning = nextTrial with
+        {
+            Phase = PreparationPhase.ProviderConditioningUnrestrained,
+            Message = "Unrestrained provider conditioning observed."
+        };
+        setExecution.Invoke(product, [conditioning]);
+        var fallback = conditioning with
+        {
+            Phase = PreparationPhase.ProviderPopulation,
+            Message = "The trial ended before a checked handoff."
+        };
+        setExecution.Invoke(product, [fallback]);
+        Assert.Equal(PreparationPhase.ProviderConditioningUnrestrained,
+            product.Snapshot().Attempt?.Phase);
+
+        var terminal = fallback with
+        {
+            Standing = StageExecutionStanding.ResourceRefused,
+            FailureCode = "resourceLimit"
+        };
+        setExecution.Invoke(product, [terminal]);
+        var account = Assert.IsType<AttemptAccount>(product.Snapshot().Attempt);
+        Assert.Equal("resourceRefused", account.Status);
+        Assert.Equal("trial-b", account.TrialId);
+        Assert.Equal(PreparationPhase.ProviderConditioningUnrestrained, account.Phase);
         Assert.Empty(product.Snapshot().Stages);
-        Assert.Empty(worker.MinimizationRequests);
-    }
-
-    [Fact]
-    public async Task Continue_refuses_a_candidate_after_its_study_revision_is_replaced()
-    {
-        using var fixture = new ConstructionFixture();
-        var worker = new AttemptRouteWorker(fixture);
-        using var http = new HttpClient();
-        var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        var ready = product.Snapshot().Attempt!;
-        Set(product, "_study", fixture.Revision with { Id = "later-revision", Number = 3 });
-        Assert.False(product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.ContinueMinimization).Enabled);
-        Assert.False((await Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = ready.AttemptId, constructedSubjectId = ready.Constructed!.SubjectId })).Established);
-        Assert.Empty(worker.MinimizationRequests);
     }
 
     [Fact]
@@ -1038,19 +1153,18 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
         await Until(() => product.Snapshot().Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         var original = Assert.Single(product.Snapshot().Stages);
         var originalAssessmentId = original.Assessment!.Id;
         worker.FailNextConstruction = true;
 
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
         await Until(() => product.Snapshot().Attempt?.Status == "failed");
         var after = product.Snapshot();
         var retained = Assert.Single(after.Stages);
@@ -1070,9 +1184,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -1087,16 +1200,11 @@ public sealed class PreparationAttemptRouteTests
         var originalBytes = product.VerifiedExportContent(stage.StageId, bundleSha).Bytes;
         Assert.NotNull(originalBytes);
 
-        var proposal = await Command(product, ActorActionKind.ProposeMembrane, new
+        var changed = await Command(product, ActorActionKind.AdoptMembrane, new
         {
-            upper = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            lower = new[] { new { speciesId = "DMPC", fraction = 1.0 } },
-            scientificPurpose = "A later membrane decision"
+            upper = new[] { new { speciesId = "POPC", fraction = 1.0 } },
+            lower = new[] { new { speciesId = "POPC", fraction = 1.0 } }
         });
-        Assert.True(proposal.Established, proposal.Reason);
-        var proposedId = proposal.Value!.Membrane!.ModelId;
-        var changed = await Command(product, ActorActionKind.AdoptMembrane,
-            new { modelId = proposedId });
         Assert.True(changed.Established, changed.Reason);
         var after = product.Snapshot();
         Assert.NotEqual(before.Study!.Id, after.Study!.Id);
@@ -1105,13 +1213,13 @@ public sealed class PreparationAttemptRouteTests
         Assert.Equal(attemptId, retained.AttemptId);
         Assert.Equal(fixture.Revision.Id, retained.StudyRevisionId);
         Assert.Equal(assessmentId, retained.Assessment?.Id);
-        Assert.Equal(PreparationQualification.Indeterminate, retained.Assessment?.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, retained.Assessment?.CheckStanding);
         Assert.Equal(bundleSha, retained.Export?.Sha256);
         Assert.Equal(originalBytes, product.VerifiedExportContent(stage.StageId, bundleSha).Bytes);
         Assert.True(after.Actions.Single(action => action.Kind == ActorActionKind.ExportStage &&
             action.SubjectId == stage.StageId).Enabled);
         Assert.False(after.Actions.Single(action =>
-            action.Kind == ActorActionKind.StartPreparation).Enabled);
+            action.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         var inspected = await Command(product, ActorActionKind.SelectInspectionSubject,
             new { subjectId = stage.StageId });
         Assert.True(inspected.Established, inspected.Reason);
@@ -1125,15 +1233,14 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture) { ContactWarning = "observed unresolved contact" };
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
         var stage = Assert.Single(product.Snapshot().Stages);
         Assert.Equal("completed", stage.Status);
-        Assert.Equal(PreparationQualification.Indeterminate, stage.Assessment?.Qualification);
+        Assert.Equal(PreparationCheckStanding.ChecksIncomplete, stage.Assessment?.CheckStanding);
         Assert.Contains(stage.Assessment!.Findings, finding =>
             finding.SubjectId == stage.StageId && finding.Material &&
             finding.Disposition == FindingDisposition.Challenges);
@@ -1146,9 +1253,8 @@ public sealed class PreparationAttemptRouteTests
         var worker = new AttemptRouteWorker(fixture);
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         worker.ReleaseMinimization();
         await Until(() => product.Snapshot().Stages.Length == 1);
@@ -1170,7 +1276,7 @@ public sealed class PreparationAttemptRouteTests
         var finding = new ScientificFinding(Guid.NewGuid().ToString("N"),
             fixture.Placement.Proposal.Id, "controlled-exact-measurement",
             "An independently measured premise contradicts the original proposal.",
-            "Reassess the placement and dependent preparation qualification.",
+            "Reassess the placement and dependent preparation checks.",
             FindingDisposition.Disqualifies, true, DateTimeOffset.UtcNow);
         var source = stages[originalAccount.StageId];
         var downstreamStageId = Guid.NewGuid().ToString("N");
@@ -1201,20 +1307,20 @@ public sealed class PreparationAttemptRouteTests
                 fixture.Membrane, fixture.Placement, fixture.Policy]);
 
         var revised = product.Snapshot();
-        Assert.Equal("unsupported", revised.Placement?.Status);
+        Assert.Equal("notEstablished", revised.Placement?.Status);
         Assert.Equal(2, revised.Stages.Length);
         var originalNow = revised.Stages.Single(item => item.StageId == originalAccount.StageId);
         var downstream = revised.Stages.Single(item => item.StageId == downstreamStageId);
         Assert.Equal("completed", originalNow.Status);
         Assert.Equal("completed", downstream.Status);
         Assert.Equal(fixture.Revision.Id, downstream.StudyRevisionId);
-        Assert.NotEqual(PreparationQualification.QualifiedPrepared, originalNow.Assessment?.Qualification);
+        Assert.NotEqual(PreparationCheckStanding.ChecksPassed, originalNow.Assessment?.CheckStanding);
         Assert.Contains(finding, downstream.Assessment!.Findings);
         Assert.NotEqual(originalAssessmentId, originalNow.Assessment?.Id);
         Assert.Equal(originalAssessmentId, originalAccount.Assessment.Id);
         Assert.DoesNotContain(finding, originalAccount.Assessment.Findings);
         Assert.False(revised.Actions.Single(action =>
-            action.Kind == ActorActionKind.StartPreparation).Enabled);
+            action.Kind == ActorActionKind.BuildAndMinimize).Enabled);
     }
 
     [Fact]
@@ -1231,10 +1337,9 @@ public sealed class PreparationAttemptRouteTests
             { MinimizationStanding = workerStanding };
             using var http = new HttpClient();
             var product = Product(fixture, worker, http);
-            Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-            await WaitForReady(product);
-            Assert.True((await Continue(product)).Established);
+            Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
             await WaitForMinimization(product, worker);
+                await WaitForMinimization(product, worker);
             worker.ReleaseMinimization();
             await Until(() => product.Snapshot().Attempt?.Status == expectedStatus);
             var state = product.Snapshot();
@@ -1279,9 +1384,8 @@ public sealed class PreparationAttemptRouteTests
         using var http = new HttpClient();
         var product = Product(fixture, worker, http);
 
-        Assert.True((await Command(product, ActorActionKind.StartPreparation, new { })).Established);
-        await WaitForReady(product);
-        Assert.True((await Continue(product)).Established);
+        Assert.True((await Command(product, ActorActionKind.BuildAndMinimize, new { policyId = fixture.Policy.Id })).Established);
+        await WaitForMinimization(product, worker);
         await WaitForMinimization(product, worker);
         var admitted = product.Snapshot();
         var attemptId = admitted.Attempt!.AttemptId;
@@ -1349,7 +1453,7 @@ public sealed class PreparationAttemptRouteTests
         workspace.RetainStudy(revision);
         var snapshot = root.Snapshot();
         Assert.Equal(expectStartAvailable, snapshot.Actions.Single(item =>
-            item.Kind == ActorActionKind.StartPreparation).Enabled);
+            item.Kind == ActorActionKind.BuildAndMinimize).Enabled);
         return root;
     }
 
@@ -1361,14 +1465,6 @@ public sealed class PreparationAttemptRouteTests
         ActorActionKind kind, object data) => product.ExecuteAsync(new ActorCommand(kind,
             JsonSerializer.SerializeToElement(data), product.Snapshot().Revision),
             TestContext.Current.CancellationToken);
-
-    private static Task<BoundaryOutcome<WorkspaceState>> Continue(ProductRoot product)
-    {
-        var attempt = Assert.IsType<AttemptAccount>(product.Snapshot().Attempt);
-        var candidate = Assert.IsType<ConstructedSystemAccount>(attempt.Constructed);
-        return Command(product, ActorActionKind.ContinueMinimization,
-            new { attemptId = attempt.AttemptId, constructedSubjectId = candidate.SubjectId });
-    }
 
     private static async Task Until(Func<bool> done)
     {
@@ -1393,9 +1489,6 @@ public sealed class PreparationAttemptRouteTests
         }
     }
 
-    private static Task WaitForReady(ProductRoot product) => Until(() =>
-        product.Snapshot().Attempt is { Status: "readyForMinimization", Constructed: not null } &&
-        product.Snapshot().Actions.Single(item => item.Kind == ActorActionKind.ContinueMinimization).Enabled);
 }
 
 internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScientificWorkerExchange
@@ -1410,9 +1503,12 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
     private readonly TaskCompletionSource _releaseConstruction = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _releaseCancellationObservation = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _releaseMinimization = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseStageObservation = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource ConstructionEntered { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource MinimizationEntered { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource StageObservationEntered { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     public List<ScientificWorkRequest<ConstructionPayload>> ConstructionRequests =>
         _construction.ConstructionRequests;
@@ -1426,6 +1522,7 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
     public bool FailNextConstruction { get; set; }
     public bool BlockConstruction { get; set; }
     public bool HoldCancellationObservation { get; set; }
+    public bool HoldStageObservation { get; set; }
     public bool ConstructionCancellationObserved { get; private set; }
     public int? ConstructedAtomCount { get; private set; }
     public string? ContactWarning { get; init; }
@@ -1434,6 +1531,7 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
     public void ReleaseConstruction() => _releaseConstruction.TrySetResult();
     public void ReleaseCancellationObservation() => _releaseCancellationObservation.TrySetResult();
     public void ReleaseMinimization() => _releaseMinimization.TrySetResult();
+    public void ReleaseStageObservation() => _releaseStageObservation.TrySetResult();
 
     public async Task<WorkerResult<ConstructionObservations>> ConstructSystemAsync(
         ScientificWorkRequest<ConstructionPayload> request, CancellationToken cancellationToken)
@@ -1497,27 +1595,30 @@ internal sealed class AttemptRouteWorker(ConstructionFixture fixture) : IScienti
             new ProviderIdentity("controlled OpenMM", "8.6"), null, null);
     }
 
-    public Task<WorkerResult<StageObservationObservations>> ObserveStageAsync(
+    public async Task<WorkerResult<StageObservationObservations>> ObserveStageAsync(
         ScientificWorkRequest<StageObservationPayload> request, CancellationToken cancellationToken)
     {
         ObservationRequests.Add(request);
+        StageObservationEntered.TrySetResult();
+        if (HoldStageObservation)
+            await _releaseStageObservation.Task;
         var atomCount = ConstructedAtomCount ?? throw new InvalidOperationException("No native candidate atom count was observed.");
         var local = new LocalStateObservations(ObservationStanding.Unavailable,
-            "No positive qualification observation in this controlled composition proof",
+            "No complete positive check observation in this controlled composition proof",
             ImmutableArray<MeasuredValue>.Empty, ImmutableArray<LocalContactObservation>.Empty,
             ImmutableArray<LocalContactRolePair>.Empty, ImmutableArray<string>.Empty,
             ImmutableArray<LocalRolePairMeasurement>.Empty);
         var geometry = new ProteinGeometryObservations(ObservationStanding.Unavailable,
             ImmutableArray<ProteinGeometryKindObservation>.Empty,
             ImmutableArray<GeometryDistanceObservation>.Empty, ImmutableArray<string>.Empty);
-        return Task.FromResult(new WorkerResult<StageObservationObservations>(request.RequestId,
+        return new WorkerResult<StageObservationObservations>(request.RequestId,
             request.Payload.StudyRevisionId, request.Payload.AttemptId, request.Payload.StageId,
             WorkerResultStanding.Observed, ImmutableArray<WorkerArtifact>.Empty,
             new StageObservationObservations(atomCount, true, true,
                 ImmutableArray<MeasuredValue>.Empty, ImmutableArray<string>.Empty,
                 ContactWarning is null ? ImmutableArray<string>.Empty :
                     ImmutableArray.Create(ContactWarning), ImmutableArray<string>.Empty, local, geometry),
-            new ProviderIdentity("controlled observation", "1"), null, null));
+            new ProviderIdentity("controlled observation", "1"), null, null);
     }
 
     private static WorkerArtifact Artifact(string path, string role) => new(role, path,

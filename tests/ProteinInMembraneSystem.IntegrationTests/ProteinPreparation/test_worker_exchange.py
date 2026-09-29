@@ -99,6 +99,51 @@ class WorkerExchangeTests(unittest.TestCase):
         self.assertEqual([model["atomCount"] for model in observed["models"]], [11, 11])
         self.assertIsNone(observed["prediction"])
 
+    def test_partner_display_names_preserve_codes_and_ignore_entity_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "named-partners.pdb"
+            partner_atoms = (
+                "HETATM   13  O   HOH B   3       9.000   4.000   0.000  1.00 20.00           O\n"
+                "HETATM   14  FE  HEM B   4      10.000   4.000   0.000  1.00 20.00          FE\n"
+                "HETATM   15  NA   NA B   5      11.000   4.000   0.000  1.00 20.00          NA\n"
+                "HETATM   16  CL   CL B   6      12.000   4.000   0.000  1.00 20.00          CL\n"
+                "HETATM   17  C1  GOL B   7      13.000   4.000   0.000  1.00 20.00           C\n"
+            )
+            source.write_text(two_alanines(1, "A").replace("ENDMDL\n", "") +
+                              partner_atoms + "ENDMDL\nEND\n")
+            result, events = invoke(directory, "inspect_source", {
+                "sourcePath": str(source), "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "maxAtoms": 30, "sourceKind": "upload", "prediction": None,
+            })
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            partners = events[-1]["payload"]["observations"]["models"][0]["partners"]
+            self.assertEqual([(item["sourceId"], item["kind"], item["displayName"])
+                              for item in partners], [
+                ("0:B:3::HOH", "water", "Water"),
+                ("0:B:4::HEM", "nonpolymer", "Heme"),
+                ("0:B:5::NA", "ion", "Sodium ion"),
+                ("0:B:6::CL", "ion", "Chloride ion"),
+                ("0:B:7::GOL", "nonpolymer", "GOL"),
+            ])
+
+            # The authored mmCIF has an entity identifier, not a molecule name.
+            # Make it numeric for an unknown compound without changing any address.
+            fixture = ROOT / "tests" / "ProteinInMembraneSystem.AcceptanceTests" / \
+                "SelectAndPrepareProtein" / "fixtures" / "actor-selection-identities.cif"
+            cif_source = directory / "numeric-entity.cif"
+            cif_source.write_text(fixture.read_text().replace("HEM!", "2").replace("HEM", "GOL"))
+            result, events = invoke(directory, "inspect_source", {
+                "sourcePath": str(cif_source),
+                "sourceSha256": hashlib.sha256(cif_source.read_bytes()).hexdigest(),
+                "maxAtoms": 30, "sourceKind": "upload", "prediction": None,
+            })
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            for model in events[-1]["payload"]["observations"]["models"]:
+                self.assertEqual({item["displayName"] for item in model["partners"]}, {"GOL"})
+                self.assertTrue(all(item["label"] == "GOL" and item["sourceId"].endswith(":GOL")
+                                    for item in model["partners"]))
+
     def test_real_source_reports_partner_and_requires_exact_alternate_location(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -148,6 +193,14 @@ class WorkerExchangeTests(unittest.TestCase):
                 "sourceChain": "A", "copyId": "A", "previewChain": "A",
             }])
             self.assertEqual(observed["assessmentStanding"], "Observed")
+            selection["retainedPartners"] = model["partners"]
+            unsupported, unsupported_events = invoke(directory, "inspect_preparation_changes", selection)
+            self.assertNotEqual(unsupported.returncode, 0)
+            self.assertEqual(unsupported_events[-1]["payload"]["failureCode"], "unsupportedChemistry")
+            selection["retainedPartners"] = [dict(model["partners"][0], insertionCode="A")]
+            wrong_address, wrong_address_events = invoke(directory, "inspect_preparation_changes", selection)
+            self.assertNotEqual(wrong_address.returncode, 0)
+            self.assertEqual(wrong_address_events[-1]["payload"]["failureCode"], "invalidSelection")
 
     def test_missing_backbone_is_explicitly_refused(self):
         with tempfile.TemporaryDirectory() as temporary:

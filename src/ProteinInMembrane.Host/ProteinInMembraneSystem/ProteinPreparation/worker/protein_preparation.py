@@ -30,6 +30,10 @@ _ALLOWED_VARIANTS = {
     "HIS": {"HID", "HIE", "HIP"},
     "LYS": {"LYS", "LYN"},
 }
+_PARTNER_COMMON_NAMES = {
+    "HOH": "Water", "WAT": "Water", "H2O": "Water",
+    "HEM": "Heme", "NA": "Sodium ion", "CL": "Chloride ion",
+}
 
 
 def _address(chain: str, residue: Any, model: int = 0, copy_id: str = "") -> dict[str, Any]:
@@ -84,15 +88,10 @@ def _residue_kind(residue: Any, peptide_subchains: set[str]) -> str:
     return "unknown"
 
 
-def _partner_name(residue: Any, entities: Any) -> str:
-    # mmCIF may identify a nonpolymer by a descriptive entity name. PDB input
-    # usually has only the component code; keep that code when no name exists.
-    if residue.name == "HEM":
-        return "Heme"
-    for entity in entities:
-        if residue.subchain in entity.subchains and entity.name and entity.name != residue.name:
-            return entity.name
-    return residue.name
+def _partner_name(residue: Any) -> str:
+    # Gemmi's entity.name is an entity identifier, not a chemical name. It may
+    # be numeric in mmCIF or generated as "GOL!" for PDB input.
+    return _PARTNER_COMMON_NAMES.get(residue.name, residue.name)
 
 
 def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable) -> dict[str, Any]:
@@ -139,13 +138,16 @@ def inspect_source(directory: Path, payload: dict[str, Any], progress: Callable)
                                  "missingAtomAssessmentStanding": "Unavailable",
                                  "disulfideAssessmentStanding": "Unavailable",
                                  "limitations": []})
-                if residue_kind == "heterogen":
+                if residue_kind in {"heterogen", "solvent"}:
+                    kind = ("water" if residue.name in {"HOH", "WAT", "H2O"}
+                            else "ion" if residue.name in {"NA", "CL"} and len(residue) == 1
+                            else "nonpolymer")
                     partners.append({"sourceId": f"{index}:{chain.name}:{residue.seqid.num}:{_icode(residue.seqid.icode)}:{residue.name}",
-                                     "label": residue.name, "kind": "nonpolymer",
+                                     "label": residue.name, "kind": kind,
                                      "atomCount": len(residue), "chain": chain.name,
                                      "residue": int(residue.seqid.num),
                                      "insertionCode": _icode(residue.seqid.icode),
-                                     "displayName": _partner_name(residue, structure.entities)})
+                                     "displayName": _partner_name(residue)})
         assemblies = []
         for assembly in structure.assemblies:
             expanded = gemmi.make_assembly(assembly, model, gemmi.HowToNameCopiedChain.AddNumber)
@@ -223,6 +225,68 @@ def preview_source_model(directory: Path, payload: dict[str, Any], progress: Cal
             "provider": {"name": "Gemmi", "version": gemmi.__version__}}
 
 
+def _transform_key(transform: Any) -> tuple[float, ...]:
+    return tuple(round(value, 8) for row in transform.mat.tolist() for value in row) + \
+        tuple(round(value, 8) for value in transform.vec.tolist())
+
+
+def _copy_transform(source_chain: Any, expanded_chain: Any, assembly: Any) -> Any:
+    """Find the exact assembly operation by protein coordinates, not chain-name suffixes."""
+    def atoms(chain: Any) -> dict[tuple[int, str, str, str, str], Any]:
+        return {(int(residue.seqid.num), _icode(residue.seqid.icode), residue.name,
+                 atom.name, str(atom.altloc)): atom.pos
+                for residue in chain if residue.name in _CANONICAL for atom in residue}
+
+    original = atoms(source_chain)
+    observed = atoms(expanded_chain)
+    if not original or original.keys() != observed.keys():
+        raise WorkError("ambiguousAssembly", "Selected protein copy does not retain the source atom inventory")
+    matches = {}
+    for generator in assembly.generators:
+        for operator in generator.operators:
+            transform = operator.transform
+            if all(math.dist(tuple(transform.apply(original[key])), tuple(position)) <= 1e-5
+                   for key, position in observed.items()):
+                matches[_transform_key(transform)] = transform
+    if len(matches) != 1:
+        raise WorkError("ambiguousAssembly", "Selected protein copy has no unique observed assembly operation")
+    return next(iter(matches.values()))
+
+
+def _retained_source_members(payload: dict[str, Any], source_model: Any) -> dict[str, tuple[str, Any]]:
+    members = {}
+    for raw in payload.get("retainedPartners", []):
+        item = require_mapping(raw, "retained partner")
+        identifier = require_text(item.get("sourceId"), "partner sourceId")
+        parts = identifier.split(":", 4)
+        if (len(parts) != 5 or not parts[0].isdigit() or not parts[2].lstrip("-").isdigit() or
+                int(parts[0]) != payload["modelIndex"] or
+                item.get("chain") != parts[1] or item.get("residue") != int(parts[2]) or
+                _icode(item.get("insertionCode")) != parts[3] or
+                item.get("label") != parts[4] or identifier in members):
+            raise WorkError("invalidSelection", "Retained partner identity is duplicated or differs from the selected source")
+        chains = [chain for chain in source_model if chain.name == parts[1]]
+        residues = [residue for chain in chains for residue in chain
+                    if int(residue.seqid.num) == int(parts[2]) and
+                    _icode(residue.seqid.icode) == parts[3] and residue.name == parts[4]]
+        if len(chains) != 1 or len(residues) != 1:
+            raise WorkError("invalidSelection", "Retained partner does not identify one source residue")
+        members[identifier] = (parts[1], residues[0])
+    return members
+
+
+def _matching_expanded_member(source_residue: Any, expanded_chain: Any, transform: Any) -> bool:
+    candidates = [residue for residue in expanded_chain
+                  if residue.seqid == source_residue.seqid and residue.name == source_residue.name]
+    if len(candidates) != 1:
+        return False
+    original = {(atom.name, str(atom.altloc), atom.element.name): atom.pos for atom in source_residue}
+    observed = {(atom.name, str(atom.altloc), atom.element.name): atom.pos for atom in candidates[0]}
+    return original.keys() == observed.keys() and all(
+        math.dist(tuple(transform.apply(position)), tuple(observed[key])) <= 1e-5
+        for key, position in original.items())
+
+
 def _selected_structure(source: Any, payload: dict[str, Any]):
     import gemmi
 
@@ -262,6 +326,7 @@ def _selected_structure(source: Any, payload: dict[str, Any]):
             raise WorkError("ambiguousAssembly", "Selected chain instance does not identify exactly one structure chain",
                             {"selectedChain": name})
 
+    retained_members = _retained_source_members(payload, source_model)
     chosen = gemmi.Structure()
     chosen.name = source.name
     chosen.cell = source.cell
@@ -270,6 +335,10 @@ def _selected_structure(source: Any, payload: dict[str, Any]):
     names = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     if len(selected) > len(names):
         raise WorkError("unsupportedRepresentation", "Selected chain count exceeds the bounded PDB exchange representation")
+    selected_source_chains = {source_chain for _, source_chain, _ in selected}
+    partner_only = {source_chain for source_chain, _ in retained_members.values()
+                    if source_chain not in selected_source_chains}
+    frames: dict[tuple[float, ...], tuple[Any, str]] = {}
     for short_name, (original_name, source_chain, copy_id) in zip(names, selected):
         copied = selected_model.add_chain(model[original_name])
         copied.name = short_name
@@ -277,8 +346,49 @@ def _selected_structure(source: Any, payload: dict[str, Any]):
             observed_origin = _assembly_copy_origin(original_name, [chain.name for chain in source_model])
             if observed_origin != source_chain or original_name != copy_id:
                 raise WorkError("invalidSelection", "Requested assembly copy conflicts with inspected source identity")
+            transform = _copy_transform(source_model[source_chain], model[original_name], assembly)
+            frames.setdefault(_transform_key(transform), (transform, copy_id))
         chain_map.append({"preparedChain": short_name, "selectedChain": original_name,
-                          "sourceChain": source_chain, "copyId": copy_id})
+                          "sourceChain": source_chain, "copyId": copy_id,
+                          "proteinSelection": True,
+                          "retainedPartnerIds": [identifier for identifier, (chain, _) in retained_members.items()
+                                                 if chain == source_chain]})
+    if not assembly_id:
+        frames[()] = (None, selected[0][2])
+    for source_chain in sorted(partner_only):
+        for transform, protein_copy in frames.values():
+            members_by_copy: dict[str, list[str]] = {}
+            for identifier, (member_chain, residue) in retained_members.items():
+                if member_chain != source_chain:
+                    continue
+                if assembly_id:
+                    candidates = [chain.name for chain in model
+                                  if _assembly_copy_origin(chain.name, [item.name for item in source_model]) == source_chain and
+                                  _matching_expanded_member(residue, chain, transform)]
+                    if len(candidates) != 1:
+                        raise WorkError("ambiguousAssembly", "A retained member has no unique observed assembly copy in the selected protein frame",
+                                        {"sourceId": identifier, "proteinCopy": protein_copy})
+                    copy_id = candidates[0]
+                else:
+                    copy_id = source_chain
+                members_by_copy.setdefault(copy_id, []).append(identifier)
+            for copy_id, identifiers in members_by_copy.items():
+                if len(chain_map) >= len(names):
+                    raise WorkError("unsupportedRepresentation", "Selected protein and retained-member chains exceed the PDB exchange bound")
+                partner_chain = gemmi.Chain(source_chain)
+                for identifier in identifiers:
+                    _, residue = retained_members[identifier]
+                    cloned = residue.clone()
+                    if transform is not None:
+                        for atom in cloned:
+                            position = transform.apply(atom.pos)
+                            atom.pos = gemmi.Position(position.x, position.y, position.z)
+                    partner_chain.add_residue(cloned)
+                short_name = names[len(chain_map)]
+                selected_model.add_chain(partner_chain).name = short_name
+                chain_map.append({"preparedChain": short_name, "selectedChain": copy_id,
+                                  "sourceChain": source_chain, "copyId": copy_id,
+                                  "proteinSelection": False, "retainedPartnerIds": identifiers})
     chosen.add_model(selected_model)
     return chosen, chain_map
 
@@ -330,28 +440,21 @@ def _apply_altlocs(structure: Any, payload: dict[str, Any], chain_map: list[dict
 def _check_membership(structure: Any, payload: dict[str, Any], chain_map: list[dict[str, str]]) -> None:
     import gemmi
 
-    retained = {}
-    for entry in payload.get("retainedPartners", []):
-        item = require_mapping(entry, "retained partner")
-        identifier = require_text(item.get("sourceId"), "partner sourceId")
-        parts = identifier.split(":", 4)
-        if len(parts) != 5 or require_integer(int(parts[0]), "partner model") != payload["modelIndex"]:
-            raise WorkError("invalidSelection", "A retained partner does not identify the chosen source model")
-        chain_name = require_text(item.get("chain"), "partner chain")
-        residue_number = require_integer(item.get("residue"), "partner residue", -999999)
-        if chain_name != parts[1] or residue_number != int(parts[2]) or item.get("label") != parts[4]:
-            raise WorkError("invalidSelection", "Retained partner fields disagree with its source identity")
-        retained[identifier] = (chain_name, residue_number, parts[3], parts[4])
+    retained = {require_text(item.get("sourceId"), "partner sourceId"): item
+                for raw in payload.get("retainedPartners", [])
+                for item in [require_mapping(raw, "retained partner")]}
+    expected = {(entry["preparedChain"], identifier) for entry in chain_map
+                for identifier in entry["retainedPartnerIds"]}
     seen_retained = set()
     by_prepared_chain = {entry["preparedChain"]: entry for entry in chain_map}
     for chain in structure[0]:
         for index in range(len(chain) - 1, -1, -1):
             residue = chain[index]
             address = _address(chain.name, residue)
-            if residue.is_water() or residue.entity_type == gemmi.EntityType.Water:
-                del chain[index]
-                continue
+            mapping = by_prepared_chain[chain.name]
             if residue.entity_type == gemmi.EntityType.Polymer:
+                if not mapping["proteinSelection"]:
+                    raise WorkError("invalidSelection", "A partner-only chain contains an unselected protein")
                 if residue.name not in _CANONICAL:
                     raise WorkError("unsupportedChemistry", "A selected protein residue is noncanonical", {"residue": address, "name": residue.name})
                 atoms = {atom.name for atom in residue if atom.element.name != "H"}
@@ -362,19 +465,36 @@ def _check_membership(structure: Any, payload: dict[str, Any], chain_map: list[d
                 # separately in the correspondence.
                 residue.het_flag = "A"
                 continue
-            if residue.entity_type != gemmi.EntityType.NonPolymer:
+            if not (residue.is_water() or residue.entity_type in
+                    {gemmi.EntityType.Water, gemmi.EntityType.NonPolymer}):
                 raise WorkError("unresolvedStructure", "A selected residue's molecular role cannot be established",
                                 {"residue": address, "name": residue.name})
-            source_chain = by_prepared_chain[chain.name]["sourceChain"]
-            matches = [identifier for identifier, parts in retained.items()
-                       if parts == (source_chain, int(residue.seqid.num), _icode(residue.seqid.icode), residue.name)]
-            if matches:
-                seen_retained.update(matches)
-                residue.het_flag = "H"
-            else:
+            source_chain = mapping["sourceChain"]
+            identifier = (f"{payload['modelIndex']}:{source_chain}:{int(residue.seqid.num)}:"
+                          f"{_icode(residue.seqid.icode)}:{residue.name}")
+            if (identifier not in mapping["retainedPartnerIds"] or identifier not in retained):
                 del chain[index]
-    if set(retained) != seen_retained:
-        raise WorkError("invalidSelection", "A retained partner does not match the selected structure")
+                continue
+            kind = retained[identifier].get("kind")
+            atoms = {atom.name: atom for atom in residue}
+            if kind == "water" and residue.name in {"HOH", "WAT", "H2O"}:
+                if (len(atoms) != len(residue) or "O" not in atoms or atoms["O"].element.name != "O" or
+                        set(atoms) not in ({"O"}, {"O", "H1", "H2"}) or
+                        any(atom.element.name != "H" for name, atom in atoms.items() if name != "O")):
+                    raise WorkError("unsupportedChemistry", "Retained ordinary water does not match the exact TIP3P atom identity")
+                residue.name = "HOH"
+            elif kind == "ion" and residue.name in {"NA", "CL"}:
+                if (len(residue) != 1 or residue[0].name != residue.name or
+                        residue[0].element.name.upper() != ("NA" if residue.name == "NA" else "CL")):
+                    raise WorkError("unsupportedChemistry", "Retained Na/Cl does not match its exact ion template")
+            else:
+                raise WorkError("unsupportedChemistry", "Retained partner has no qualified ordinary water or Na/Cl route")
+            residue.het_flag = "H"
+            if (chain.name, identifier) in seen_retained:
+                raise WorkError("ambiguousAssembly", "An exact retained member occurs more than once in a selected copy")
+            seen_retained.add((chain.name, identifier))
+    if expected != seen_retained:
+        raise WorkError("invalidSelection", "An exact retained partner copy is absent from the selected structure")
 
 
 def _approved_atom_keys(payload: dict[str, Any], chain_map: list[dict[str, str]]) -> dict[tuple[str, int, str, str], str]:
@@ -579,7 +699,7 @@ def inspect_preparation_changes(directory: Path, payload: dict[str, Any], progre
                              "previewChains": [{"sourceChain": entry["sourceChain"],
                                                 "copyId": entry["copyId"],
                                                 "previewChain": entry["preparedChain"]}
-                                               for entry in chain_map],
+                                               for entry in chain_map if entry["proteinSelection"]],
                              "missingNonbackboneHeavyAtoms": missing,
                              "possibleDisulfides": disulfides,
                              "assessmentStanding": standing,
@@ -610,9 +730,12 @@ def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable
     _check_membership(selected, payload, chain_map)
     import gemmi
 
-    retained_partner_residues = {(chain.name, int(residue.seqid.num), _icode(residue.seqid.icode))
-                                 for chain in selected[0] for residue in chain
-                                 if residue.entity_type == gemmi.EntityType.NonPolymer}
+    retained_partner_residues = {
+        (chain.name, int(residue.seqid.num), _icode(residue.seqid.icode)):
+            "water" if residue.name == "HOH" else "ion" if residue.name in {"NA", "CL"} else "partner"
+        for chain in selected[0] for residue in chain
+        if residue.is_water() or residue.entity_type in
+        {gemmi.EntityType.Water, gemmi.EntityType.NonPolymer}}
     source_atom_count = sum(len(residue) for chain in selected[0] for residue in chain)
     selected_atoms = {(chain.name, int(residue.seqid.num), _icode(residue.seqid.icode), atom.name)
                       for chain in selected[0] for residue in chain for atom in residue}
@@ -690,7 +813,9 @@ def prepare_protein(directory: Path, payload: dict[str, Any], progress: Callable
         elif atom.element.symbol != "H" and key not in added_heavy:
             raise WorkError("correspondenceFailed", "An unexplained heavy atom appeared in the prepared result",
                             {"atom": result_id})
-        molecule_role = "retainedPartner" if key[:3] in retained_partner_residues else "protein"
+        partner_kind = retained_partner_residues.get(key[:3])
+        molecule_role = ("water" if partner_kind == "water" else "ion" if partner_kind == "ion"
+                         else "retainedPartner" if partner_kind else "protein")
         atom_role = "backbone" if molecule_role == "protein" and atom.name in _BACKBONE else (
             "sidechain" if molecule_role == "protein" else "partnerAtom")
         correspondence_atoms.append({"resultAtomIndex": atom.index, "resultAtomId": result_id,

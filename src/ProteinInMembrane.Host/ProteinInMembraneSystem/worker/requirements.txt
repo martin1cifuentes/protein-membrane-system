@@ -1,3 +1,4 @@
 openmm==8.6.0
 pdbfixer @ git+https://github.com/openmm/pdbfixer.git@94cfa4c0ca551cdc5f13320f9a658efd59f2b881
 gemmi==0.7.5
+scipy==1.16.2

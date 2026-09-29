@@ -89,8 +89,11 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Contains(proposed.Value.Actions, action =>
             action.Kind == ActorActionKind.AdoptPlacement && action.Enabled);
 
-        var orientedPath = Assert.Single(Directory.EnumerateFiles(directory.Path,
-            "oriented.pdb", SearchOption.AllDirectories));
+        var selectedProposal = Assert.IsType<PlacementProposal>(typeof(ProductRoot)
+            .GetField("_placementProposal", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)!.GetValue(product));
+        var orientedPath = selectedProposal.OrientedProtein.CoordinatePath;
+        Assert.True(File.Exists(orientedPath));
         if (delete) File.Delete(orientedPath);
         else File.AppendAllText(orientedPath, "changed after proposal");
 

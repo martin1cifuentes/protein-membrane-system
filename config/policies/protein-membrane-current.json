@@ -427,6 +427,13 @@
           "family": "Amber19-ff19SB",
           "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/protein.ff19SB.xml",
           "sha256": "086bfdb1c05e7d5cb1d330e6c39fab5056a95e89492cdbd3044c746db13e9d09"
+        },
+        {
+          "id": "openmm-amber19-tip3p-and-ions",
+          "version": "8.6.0",
+          "family": "Amber19-TIP3P-JC",
+          "path": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+          "sha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9"
         }
       ],
       "defaultVariants": {
@@ -540,61 +547,44 @@
       "limitations": [
         "Membrane-local assessment establishes exact neutral lipid or sterol molecular representations and coherent independently specified physical leaflets only; it does not predict phase, miscibility, native biological sidedness, leaflet stress, or completed-system qualification.",
         "Arbitrary coherent fractions are accepted as stated intentions and exact representable combinations, not as blanket evidence that every mixture or asymmetry is scientifically suitable.",
-        "CHL1 has no qualified construction footprint in this catalogue; a cholesterol-containing assessed model needs further attempt-specific packing qualification before construction.",
+        "CHL1 has an identified complete-provider construction representation. Actual packed cholesterol counts, leaflet identity and any piercing cleanup are checked in the construction attempt.",
         "The fixed target is 0.15 M NaCl and optional equilibration target is 303 K; published single-component volume or area references at other temperatures cannot be treated as those achieved conditions."
       ]
     }
   ],
   "placementPolicies": [
     {
-      "id": "alkl-6qwr-dmpc-spanning-placement",
-      "version": "1.0.0",
+      "id": "general-technical-placement",
+      "version": "2.0.0",
       "coveredTopologyKinds": [
-        "membrane-spanning"
+        "unclassified",
+        "membrane-spanning",
+        "one-surface-associated"
       ],
       "coveredSpeciesIds": [
-        "DMPC"
+        "DLPC",
+        "DLPE",
+        "DMPC",
+        "DPPC",
+        "DOPC",
+        "POPC",
+        "POPE",
+        "CHL1"
       ],
-      "allowsMixtures": false,
-      "allowsAsymmetry": false,
-      "allowsTransferFromPpmDopc": false,
-      "requiredEvidenceMethods": [
-        "Independently witnessed placement relationship"
-      ],
-      "geometryCriteria": [
-        {
-          "measurementName": "atomsWithinCore",
-          "unit": "atoms",
-          "minimum": 1,
-          "maximum": null
-        },
-        {
-          "measurementName": "atomsAboveCore",
-          "unit": "atoms",
-          "minimum": 1,
-          "maximum": null
-        },
-        {
-          "measurementName": "atomsBelowCore",
-          "unit": "atoms",
-          "minimum": 1,
-          "maximum": null
-        }
-      ],
+      "allowsMixtures": true,
+      "allowsAsymmetry": true,
+      "allowsTransferFromPpmDopc": true,
+      "requiredEvidenceMethods": [],
+      "geometryCriteria": [],
       "interfaceBandAngstrom": 1.0,
+      "outerLeafletEnvelopeAngstrom": 23.0,
       "predictionCriterion": null,
       "evidenceReferences": [
-        "https://www.rcsb.org/structure/6QWR",
-        "https://doi.org/10.1073/pnas.2002598117",
-        "https://www.mpinat.mpg.de/634656/Schubeis_2020_PNAS_Suppl.pdf",
-        "config/policies/README.md"
+        "docs/Protein-in-membrane-system/physical-realization/Physical Realization.md#construction-method-decision-and-closure"
       ],
       "limitations": [
-        "This policy covers the canonical, prepared first 6QWR AlkL NMR model with its independently documented transmembrane beta-barrel topology in symmetric pure DMPC only; other proteins and lipid mixtures require their own evidence.",
-        "The three nonzero atom-count criteria confirm observed spanning geometry; the source-specific residue witness, rather than PPM energy or these counts alone, supplies the topology, contact and sidedness interpretation.",
-        "PPM calculates an implicit symmetric DOPC orientation. Its candidate transfers to the chosen DMPC model only when the independently identified AlkL/DMPC topology witness matches the measured exact prepared construct.",
-        "The primary NMR DMPC experiment used 20 mM ionic strength and 303 K; the paper supplemental DMPC simulation used 150 mM KCl. The product target is 150 mM NaCl and is not claimed to reproduce either condition or establish a packed bilayer.",
-        "The documented AlkL outer-membrane environment includes lipopolysaccharide; a neutral DMPC model is a deliberately simplified study model, not the native outer membrane or proof of biological function."
+        "The position is assessed for exact geometry and revision correspondence; the selected arrangement remains a researcher-defined study model.",
+        "The 23 Å leaflet envelope is a schematic frame for the general builder, not a measured equilibrium bilayer thickness."
       ]
     }
   ],
@@ -712,6 +702,460 @@
     }
   ],
   "preparationPolicies": [
+    {
+      "id": "canonical-protein-general-memgen-construction",
+      "version": "2.0.0",
+      "applicableMolecularClass": "canonical-amino-acid-assembly",
+      "scope": null,
+      "evidenceReferences": [
+        "https://doi.org/10.1021/acs.jcim.9b00269",
+        "https://github.com/Amber-MD/packmol-memgen",
+        "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#using-amber-files",
+        "docs/Protein-in-membrane-system/physical-realization/Physical Realization.md#general-pure-mixed-asymmetric-and-cholesterol-containing-construction"
+      ],
+      "forceFieldFiles": [
+        {
+          "id": "ambertools26-parm19.dat",
+          "version": "AmberTools26",
+          "family": "ff19SB",
+          "path": "../../out/ambertools26/dat/leap/parm/parm19.dat",
+          "sha256": "822ca22a6eb4064f79babbabd19c3c6fbf549c0ca94ff329e76a79d7c60503d9"
+        },
+        {
+          "id": "ambertools26-frcmod.ff19SB",
+          "version": "AmberTools26",
+          "family": "ff19SB",
+          "path": "../../out/ambertools26/dat/leap/parm/frcmod.ff19SB",
+          "sha256": "36735a8bacb9c65760422ba67d4a8681f4069259888e9daab3635b83c55be269"
+        },
+        {
+          "id": "ambertools26-lipid21.dat",
+          "version": "AmberTools26",
+          "family": "Lipid21",
+          "path": "../../out/ambertools26/dat/leap/parm/lipid21.dat",
+          "sha256": "875e88c0cf57885460af1fa1c32d0fe5a7eb33ef9646dfe38faa23434e2d1ae6"
+        },
+        {
+          "id": "ambertools26-frcmod.tip3p",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/parm/frcmod.tip3p",
+          "sha256": "a66a30117d8c0af008476715e1405587a67f473793c4ab1db822da41465e48f1"
+        },
+        {
+          "id": "ambertools26-frcmod.ions1lm_126_tip3p",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/parm/frcmod.ions1lm_126_tip3p",
+          "sha256": "09690dfab18fe46fe9bd9651d254db1ff4d6edfdfa4f74e0ff8c41a069715eeb"
+        },
+        {
+          "id": "ambertools26-frcmod.ionsjc_tip3p",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/parm/frcmod.ionsjc_tip3p",
+          "sha256": "eb7a1a59bf356581f89534287dd59d1bebbb2e5de7176d7c7dd69cb1d4928a55"
+        },
+        {
+          "id": "ambertools26-frcmod.ions234lm_126_tip3p",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/parm/frcmod.ions234lm_126_tip3p",
+          "sha256": "4252f496d5462dc84ddfae7ef8e941bf8c927584201284be3ccae178ebab08d3"
+        },
+        {
+          "id": "ambertools26-amino19.lib",
+          "version": "AmberTools26",
+          "family": "ff19SB",
+          "path": "../../out/ambertools26/dat/leap/lib/amino19.lib",
+          "sha256": "f05cce0c1db68f29ec029a804f37961393417fe5f2cbe6fc2bc034879bb11eac"
+        },
+        {
+          "id": "ambertools26-aminoct12.lib",
+          "version": "AmberTools26",
+          "family": "ff19SB",
+          "path": "../../out/ambertools26/dat/leap/lib/aminoct12.lib",
+          "sha256": "4f45d160211ae20450ee59632012cba3ada60a5129de410da1bfbfd7f9a9a5f7"
+        },
+        {
+          "id": "ambertools26-aminont12.lib",
+          "version": "AmberTools26",
+          "family": "ff19SB",
+          "path": "../../out/ambertools26/dat/leap/lib/aminont12.lib",
+          "sha256": "a7a267adbe63c3559283204ffd135b37e14dac0f33a7eae76f94cba80a56b58c"
+        },
+        {
+          "id": "ambertools26-atomic_ions.lib",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/lib/atomic_ions.lib",
+          "sha256": "0f56b0f1b1cbf0e275c7e5e815f7f85b9b22e26de3b591a0b8a87c28d75d0d53"
+        },
+        {
+          "id": "ambertools26-lipid21.lib",
+          "version": "AmberTools26",
+          "family": "Lipid21",
+          "path": "../../out/ambertools26/dat/leap/lib/lipid21.lib",
+          "sha256": "03fab780a94ff7f80f912cf08e80967ef63bae3ae5d9b204bb88bee51f1fae3d"
+        },
+        {
+          "id": "ambertools26-solvents.lib",
+          "version": "AmberTools26",
+          "family": "TIP3P-JC",
+          "path": "../../out/ambertools26/dat/leap/lib/solvents.lib",
+          "sha256": "c8aeb703f5769331541d1233e2f2c8f823dd516e861b04e215ae4da903f1d69b"
+        }
+      ],
+      "maximumMinimizationIterations": 20000,
+      "finalUnrestrainedRmsForceTargetKjMolNm": 10.0,
+      "exportCoordinateReadBackToleranceAngstrom": 0.01,
+      "exportCellLengthReadBackToleranceAngstrom": 0.01,
+      "exportCellAngleReadBackToleranceDegrees": 0.1,
+      "systemSettings": {
+        "nonbondedMethod": "PME",
+        "nonbondedCutoffNanometers": 1.0,
+        "constraints": "HBonds",
+        "rigidWater": true,
+        "ewaldErrorTolerance": 0.0005,
+        "switchDistanceNanometers": null,
+        "useDispersionCorrection": true,
+        "removeCMMotion": true,
+        "hydrogenMassDaltons": null
+      },
+      "construction": {
+        "id": "general-packmol-memgen-2026-03-25",
+        "version": "2.0.0",
+        "evidenceReferences": [
+          "https://doi.org/10.1021/acs.jcim.9b00269",
+          "https://github.com/Amber-MD/packmol-memgen",
+          "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#using-amber-files",
+          "docs/Protein-in-membrane-system/physical-realization/Physical Realization.md#general-pure-mixed-asymmetric-and-cholesterol-containing-construction"
+        ],
+        "coveredTopologyKinds": [
+          "unclassified",
+          "membrane-spanning",
+          "one-surface-associated"
+        ],
+        "coveredSpeciesIds": [
+          "DLPC",
+          "DLPE",
+          "DMPC",
+          "DOPC",
+          "DPPC",
+          "POPC",
+          "POPE",
+          "CHL1",
+          "HOH",
+          "NA",
+          "CL"
+        ],
+        "providerName": "PACKMOL-Memgen",
+        "providerVersion": "2026.3.25",
+        "nativePatchPath": null,
+        "nativePatchSha256": null,
+        "lipidTypeArgument": null,
+        "positiveIonArgument": "Na+",
+        "negativeIonArgument": "Cl-",
+        "minimumPaddingNanometers": 1.5,
+        "waterMolarityForIonRounding": 55.4,
+        "maximumAtomCount": 120000,
+        "maximumCellDimensionAngstrom": 180.0,
+        "maximumConstructionSeconds": 900,
+        "approximationStatement": "PACKMOL-Memgen 2026.3.25 derives starting populations and the periodic cell from selected leaflet ratios and the positioned prepared construct; its packing, hydration, charge-compensated 0.15 M nominal salt, Amber parameterization and two conditioning passes produce an accounted starting state for the separate final OpenMM minimization. Derived counts and cell are starting-model estimates, not equilibrium observations.",
+        "route": "packmolMemgen",
+        "saltConvention": "memgenChargeCompensated",
+        "providerAssets": [
+          {
+            "id": "ambertools26-packmol-memgen",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/bin/packmol-memgen",
+            "sha256": "f3c1a7c232b5c799759554198391d3872981ec2e552a6eac3c29627beff52757"
+          },
+          {
+            "id": "ambertools26-packmol",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/bin/packmol",
+            "sha256": "04cba84e3cf93758a1906ee8d1a71108b14697aebaed6aa4100c4bc9bcdfec1e"
+          },
+          {
+            "id": "ambertools26-tleap",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/bin/tleap",
+            "sha256": "f1c526e0a24ad1fefc6c82be1279aa33eff5f9557d577c2236aa81437dfb52ac"
+          },
+          {
+            "id": "ambertools26-sander",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/bin/sander",
+            "sha256": "1aafc6f26d62e03f3237fd84fe2f829f28016a4a94ae08812a2312fdf18472d1"
+          },
+          {
+            "id": "ambertools26-ambpdb",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/bin/ambpdb",
+            "sha256": "0437a0e8f9516149590ab344470a75390ce77da36bb0eba3ce9f911417fc00fb"
+          },
+          {
+            "id": "ambertools26-main.py",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/lib/python3.12/site-packages/packmol_memgen/main.py",
+            "sha256": "7892dd3ad13028ffc572ed84085c8cfef8a323f1dab9b032bdad7fe8a55ceeea"
+          },
+          {
+            "id": "ambertools26-amber.py",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/lib/python3.12/site-packages/packmol_memgen/lib/amber.py",
+            "sha256": "426299f36b88c70eece307ee0a9d4ea5d5a71b679ea12dd2463f0c5ca9a2fdd7"
+          },
+          {
+            "id": "ambertools26-utils.py",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/lib/python3.12/site-packages/packmol_memgen/lib/utils.py",
+            "sha256": "c36d2784ec7957111059c887ea002ea68bd90bfb25377094fc4f0793b102f395"
+          },
+          {
+            "id": "ambertools26-memgen.parm",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/lib/python3.12/site-packages/packmol_memgen/data/memgen.parm",
+            "sha256": "c417851bc6665e894d010a9a41c35c19581b59faf002afb8ce53d5f6baff284d"
+          },
+          {
+            "id": "ambertools26-pdbs.tar.gz",
+            "version": "2026.3.25",
+            "path": "../../out/ambertools26/lib/python3.12/site-packages/packmol_memgen/data/pdbs.tar.gz",
+            "sha256": "b40d2bcdc12b40e957d09c3e8315b476e6abc0ebc8d556258f9e5e340f95df37"
+          },
+          {
+            "id": "ambertools26-leaprc.protein.ff19SB",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/dat/leap/cmd/leaprc.protein.ff19SB",
+            "sha256": "bcbfc9c1b0a2e11705f60113a654b95c89511f487c74238ec0389eea9b8741ac"
+          },
+          {
+            "id": "ambertools26-leaprc.lipid21",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/dat/leap/cmd/leaprc.lipid21",
+            "sha256": "d5ec0d2b55f5b1c8135f57f873bff0a220c943668d8e064ac103f8a8e5503ea3"
+          },
+          {
+            "id": "ambertools26-leaprc.water.tip3p",
+            "version": "AmberTools26",
+            "path": "../../out/ambertools26/dat/leap/cmd/leaprc.water.tip3p",
+            "sha256": "679041e7b6a6776cd6a7552480ded0986c33ddd209da58f0c30a96bfb8818db7"
+          }
+        ],
+        "memgen": {
+          "engine": "sander",
+          "proteinForceField": "ff19SB",
+          "lipidForceField": "lipid21",
+          "waterForceField": "tip3p",
+          "lateralPaddingAngstrom": 15.0,
+          "aqueousPaddingAngstrom": 17.5,
+          "leafletEnvelopeAngstrom": 23.0,
+          "localPackingLoops": 20,
+          "totalPackingLoops": 100,
+          "packingOptimizerIterations": 20,
+          "packingToleranceAngstrom": 2.0,
+          "conditioningSteepestDescentSteps": 250,
+          "conditioningConjugateGradientSteps": 250,
+          "conditioningRestraintKcalMolAngstromSquared": 10.0,
+          "maximumGeometryRetries": 2,
+          "preoriented": true,
+          "doNotProtonate": true,
+          "doNotTrim": true,
+          "doNotCenterXy": true,
+          "retainIntermediates": true,
+          "useRatio": true,
+          "usePbc": true,
+          "useTightBox": true,
+          "useSalt": true,
+          "parameterize": true,
+          "condition": true
+        }
+      },
+      "water": {
+        "speciesId": "HOH",
+        "chemistryId": "Amber19:TIP3P:HOH",
+        "category": "water",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/TIP3P-HOH.cif",
+        "coordinateTemplateSha256": "1ca97950cfbf6433587f3164c79c69fab50b5fa86a8f8a564fcc47c5f1464abc",
+        "atomCount": 3,
+        "netChargeElementary": 0.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One HOH molecule from the pinned OpenMM TIP3P coordinate source; a reference identity asset; native addMembrane supplies actual waters, not achieved hydration."
+        ]
+      },
+      "sodium": {
+        "speciesId": "NA",
+        "chemistryId": "Joung-Cheatham:TIP3P:Na+",
+        "category": "ion",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/JC-NA.cif",
+        "coordinateTemplateSha256": "e6de3c01860782cf347475b74a56cecbcf8ff00bcd8b81fa66fe1d2649118b89",
+        "atomCount": 1,
+        "netChargeElementary": 1.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One NA atom matching the pinned Amber19 TIP3P/Joung-Cheatham ion parameters; native addMembrane supplies its position."
+        ]
+      },
+      "chloride": {
+        "speciesId": "CL",
+        "chemistryId": "Joung-Cheatham:TIP3P:Cl-",
+        "category": "ion",
+        "templatePath": "../../out/python/lib/python3.11/site-packages/openmm/app/data/amber19/tip3p.xml",
+        "templateSha256": "3f4b188dbcb6c02863230eaca231e927fb6bf3307ce947d8a50d0f46f6dd83d9",
+        "coordinateTemplatePath": "membrane-templates/JC-CL.cif",
+        "coordinateTemplateSha256": "796c4d55e43f6041833805e839654714feb8b68e1c2c1ccc2f972f996b2e4d1f",
+        "atomCount": 1,
+        "netChargeElementary": -1.0,
+        "areaPerMoleculeAngstromSquared": 0.0,
+        "volumeAngstromCubed": 0.0,
+        "headAtomIndices": [],
+        "forceFieldFamily": "Amber19-TIP3P-JC",
+        "forceFieldVersion": "8.6.0",
+        "limitations": [
+          "One CL atom matching the pinned Amber19 TIP3P/Joung-Cheatham ion parameters; native addMembrane supplies its position."
+        ]
+      },
+      "localStateObservation": {
+        "contactRolePairs": [
+          {
+            "firstMoleculeRole": "protein",
+            "secondMoleculeRole": "lipid"
+          },
+          {
+            "firstMoleculeRole": "water",
+            "secondMoleculeRole": "water"
+          },
+          {
+            "firstMoleculeRole": "water",
+            "secondMoleculeRole": "ion"
+          },
+          {
+            "firstMoleculeRole": "ion",
+            "secondMoleculeRole": "ion"
+          }
+        ],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.2,
+          "C": 1.7,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.8,
+          "P": 1.8,
+          "Na": 2.27,
+          "Cl": 1.75
+        },
+        "contactSearchRadiusAngstrom": 6.0,
+        "maximumReportedPairs": 128,
+        "usePeriodicBoundary": true,
+        "referenceMidplaneZAngstrom": 0.0,
+        "requiredMetricNames": [
+          "minimumIntermolecularDistanceAngstrom",
+          "minimumIntermolecularHeavyAtomDistanceAngstrom",
+          "upperLipidHeadMeanZAngstrom",
+          "lowerLipidHeadMeanZAngstrom",
+          "leafletHeadSeparationAngstrom",
+          "proteinBilayerMidplaneOffsetAngstrom"
+        ]
+      },
+      "constructionCriteria": [
+        {
+          "measurementName": "minimumIntermolecularHeavyAtomDistanceAngstrom",
+          "unit": "angstrom",
+          "scope": "wholeSystem",
+          "minimum": 1.5,
+          "maximum": null
+        }
+      ],
+      "contactCriteria": [
+        {
+          "stageKind": null,
+          "firstMoleculeRole": "protein",
+          "secondMoleculeRole": "lipid",
+          "minimumPairsWithinSearchRadius": 0,
+          "minimumNearestDistanceAngstrom": null,
+          "maximumNearestDistanceAngstrom": null
+        },
+        {
+          "stageKind": "Minimization",
+          "firstMoleculeRole": "protein",
+          "secondMoleculeRole": "lipid",
+          "minimumPairsWithinSearchRadius": 0,
+          "minimumNearestDistanceAngstrom": null,
+          "maximumNearestDistanceAngstrom": null
+        }
+      ],
+      "assessmentCriteria": [],
+      "stageProteinGeometryMeasurement": {
+        "requiredKinds": [
+          "covalentBond",
+          "chainContinuity",
+          "nonbondedDistance"
+        ],
+        "atomRadiusByElementAngstrom": {
+          "H": 1.2,
+          "C": 1.7,
+          "N": 1.55,
+          "O": 1.52,
+          "S": 1.8,
+          "P": 1.8,
+          "Na": 2.27,
+          "Cl": 1.75
+        },
+        "neighborSearchRadiusAngstrom": 4.0,
+        "excludedBondHops": 3,
+        "maximumReportedPairs": 128
+      },
+      "stageProteinGeometryCriteria": [
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "covalentBond",
+            "minimumObservedAngstrom": 0.75,
+            "maximumObservedAngstrom": 2.25,
+            "allowNotApplicable": false
+          }
+        },
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "chainContinuity",
+            "minimumObservedAngstrom": 1.0,
+            "maximumObservedAngstrom": 1.728,
+            "allowNotApplicable": false
+          }
+        },
+        {
+          "stageKind": "Minimization",
+          "criterion": {
+            "kind": "nonbondedDistance",
+            "minimumObservedAngstrom": 0.75,
+            "maximumObservedAngstrom": null,
+            "allowNotApplicable": false
+          }
+        }
+      ],
+      "optionalEquilibration": null,
+      "limitations": [
+        "Provider-derived starting populations and density are finite starting-model estimates, not an equilibrium membrane composition.",
+        "The nominal 0.15 M input follows Memgen charge compensation; actual Na/Cl and aqueous-volume estimates are reported from each trial.",
+        "Provider conditioning precedes the separate final OpenMM minimization and does not itself establish its force criterion."
+      ]
+    },
     {
       "id": "canonical-protein-pure-dlpc-native-construction",
       "version": "1.0.0",

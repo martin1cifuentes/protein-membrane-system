@@ -125,6 +125,37 @@ public static class BrowserExchange
                 });
         });
 
+        app.MapGet("/api/diagnostics/{artifactId}", (string artifactId, HttpContext context) =>
+        {
+            if (!IsOpaqueSegment(artifactId)) return Results.NotFound();
+            if (!HasSameOriginDownload(context.Request, origin))
+                return Refused("The diagnostic must be downloaded from this local workspace.", 403);
+            var selected = system.VerifiedDiagnosticContent(artifactId);
+            if (selected is null) return Results.NotFound();
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return Results.File(selected.Value.Bytes, selected.Value.Extension.ToLowerInvariant() switch
+            {
+                ".pdb" or ".ent" => "chemical/x-pdb",
+                ".cif" or ".mmcif" => "chemical/x-mmcif",
+                ".json" => "application/json",
+                ".xml" => "application/xml",
+                ".log" or ".txt" or ".in" or ".out" => "text/plain",
+                _ => "application/octet-stream"
+            }, fileDownloadName: selected.Value.FileName);
+        });
+
+        app.MapGet("/api/inspection/components/{subjectId}/{structureToken}",
+            (string subjectId, string structureToken, HttpContext context) =>
+            {
+                if (!IsOpaqueSegment(subjectId) || !IsOpaqueSegment(structureToken))
+                    return Results.NotFound();
+                var selected = system.ResolveInspectionComponents(subjectId, structureToken);
+                if (selected is null) return Results.NotFound();
+                context.Response.Headers.CacheControl = "no-store";
+                return Results.Json(selected, WireJson);
+            });
+
         app.MapGet("/api/inspection/atoms/{subjectId}/{structureToken}/{atomSiteIndex:int}",
             (string subjectId, string structureToken, int atomSiteIndex, HttpContext context) =>
             {

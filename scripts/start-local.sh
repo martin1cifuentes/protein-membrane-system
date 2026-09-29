@@ -15,7 +15,13 @@ if [[ -z "${PIM_PPM_EXECUTABLE:-}" && -x "$output_root/ppm2/immers" ]]; then
     export PIM_PPM_EXECUTABLE="$output_root/ppm2/immers"
 fi
 if [[ -z "${PIM_PPM_EXECUTABLE:-}" || ! -x "${PIM_PPM_EXECUTABLE:-}" ]]; then
-    echo "PPM 2.0 is unavailable; placement actions will remain unavailable." >&2
+    echo "PPM 2.0 is unavailable; optional PPM orientation is unavailable." >&2
+fi
+export PIM_AMBERTOOLS_HOME="${PIM_AMBERTOOLS_HOME:-$output_root/ambertools26}"
+if [[ ! -x "$PIM_AMBERTOOLS_HOME/bin/packmol-memgen" ||
+      ! -x "$PIM_AMBERTOOLS_HOME/bin/sander" ||
+      ! -x "$PIM_AMBERTOOLS_HOME/bin/tleap" ]]; then
+    echo "PACKMOL-Memgen route is unavailable at $PIM_AMBERTOOLS_HOME; qualified native routes remain independent." >&2
 fi
 port="${PIM_PORT:-4185}"
 if [[ ! "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1024 || port > 65535 )); then
@@ -25,7 +31,7 @@ fi
 
 workspace_root="${PIM_WORKSPACE_ROOT:-$output_root/workspace}"
 mkdir -p "$workspace_root"
-policy_catalogue="${PIM_POLICY_CATALOGUE:-$app_root/config/policies/protein-membrane-slice4.json}"
+policy_catalogue="${PIM_POLICY_CATALOGUE:-$app_root/config/policies/protein-membrane-current.json}"
 if [[ ! -f "$policy_catalogue" ]]; then
     echo "No local policy catalogue is available; policy-bound scientific actions will remain unavailable." >&2
 fi

@@ -312,9 +312,12 @@ public sealed class ProteinPreparation
             !ValidStructuralPolicy(structuralPolicy))
             return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
                 "No identified starting-state method and compatible preparation assets are available.");
-        if (intended.Partners.Any(partner => partner.Retain))
+        var model = inspection.Models.FirstOrDefault(item => item.Index == intended.ModelIndex);
+        if (model is null || intended.Partners.Where(partner => partner.Retain).Any(partner =>
+                !model.Partners.Any(source => source.SourceId == partner.SourceId &&
+                    source.Kind is "water" or "ion")))
             return BoundaryOutcome<RecommendedPreparationPlan>.Unavailable(
-                "This starting-state method cannot normalize retained partner chemistry. Review the protein manually.");
+                "The exact retained members are not supported ordinary water or Na/Cl chemistry.");
         if (decisions.Any(decision => decision.StudyRevisionId != revision.Id ||
                 decision.Kind != ResearcherDecisionKind.ApprovePreparationChange ||
                 !proposals.Changes.Any(change => change.Id == decision.SubjectId)) ||
@@ -374,7 +377,9 @@ public sealed class ProteinPreparation
                 approved.Where(item => item.Change.Kind == PreparationChangeKind.Disulfide)
                     .Select(item => new DisulfideChoice(item.Change.Residue,
                         item.Change.PartnerResidue!, item.Decision!.Id)).ToImmutableArray(),
-                ImmutableArray<SourcePartnerObservation>.Empty, heavy, effectiveOverrides,
+                intended.Partners.Where(partner => partner.Retain).Select(partner =>
+                    model.Partners.Single(source => source.SourceId == partner.SourceId)).ToImmutableArray(),
+                heavy, effectiveOverrides,
                 policy.ForceFieldFiles.DistinctBy(asset => asset.Sha256,
                     StringComparer.OrdinalIgnoreCase).ToImmutableArray(),
                 policy.PermittedVariants, structuralPolicy.Measurement, method.Seed));
@@ -686,10 +691,12 @@ public sealed class ProteinPreparation
             correspondence.Atoms.Select(atom => atom.ResultAtomId).Distinct(StringComparer.Ordinal).Count() != observed.PreparedAtomCount ||
             correspondence.Atoms.Any(atom => !Enum.IsDefined(atom.Role) || !Enum.IsDefined(atom.MoleculeRole) ||
                 !Enum.IsDefined(atom.AtomRole) ||
-                atom.MoleculeRole is not (MoleculeRoleKind.Protein or MoleculeRoleKind.RetainedPartner) ||
+                atom.MoleculeRole is not (MoleculeRoleKind.Protein or MoleculeRoleKind.RetainedPartner or
+                    MoleculeRoleKind.Water or MoleculeRoleKind.Ion) ||
                 (atom.MoleculeRole == MoleculeRoleKind.Protein &&
                     atom.AtomRole is not (AtomRoleKind.Backbone or AtomRoleKind.Sidechain)) ||
-                (atom.MoleculeRole == MoleculeRoleKind.RetainedPartner &&
+                ((atom.MoleculeRole is MoleculeRoleKind.RetainedPartner or MoleculeRoleKind.Water or
+                    MoleculeRoleKind.Ion) &&
                     atom.AtomRole != AtomRoleKind.PartnerAtom) ||
                 atom.GeneratedComponentRole is not null || atom.PhysicalSide is not null))
             return BoundaryOutcome<AssessedPreparedProtein>.Unavailable("The prepared structure cannot be traced atom-for-atom to its source and approved additions.");

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import threading
 import unittest
 
 from playwright.sync_api import expect, sync_playwright
@@ -20,6 +21,58 @@ from test_browser_presentation import CHROMIUM, account, controlled_account_serv
 
 
 class RoutineProseBrowserTests(unittest.TestCase):
+    def test_membrane_edit_during_pending_use_keeps_submitted_snapshot(self):
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            fixture = account()
+            fixture["attempt"] = None
+            fixture["inspection"] = None
+            fixture["availableLipids"] = [
+                {"speciesId": species, "displayName": species,
+                 "chemistryId": species, "limitations": []}
+                for species in ("DMPC", "POPC")
+            ]
+            fixture["actions"].append({"kind": "adoptMembrane", "subjectId": None,
+                                       "enabled": True, "reason": None})
+            host.replace(fixture)
+            entered, release = threading.Event(), threading.Event()
+            submitted = []
+
+            def hold_use(handler, command):
+                if command["kind"] != "adoptMembrane":
+                    return False
+                submitted.append(command)
+                entered.set()
+                release.wait(timeout=10)
+                handler.json_response({"reason": "Controlled pending submission"}, 422)
+                return True
+
+            host.command_handler = hold_use
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 800})
+                page.goto(base, wait_until="domcontentloaded")
+                page.get_by_role("button", name="Membrane", exact=True).click()
+                for side in ("Upper", "Lower"):
+                    page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option("DMPC")
+                expect(page.locator(".membrane-draft-summary")).to_contain_text("DMPC 100.0%")
+                self.assertIsNone(host.account["membrane"])
+                page.get_by_role("button", name="Use this membrane").click()
+                self.assertTrue(entered.wait(5), "The exact use command did not reach the controlled Host")
+                page.get_by_label("Upper leaflet lipid 1", exact=True).select_option("POPC")
+                expect(page.locator(".membrane-draft-summary")).to_contain_text("POPC 100.0%")
+                self.assertEqual(submitted[0]["data"], {
+                    "upper": [{"speciesId": "DMPC", "fraction": 1}],
+                    "lower": [{"speciesId": "DMPC", "fraction": 1}],
+                })
+                self.assertEqual(len(submitted), 1)
+                self.assertIsNone(host.account["membrane"])
+                release.set()
+                expect(page.locator(".action-feedback.error")).to_be_visible()
+            finally:
+                release.set()
+                browser.close()
+
     def test_site_specific_approval_uses_inspected_choice_without_a_prose_field(self):
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         with controlled_account_server() as (host, base), sync_playwright() as playwright:
@@ -118,7 +171,7 @@ class RoutineProseBrowserTests(unittest.TestCase):
             }
             fixture["actions"].extend({"kind": kind, "subjectId": None,
                                        "enabled": True, "reason": None} for kind in
-                                      ("selectProteinModel", "proposeMembrane", "revisePlacement"))
+                                      ("selectProteinModel", "adoptMembrane", "revisePlacement"))
             host.replace(fixture)
             browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--enable-webgl",
@@ -131,6 +184,7 @@ class RoutineProseBrowserTests(unittest.TestCase):
                 page.goto(base, wait_until="domcontentloaded")
                 expect(page.locator(".sole-model")).to_contain_text("Only coordinate model")
                 page.get_by_label("Chain A", exact=True).check()
+                page.locator(".partner-members summary").click()
                 page.get_by_label("Exclude").check()
                 expect(page.get_by_role("button", name="Assess selected protein")).to_be_enabled()
                 expect(page.get_by_placeholder("Reason for this decision")).to_have_count(0)
@@ -146,11 +200,11 @@ class RoutineProseBrowserTests(unittest.TestCase):
                 for side in ("Upper", "Lower"):
                     page.get_by_label(f"{side} leaflet lipid 1", exact=True).select_option("DMPC")
                 expect(page.locator("#scientific-purpose")).to_have_count(0)
-                expect(page.get_by_role("button", name="Propose membrane model")).to_be_enabled()
+                expect(page.get_by_role("button", name="Use this membrane")).to_be_enabled()
                 page.screenshot(path=str(ARTIFACTS / "fixture-membrane.png"), animations="disabled")
-                page.get_by_role("button", name="Propose membrane model").click()
+                page.get_by_role("button", name="Use this membrane").click()
                 expect(page.locator(".action-feedback.error")).to_be_visible()
-                membrane = next(item for item in sent if item["kind"] == "proposeMembrane")
+                membrane = next(item for item in sent if item["kind"] == "adoptMembrane")
                 self.assertNotIn("scientificPurpose", membrane["data"])
                 self.assertEqual(membrane["data"]["upper"],
                                  [{"speciesId": "DMPC", "fraction": 1}])

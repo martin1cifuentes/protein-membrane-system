@@ -13,7 +13,7 @@ namespace ProteinInMembraneSystem.Tests;
 public sealed class ScientificWorkerCorrelationTests
 {
     [Fact]
-    public async Task Custom_popc_patch_is_staged_by_digest_while_installed_source_remains_canonical()
+    public async Task Mapped_popc_patch_and_source_are_staged_by_digest()
     {
         using var directory = new TemporaryDirectory();
         using var fixture = new ConstructionFixture(mixed: true);
@@ -33,10 +33,10 @@ public sealed class ScientificWorkerCorrelationTests
             """);
         File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite |
             UnixFileMode.UserExecute);
-        var installed = Path.Combine(directory.Path, "installed-POPC.pdb");
-        var derived = Path.Combine(directory.Path, "derived-POPC.pdb");
-        File.WriteAllText(installed, "controlled installed provider resource");
-        File.WriteAllText(derived, "controlled deletion-only patch");
+        var installed = Path.Combine(directory.Path, "source-POPC.gro");
+        var derived = Path.Combine(directory.Path, "mapped-POPC.cif");
+        File.WriteAllText(installed, "controlled identified POPC source");
+        File.WriteAllText(derived, "controlled mapped POPC patch");
         var policy = fixture.Policy;
         var protein = fixture.Protein.Molecule;
         var oriented = fixture.Placement.Proposal.OrientedProtein;
@@ -54,13 +54,13 @@ public sealed class ScientificWorkerCorrelationTests
             "POPC", "Na+", "Cl-", 0, 1, 0.15,
             policy.ForceFieldFiles, policy.SystemSettings, policy.LocalStateObservation,
             100000, 180, mode, source, sourceDigest,
-            mode is null ? null : ImmutableArray.Create("62", "109"));
+            null);
         var exchange = new ScientificWorkerExchange(executable, directory.Path);
 
         var customWork = Path.Combine(directory.Path, "custom-attempt");
         Directory.CreateDirectory(customWork);
         var customPayload = Payload(derived, ConstructionFixture.Hash(derived),
-            "popc-62-109-deletion", installed, ConstructionFixture.Hash(installed));
+            "mapped-lipid21-zenodo-popc", installed, ConstructionFixture.Hash(installed));
         var customResult = await exchange.ConstructSystemAsync(
             new ScientificWorkRequest<ConstructionPayload>("custom-patch-request", customWork,
                 customPayload), TestContext.Current.CancellationToken);
@@ -74,7 +74,10 @@ public sealed class ScientificWorkerCorrelationTests
             Assert.StartsWith(Path.Combine(customWork, "inputs") + Path.DirectorySeparatorChar,
                 stagedPatch, StringComparison.Ordinal);
             Assert.Equal(customPayload.NativePatchSha256, ConstructionFixture.Hash(stagedPatch));
-            Assert.Equal(installed, staged.GetProperty("nativeSourcePatchPath").GetString());
+            var stagedSource = staged.GetProperty("nativeSourcePatchPath").GetString()!;
+            Assert.StartsWith(Path.Combine(customWork, "inputs") + Path.DirectorySeparatorChar,
+                stagedSource, StringComparison.Ordinal);
+            Assert.Equal(customPayload.NativeSourcePatchSha256, ConstructionFixture.Hash(stagedSource));
             Assert.NotEqual(derived, stagedPatch);
             File.WriteAllText(derived, "changed after request completion");
             Assert.Equal(customPayload.NativePatchSha256, ConstructionFixture.Hash(stagedPatch));
@@ -96,7 +99,7 @@ public sealed class ScientificWorkerCorrelationTests
         Directory.CreateDirectory(refusedWork);
         var refused = await exchange.ConstructSystemAsync(
             new ScientificWorkRequest<ConstructionPayload>("wrong-derived-digest", refusedWork,
-                Payload(derived, new string('0', 64), "popc-62-109-deletion",
+                Payload(derived, new string('0', 64), "mapped-lipid21-zenodo-popc",
                     installed, ConstructionFixture.Hash(installed))),
             TestContext.Current.CancellationToken);
         Assert.Equal(WorkerResultStanding.Unobserved, refused.Standing);
@@ -107,7 +110,7 @@ public sealed class ScientificWorkerCorrelationTests
         Directory.CreateDirectory(aliasedWork);
         var aliased = await exchange.ConstructSystemAsync(
             new ScientificWorkRequest<ConstructionPayload>("aliased-source-derived", aliasedWork,
-                Payload(installed, ConstructionFixture.Hash(installed), "popc-62-109-deletion",
+                Payload(installed, ConstructionFixture.Hash(installed), "mapped-lipid21-zenodo-popc",
                     installed, ConstructionFixture.Hash(installed))),
             TestContext.Current.CancellationToken);
         Assert.Equal(WorkerResultStanding.Unobserved, aliased.Standing);

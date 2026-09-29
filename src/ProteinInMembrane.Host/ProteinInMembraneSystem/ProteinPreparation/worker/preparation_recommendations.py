@@ -94,11 +94,11 @@ def recommend_preparation(directory: Path, payload: dict[str, Any], progress: Ca
     _check_membership(selected, payload, chain_map)
     import gemmi
 
-    if any(residue.entity_type == gemmi.EntityType.NonPolymer for chain in selected[0] for residue in chain):
-        raise WorkError("unsupportedChemistry", "Retained partner chemistry has no automatic hydrogen normalization method")
     removed_source_hydrogens = []
     for chain in selected[0]:
         for residue in chain:
+            if residue.entity_type != gemmi.EntityType.Polymer:
+                continue
             for index in range(len(residue) - 1, -1, -1):
                 atom = residue[index]
                 if atom.element.name in {"H", "D"}:
