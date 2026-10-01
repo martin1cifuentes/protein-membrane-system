@@ -13,6 +13,20 @@ namespace ProteinInMembraneSystem.Tests;
 
 public sealed partial class ProteinPreparationRouteTests
 {
+    [Fact]
+    public void Preparation_review_roles_keep_the_existing_browser_wire_values()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        Assert.Equal("\"beforePreparation\"", JsonSerializer.Serialize(
+            DecisionInspectionRelation.BeforePreparation, options));
+        Assert.Equal("\"preparedResult\"", JsonSerializer.Serialize(
+            DecisionInspectionRelation.PreparedResult, options));
+        Assert.Equal("\"modelAssumption\"", JsonSerializer.Serialize(
+            PreparationInformationRole.ModelAssumption, options));
+        Assert.Equal("\"observed\"", JsonSerializer.Serialize(
+            PreparationInformationRole.Observed, options));
+    }
+
     private static readonly ResidueAddress SourceResidue = new(0, "A", 1, "", "");
     private static readonly ResidueAddress SelectedResidue = SourceResidue with { CopyId = "A" };
     private const string GeometryReason = "No declared observation radius exists for element 'X'.";
@@ -97,6 +111,64 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.True(selected.Established, selected.Reason);
         Assert.Equal(retain, Assert.Single(selected.Value!.Study!.Partners).Retain);
         Assert.Null(Assert.Single(selected.Value.Study.Partners).Reason);
+    }
+
+    [Fact]
+    public async Task Unsupported_retained_molecules_are_named_without_changing_selection_or_starting_preparation()
+    {
+        using var directory = new TemporaryDirectory();
+        var catalogue = WritePolicyCatalogue(directory.Path);
+        var model = Model() with
+        {
+            Partners = ImmutableArray.Create(
+                new SourcePartnerObservation("heme-a", "HEM", "nonpolymer", 43, "A", 142,
+                    DisplayName: "Heme"),
+                new SourcePartnerObservation("heme-b", "HEM", "nonpolymer", 43, "A", 145,
+                    DisplayName: "Heme"),
+                new SourcePartnerObservation("water-a", "HOH", "water", 1, "A", 143,
+                    DisplayName: "Water"),
+                new SourcePartnerObservation("other-a", "X1Z", "nonpolymer", 10, "A", 144,
+                    DisplayName: "123"))
+        };
+        var worker = new PreparationWorkerStub
+        {
+            InspectSourceResponse = request => Observed(request.RequestId, null,
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model), null))
+        };
+        using var http = new HttpClient(new NoNetworkHandler());
+        var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
+            catalogue, string.Empty, () => null);
+        var token = await product.UploadAsync(new MemoryStream(Encoding.ASCII.GetBytes("ATOM\n")),
+            "source.pdb", UploadOriginKind.Experimental, null, TestContext.Current.CancellationToken);
+        Assert.True((await Command(product, ActorActionKind.SelectSource,
+            new { uploadToken = token })).Established);
+        var selectedPartners = new[]
+        {
+            new PartnerSelection("heme-a", true), new PartnerSelection("heme-b", true),
+            new PartnerSelection("water-a", true),
+            new PartnerSelection("other-a", true)
+        };
+
+        var modeled = await Command(product, ActorActionKind.SelectProteinModel,
+            new { modelIndex = 0, chains = new[] { new ChainSelection("A", "A") },
+                partners = selectedPartners, alternateLocations = Array.Empty<AlternateLocationChoice>() });
+
+        Assert.True(modeled.Established, modeled.Reason);
+        Assert.Equal(selectedPartners, modeled.Value!.Study!.Partners);
+        Assert.Equal("notEstablished", modeled.Value.Protein?.Status);
+        Assert.Equal("blocked", modeled.Value.ProteinTask?.Standing);
+        Assert.Equal("This preparation method does not yet support the selected molecules: " +
+            "Heme (HEM) · Chain A · Residue 142, Heme (HEM) · Chain A · Residue 145, " +
+            "X1Z · Chain A · Residue 144.",
+            modeled.Value.ProteinTask?.Message);
+        Assert.True(modeled.Value.ProteinTask?.ReviewMoleculeSelection);
+        Assert.Contains(modeled.Value.Actions, action => action.Kind == ActorActionKind.StartProteinPreparation &&
+            !action.Enabled);
+        var refused = await Command(product, ActorActionKind.StartProteinPreparation, new { });
+        Assert.False(refused.Established);
+        Assert.Equal(selectedPartners, product.Snapshot().Study!.Partners);
+        Assert.Equal(0, worker.InspectChangesCalls);
+        Assert.Equal(0, worker.PrepareProteinCalls);
     }
 
     [Fact]
@@ -717,10 +789,15 @@ public sealed partial class ProteinPreparationRouteTests
         using var directory = new TemporaryDirectory();
         var catalogue = WritePolicyCatalogue(directory.Path);
         File.AppendAllText(System.IO.Path.Combine(directory.Path, "forcefield.xml"), "changed bytes");
+        var model = Model() with
+        {
+            Partners = ImmutableArray.Create(new SourcePartnerObservation("heme-a", "HEM", "nonpolymer",
+                43, "A", 142, DisplayName: "Heme"))
+        };
         var worker = new PreparationWorkerStub
         {
             InspectSourceResponse = request => Observed(request.RequestId, null,
-                new SourceInspectionObservations("pdb", ImmutableArray.Create(Model()), null))
+                new SourceInspectionObservations("pdb", ImmutableArray.Create(model), null))
         };
         using var http = new HttpClient(new NoNetworkHandler());
         var product = new ProductRoot(worker, new ExternalSourceExchange(http), directory.Path,
@@ -733,7 +810,8 @@ public sealed partial class ProteinPreparationRouteTests
         var modeled = await Command(product, ActorActionKind.SelectProteinModel,
             new { modelIndex = 0, biologicalAssemblyId = (string?)null,
                 chains = new[] { new { sourceChain = "A", copyId = "A" } },
-                partners = Array.Empty<object>(), alternateLocations = Array.Empty<object>() });
+                partners = new[] { new PartnerSelection("heme-a", true) },
+                alternateLocations = Array.Empty<object>() });
 
         Assert.True(modeled.Established);
         Assert.Equal(0, modeled.Value!.Study?.ModelIndex);
@@ -741,6 +819,7 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Empty(modeled.Value.Protein!.Changes);
         Assert.Contains(modeled.Value.Notices, notice =>
             notice.Message.Contains("No qualified protein chemical-state", StringComparison.Ordinal));
+        Assert.False(modeled.Value.ProteinTask?.ReviewMoleculeSelection);
         Assert.Equal(0, worker.InspectChangesCalls);
         Assert.Equal(0, worker.PrepareProteinCalls);
     }
@@ -773,6 +852,7 @@ public sealed partial class ProteinPreparationRouteTests
         Assert.Equal("notEstablished", modeled.Value!.Protein?.Status);
         Assert.Contains(modeled.Value.Notices, notice => notice.SubjectId == modeled.Value.Protein!.SubjectId &&
             notice.Message.Contains("No qualified protein chemical-state", StringComparison.Ordinal));
+        Assert.False(modeled.Value.ProteinTask?.ReviewMoleculeSelection);
         Assert.Equal(0, worker.InspectChangesCalls);
         Assert.Equal(0, worker.PrepareProteinCalls);
     }

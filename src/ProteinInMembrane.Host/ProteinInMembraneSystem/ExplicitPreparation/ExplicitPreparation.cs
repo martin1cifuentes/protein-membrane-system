@@ -816,7 +816,7 @@ public sealed class ExplicitPreparation
                 ["POPC", "POPE", "DLPC", "DLPE", "DMPC", "DOPC", "DPPC", "CHL1",
                     "HOH", "NA", "CL"]) &&
             p.MaximumAtomCount == 120000 && p.MaximumCellDimensionAngstrom == 180 &&
-            p.MaximumConstructionSeconds == 900 &&
+            p.MaximumConstructionSeconds == 3000 &&
             m is { Engine: "sander", ProteinForceField: "ff19SB", LipidForceField: "lipid21",
                 WaterForceField: "tip3p", LocalPackingLoops: 20, TotalPackingLoops: 100,
                 PackingOptimizerIterations: 20, ConditioningSteepestDescentSteps: 250,

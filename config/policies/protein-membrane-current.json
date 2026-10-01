@@ -860,7 +860,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "PACKMOL-Memgen 2026.3.25 derives starting populations and the periodic cell from selected leaflet ratios and the positioned prepared construct; its packing, hydration, charge-compensated 0.15 M nominal salt, Amber parameterization and two conditioning passes produce an accounted starting state for the separate final OpenMM minimization. Derived counts and cell are starting-model estimates, not equilibrium observations.",
         "route": "packmolMemgen",
         "saltConvention": "memgenChargeCompensated",
@@ -1237,7 +1237,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "The identified OpenMM native DLPC patch supplies starting counts, cell, water and ions in the same invocation. The checked protein pose is retained. The candidate needs exact identity, periodic, contact, parameter and numerical checks; the construction does not establish biological suitability or an equilibrated membrane."
       },
       "water": {
@@ -1505,7 +1505,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "The identified OpenMM native DLPE patch supplies starting counts, cell, water and ions in the same invocation. The checked protein pose is retained. The candidate needs exact identity, periodic, contact, parameter and numerical checks; the construction does not establish biological suitability or an equilibrated membrane."
       },
       "water": {
@@ -1773,7 +1773,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "The identified OpenMM native DMPC patch supplies starting counts, cell, water and ions in the same invocation. The checked protein pose is retained. The candidate needs exact identity, periodic, contact, parameter and numerical checks; the construction does not establish biological suitability or an equilibrated membrane."
       },
       "water": {
@@ -2041,7 +2041,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "The identified OpenMM native POPE patch supplies starting counts, cell, water and ions in the same invocation. The checked protein pose is retained. The candidate needs exact identity, periodic, contact, parameter and numerical checks; the construction does not establish biological suitability or an equilibrated membrane."
       },
       "water": {
@@ -2314,7 +2314,7 @@
         "waterMolarityForIonRounding": 55.4,
         "maximumAtomCount": 120000,
         "maximumCellDimensionAngstrom": 180.0,
-        "maximumConstructionSeconds": 900,
+        "maximumConstructionSeconds": 3000,
         "approximationStatement": "The identified intact, solvated periodic CC-BY Lipid21 POPC patch supplies starting coordinates and cell to one OpenMM addMembrane invocation. The exact source and one-residue adaptation are pinned. Provider-derived counts, identities, contacts, parameters and same-candidate minimization are checked. No equilibrium or biological-suitability result is inferred.",
         "nativePatchMode": "mapped-lipid21-zenodo-popc",
         "nativeSourcePatchPath": "membrane-templates/POPC-Lipid21-Zenodo-64x64.gro",

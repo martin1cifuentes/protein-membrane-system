@@ -219,7 +219,7 @@ public sealed class ExplicitPreparationOwnerTests
             result.State.FailureCode);
         if (aqueousLimitRefusal)
             Assert.Contains("186 Å", result.State.Message);
-        Assert.Equal(900, policy.Construction.MaximumConstructionSeconds);
+        Assert.Equal(3000, policy.Construction.MaximumConstructionSeconds);
         Assert.Equal(dispatched, worker.Requests.Count);
         Assert.Equal(dispatched, worker.Tokens.Count);
         Assert.All(worker.Tokens, token => Assert.Equal(worker.Tokens[0], token));
@@ -453,7 +453,7 @@ public sealed class ExplicitPreparationOwnerTests
                 "DOPC", "DPPC", "CHL1", "HOH", "NA", "CL"),
             MaximumAtomCount = 120000,
             MaximumCellDimensionAngstrom = 180,
-            MaximumConstructionSeconds = 900,
+            MaximumConstructionSeconds = 3000,
             ProviderAssets = assets,
             Memgen = settings
         };

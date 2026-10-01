@@ -1276,6 +1276,10 @@ public sealed record PreparationAssessmentResult(
 public sealed record StructureFocus(string AuthAsymId, int AuthSeqId, string? InsertionCode, int? AuthAtomId);
 public sealed record InspectionAnnotation(string Id, string SubjectPartId, string Label, string Meaning, string? EvidenceId, StructureFocus? GeometryFocus);
 public sealed record InspectionMetric(string Name, string Value, string? Unit, string SubjectPartId, string? EvidenceId);
+/// <summary>Full geometry observations for one inspected subject and their exact supporting evidence records.</summary>
+public sealed record InspectionGeometryAccount(
+    ProteinGeometryObservations Observations,
+    ImmutableArray<string> EvidenceIds);
 public sealed record InspectionAccount(
     string SubjectId,
     string? StructureUrl,
@@ -1289,7 +1293,8 @@ public sealed record InspectionAccount(
     long StudyRevisionNumber,
     ImmutableArray<ScientificEvidence> Evidence,
     ImmutableArray<ScientificFinding> Findings,
-    PreparationAssessmentResult? Assessment);
+    PreparationAssessmentResult? Assessment,
+    InspectionGeometryAccount? Geometry = null);
 
 /// <summary>A verified coordinate-row identity for the currently selected inspection subject.</summary>
 public sealed record InspectionAtomAccount(
@@ -1309,7 +1314,8 @@ public sealed record InspectionSubject(
     ImmutableArray<ScientificFinding> Findings,
     ImmutableArray<InspectionAnnotation> Annotations,
     ImmutableArray<InspectionMetric> Metrics,
-    PreparationAssessmentResult? Assessment);
+    PreparationAssessmentResult? Assessment,
+    InspectionGeometryAccount? Geometry = null);
 
 public sealed record CompletedStageBundle(
     string StageId,
@@ -1387,7 +1393,8 @@ public sealed record ProteinTaskAccount(
     string Standing,
     string? Message,
     string? PreparedProteinId,
-    bool RetryAvailable);
+    bool RetryAvailable,
+    bool ReviewMoleculeSelection = false);
 
 /// <summary>The enclosing placement task for the current prepared protein and membrane intention.</summary>
 public sealed record PlacementTaskAccount(
@@ -1416,6 +1423,24 @@ public sealed record PlacementRouteOutcomeAccount(
     string? ProposalId = null);
 
 /// <summary>Root-owned standing for exact preparation decision scopes, not a count of proposals.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<DecisionInspectionRelation>))]
+public enum DecisionInspectionRelation
+{
+    [JsonStringEnumMemberName("unavailable")] Unavailable = 1,
+    [JsonStringEnumMemberName("beforePreparation")] BeforePreparation,
+    [JsonStringEnumMemberName("preparedResult")] PreparedResult,
+    [JsonStringEnumMemberName("unqualifiedCandidate")] UnqualifiedCandidate,
+    [JsonStringEnumMemberName("historical")] Historical,
+    [JsonStringEnumMemberName("otherSubject")] OtherSubject
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<PreparationInformationRole>))]
+public enum PreparationInformationRole
+{
+    [JsonStringEnumMemberName("observed")] Observed = 1,
+    [JsonStringEnumMemberName("modelAssumption")] ModelAssumption
+}
+
 public sealed record ProteinPreparationReviewAccount(
     string StudyRevisionId,
     string IntendedProteinId,
@@ -1425,7 +1450,7 @@ public sealed record ProteinPreparationReviewAccount(
     ImmutableArray<string> Blockers,
     string PreparationStanding,
     string? PreparationMessage,
-    string InspectionRelation = "unavailable");
+    DecisionInspectionRelation InspectionRelation = DecisionInspectionRelation.Unavailable);
 
 public sealed record PreparationDecisionAccount(
     string Id,
@@ -1448,7 +1473,7 @@ public sealed record PreparationDecisionOptionAccount(
     bool StartsPreparationOnConfirmation,
     bool StartsPreparationOnDecline,
     ImmutableArray<ScientificEvidence> Evidence,
-    string InformationRole = "observed");
+    PreparationInformationRole InformationRole = PreparationInformationRole.Observed);
 
 public sealed record StudyAccount(
     string Id,

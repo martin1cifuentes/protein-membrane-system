@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ConnectedStructuralInspection, viewerSubjectHeading, type InspectionAccount, type StructureLoadStatus } from './ConnectedStructuralInspection';
-import { measurementLabel, operationLabel, runStartedLabel } from './executionDisplay';
+import { operationLabel, runStartedLabel } from './executionDisplay';
+import { GeometrySummary, measuredDistance } from './ProteinGeometrySummary';
 
 type SourceRouteKind = 'rcsb' | 'alphafold' | 'upload';
 type UploadOriginKind = 'predicted' | 'experimental' | 'unknown';
@@ -17,7 +18,8 @@ type GeometryKindStanding = ObservationStanding | 'NotApplicable';
 type StageKind = 'Minimization' | 'Equilibration';
 type WorkArea = 'protein' | 'membrane' | 'placement' | 'preparation' | 'results';
 type PendingAction = ActorActionKind | 'uploadSource';
-interface ActionNotice { kind: PendingAction; tone: 'success' | 'warning' | 'error'; message: string; }
+interface ActionNotice { kind: PendingAction; tone: 'success' | 'warning' | 'error'; message: string;
+  studyRevisionId?: string | null; intendedProteinId?: string | null; }
 interface SourceRequest { serial: number; key: string; label: string; data: object; }
 interface SourceIntent extends SourceRequest { phase: 'retrieving' | 'rendering' | 'failed'; reason?: string; }
 interface SourcePreviewAccount { sourceId: string; modelIndex: number; assemblyId: string | null;
@@ -242,6 +244,7 @@ interface ProteinTaskAccount {
   message: string | null;
   preparedProteinId: string | null;
   retryAvailable: boolean;
+  reviewMoleculeSelection?: boolean;
 }
 interface PlacementTaskAccount {
   studyRevisionId: string;
@@ -549,12 +552,6 @@ function readable(value: string | null | undefined): string {
   return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ');
 }
 
-function measuredDistance(value: number, addressed = false): string {
-  const rounded = Number(value.toPrecision(4));
-  const nearDisplayedBoundary = value !== rounded && Math.abs(value - rounded) < 0.0001;
-  return `${value.toLocaleString(undefined, { maximumSignificantDigits: addressed || nearDisplayedBoundary ? 12 : 4 })} Å`;
-}
-
 function decisionSiteLabel(decision: PreparationDecisionAccount, models: SourceModelObservation[]): string {
   const residue = decision.residue;
   const observedName = models.find(model => model.index === residue.model)?.residues.find(item =>
@@ -595,45 +592,6 @@ function PredictionSummary({ prediction, label }: { prediction: PredictionEviden
     {prediction.paeReason && <><br />{prediction.paeReason}</>}
     {prediction.limitations.length > 0 && <><br />{prediction.limitations.join('; ')}</>}
     <p className="help-text">These values describe prediction uncertainty; they do not by themselves establish that the selected protein or its placement is suitable.</p>
-  </div>;
-}
-
-function GeometrySummary({ geometry, label, models = [] }: { geometry: ProteinGeometryObservations | null | undefined;
-  label: string; models?: SourceModelObservation[] }) {
-  if (!geometry) return null;
-  const addressed = new Map<string, NonNullable<ProteinGeometryObservations['locatedDistances']>>();
-  for (const item of geometry.locatedDistances ?? [])
-    addressed.set(item.kind, [...(addressed.get(item.kind) ?? []), item]);
-  const atomAddress = (item: { residue: ResidueAddress; atomName: string }) => {
-    const model = models.find(value => value.index === item.residue.model);
-    const modelLabel = model?.sourceModelId ?? item.residue.model + 1;
-    const residue = item.residue;
-    return `Model ${modelLabel} · chain ${residue.chain}${residue.copyId && residue.copyId !== residue.chain ? `, copy ${residue.copyId}` : ''} · residue ${residue.residue}${residue.insertionCode} · atom ${item.atomName}`;
-  };
-  return <div className="hint-box">
-    <strong>{label} · geometry measurements</strong>
-    <p className="help-text">{label.toLowerCase().includes('source') ?
-      'These source measurements alone do not establish structural suitability.' :
-      'The measurements are observations; the protein outcome states the applicable assessment.'}</p>
-    <details><summary>Measurement details</summary>
-      {geometry.kinds.map(item => <div key={item.kind} className="help-text">
-        <strong>{measurementLabel(item.kind)}</strong> · {readable(item.standing)}
-        <br />{item.measuredCount} of {item.eligibleCount} applicable distances measured
-        {item.minimumDistanceAngstrom !== null && <> · shortest {measuredDistance(item.minimumDistanceAngstrom)}</>}
-        {item.maximumDistanceAngstrom !== null && <> · longest {measuredDistance(item.maximumDistanceAngstrom)}</>}
-        {item.unavailableReason && <> · {item.unavailableReason}</>}
-      </div>)}
-      {geometry.limitations.length > 0 && <p className="help-text">{geometry.limitations.join('; ')}</p>}
-      {[...addressed].map(([kind, items]) => <details className="geometry-address-list" key={kind}>
-        <summary>{measurementLabel(kind)} · {items.length.toLocaleString()} addressed measurements</summary>
-        <p className="help-text">Method: distance between the identified atom coordinates. Scope: {label.toLowerCase()}.</p>
-        <ul>{items.map((item, index) => <li key={`${index}:${item.first.residue.chain}:${item.first.residue.residue}:${item.first.atomName}`}>
-          <strong>{measuredDistance(item.distanceAngstrom, true)}</strong>
-          <span>{atomAddress(item.first)} ↔ {atomAddress(item.second)}</span>
-          {item.radiusSumAngstrom !== null && <span>Reference radii sum {measuredDistance(item.radiusSumAngstrom, true)}</span>}
-        </li>)}</ul>
-      </details>)}
-    </details>
   </div>;
 }
 
@@ -698,9 +656,23 @@ function outcomeMessage(kind: ActorCommandKind, updated: WorkspaceState, previou
         : { kind, tone: 'warning', message: 'No matching structures found. Try another name or accession, or enter an exact reference.' };
     }
     case 'selectSource': return success('Structure loaded. Review its coordinate models, chains, and partners.');
-    case 'selectProteinModel': return success(updated.protein?.status === 'assessed'
-      ? 'Protein preparation assessed. Review its evidence.'
-      : 'Protein assessment returned findings. Review any proposed changes and their evidence.');
+    case 'selectProteinModel': {
+      const task = updated.proteinTask;
+      if (task?.standing === 'assessed' && updated.protein?.status === 'assessed')
+        return success('Protein preparation assessed. Review its evidence.');
+      if (task?.standing === 'blocked')
+        return { kind, tone: 'warning', message: 'Selection recorded. Protein preparation is blocked; review the current task outcome.' };
+      if (task?.standing === 'failed' || task?.standing === 'unavailable')
+        return { kind, tone: 'warning', message: 'Selection recorded. Protein preparation did not establish a result; review the current task outcome.' };
+      if (task?.standing === 'assessing' || task?.standing === 'preparing') return null;
+      if (task?.standing === 'awaitingDecisions')
+        return success('Selection recorded. Review the preparation choices for this protein.');
+      if (task?.standing === 'planReady')
+        return success('Selection recorded. Review the checked preparation recommendations.');
+      if (task?.standing === 'ready')
+        return success('Selection recorded. Protein preparation is ready when you choose to start it.');
+      return { kind, tone: 'warning', message: 'Selection recorded, but its preparation outcome is unavailable. Review the current task outcome.' };
+    }
     case 'approvePreparationChange': return updated.preparationReview?.preparationStanding === 'failed'
       ? { kind, tone: 'warning', message: updated.preparationReview.preparationMessage ?? 'Protein preparation did not establish an assessed result. The choices remain recorded.' }
       : updated.preparationReview?.preparationStanding === 'blocked'
@@ -988,7 +960,14 @@ export function ProteinInMembraneWorkspace() {
   const [streamInterrupted, setStreamInterrupted] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [actionNotice, setActionNotice] = useState<ActionNotice | null>(null);
+  const [storedActionNotice, setActionNotice] = useState<ActionNotice | null>(null);
+  const actionNotice = storedActionNotice &&
+    (storedActionNotice.studyRevisionId === undefined ||
+      storedActionNotice.studyRevisionId === (state?.study?.id ?? null)) &&
+    (storedActionNotice.kind !== 'selectProteinModel' ||
+      storedActionNotice.intendedProteinId === undefined ||
+      storedActionNotice.intendedProteinId === (state?.proteinTask?.intendedProteinId ?? null))
+        ? storedActionNotice : null;
   const [inspectionFailure, setInspectionFailure] = useState<{ subjectId: string; reason: string } | null>(null);
   const [sourceIntent, setSourceIntent] = useState<SourceIntent | null>(null);
   const [structureLoad, setStructureLoad] = useState<StructureLoadStatus | null>(null);
@@ -1024,6 +1003,7 @@ export function ProteinInMembraneWorkspace() {
   const sourceRequestSerial = useRef(0);
   const newestSourceRequest = useRef<SourceRequest | null>(null);
   const sourceRequestRunning = useRef(false);
+  const selectionDraftGeneration = useRef(0);
   const focusRequestGeneration = useRef(0);
   const refreshIndex = useRef(0);
   const initialAccountPresented = useRef(false);
@@ -1318,6 +1298,9 @@ export function ProteinInMembraneWorkspace() {
                          onFailure?: (reason: string) => void): Promise<boolean> {
     const current = latestState.current;
     if (!current || busyRef.current) return false;
+    const submittedSelectionDraftGeneration = selectionDraftGeneration.current;
+    const selectionNoticeApplicable = () => kind !== 'selectProteinModel' ||
+      submittedSelectionDraftGeneration === selectionDraftGeneration.current;
     const originatingArea = activeAreaRef.current;
     const inspectionOnly = kind === 'selectInspectionSubject' || kind === 'setInspectionFocus';
     busyRef.current = true;
@@ -1341,25 +1324,33 @@ export function ProteinInMembraneWorkspace() {
           if (kind === 'selectInspectionSubject' && 'subjectId' in data && typeof data.subjectId === 'string')
             setInspectionFailure({ subjectId: data.subjectId, reason });
         }
-        else setActionNotice({ kind, tone: 'error', message: response.status === 409
-          ? `The study changed while this request was pending. Review the current account and retry. ${reason}`
-          : response.status >= 500 ? `The service is unavailable. Retry when it is restored. ${reason}`
-            : reason });
+        else if (selectionNoticeApplicable())
+          setActionNotice({ kind, tone: 'error', studyRevisionId: current.study?.id ?? null,
+            message: response.status === 409
+            ? `The study changed while this request was pending. Review the current account and retry. ${reason}`
+            : response.status >= 500 ? `The service is unavailable. Retry when it is restored. ${reason}`
+              : reason });
         onFailure?.(reason);
         await refresh();
         return false;
       }
       const updated = result as WorkspaceState;
-      if (updated.inspection && activeAreaRef.current === originatingArea &&
-          kind !== 'setInspectionFocus' && kind !== 'exportStage')
-        areaSubject.current[originatingArea] = updated.inspection.subjectId;
       if (!latestState.current || latestState.current.revision <= updated.revision) {
+        if (updated.inspection && activeAreaRef.current === originatingArea &&
+            kind !== 'setInspectionFocus' && kind !== 'exportStage')
+          areaSubject.current[originatingArea] = updated.inspection.subjectId;
         latestState.current = updated;
         setState(updated);
+        if (!inspectionOnly && kind !== 'exportStage') {
+          const notice = outcomeMessage(kind, updated, current);
+          setActionNotice(!selectionNoticeApplicable() ? null : notice &&
+            { ...notice, studyRevisionId: updated.study?.id ?? null,
+            intendedProteinId: kind === 'selectProteinModel'
+              ? updated.proteinTask?.intendedProteinId ?? null : undefined });
+        }
       }
       setCommunication(null);
       setFeedback(null);
-      if (!inspectionOnly && kind !== 'exportStage') setActionNotice(outcomeMessage(kind, updated, current));
       return true;
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : 'The local request did not complete.';
@@ -1368,7 +1359,9 @@ export function ProteinInMembraneWorkspace() {
         if (kind === 'selectInspectionSubject' && 'subjectId' in data && typeof data.subjectId === 'string')
           setInspectionFailure({ subjectId: data.subjectId, reason });
       }
-      else setActionNotice({ kind, tone: 'error', message: `The request did not complete. Check the local service and retry. ${reason}` });
+      else if (selectionNoticeApplicable())
+        setActionNotice({ kind, tone: 'error', studyRevisionId: current.study?.id ?? null,
+          message: `The request did not complete. Check the local service and retry. ${reason}` });
       onFailure?.(reason);
       await refresh();
       return false;
@@ -1680,7 +1673,12 @@ export function ProteinInMembraneWorkspace() {
     [...chosenChains.map(chain => `${chain.sourceChain}:${chain.copyId}`)].sort().join(','),
     group, [...members.map(member => member.sourceId)].sort().join(',')
   ].join('|');
+  function editProteinSelectionDraft() {
+    selectionDraftGeneration.current++;
+    setActionNotice(null);
+  }
   function applyPartnerGroup(group: string, members: SourcePartnerObservation[], retain: boolean) {
+    editProteinSelectionDraft();
     const changedIds = members.filter(member => partnerChoices[member.sourceId]?.retain !== retain)
       .map(member => member.sourceId);
     setPartnerChoices(previous => {
@@ -2092,7 +2090,8 @@ export function ProteinInMembraneWorkspace() {
           </section>}
           {proteinTask && <button className="button compact selection-details-toggle" type="button"
             aria-expanded={selectionDetailsOpen} aria-controls="protein-selection-inputs protein-model-inputs"
-            onClick={() => setSelectionDetailsOpen(value => !value)}>{selectionDetailsOpen ? 'Hide selection details' : 'Selection details and source'}</button>}
+            onClick={() => setSelectionDetailsOpen(value => !value)}>{selectionDetailsOpen ? 'Hide selection details' :
+              proteinTask.reviewMoleculeSelection ? 'Review molecule selection' : 'Selection details and source'}</button>}
           <div id="protein-selection-inputs" className="selection-inputs" hidden={!!proteinTask && !selectionDetailsOpen}>
               <h3 className="section-title">Structural source</h3>
           {(state.placement || state.stages.length > 0) && <p className="change-impact">Changing the chosen protein requires placement to be reassessed. Completed results remain tied to their original inputs.</p>}
@@ -2189,6 +2188,7 @@ export function ProteinInMembraneWorkspace() {
             {state.sourceModels.length === 1 ? <div className="sole-model" role="status">{sourceModelLabel(state.sourceModels[0], 1)} — selected for this draft</div> :
               <select id="model-index" className="select-input" aria-label="Coordinate model" value={modelChoice} onChange={event => {
                 const next = state.sourceModels.find(item => item.index === Number(event.target.value));
+                editProteinSelectionDraft();
                 setModelChoice(event.target.value); setAssemblyChoice(next && next.assemblies.length === 0 ? 'deposited' : '');
                 setChainChoices([]); setPartnerChoices({}); setAltlocChoices({});
               }}>
@@ -2199,7 +2199,7 @@ export function ProteinInMembraneWorkspace() {
               {state.sourceModels.length > 1 && <p className="help-text">This structure contains several sets of coordinates. Choose the model to prepare; the displayed source model is only an inspection view.</p>}
               <label className="field-label" htmlFor="assembly-choice">Assembly</label>
               <p className="help-text">The set of protein chains arranged together in the model.</p>
-              <select id="assembly-choice" className="select-input" value={assemblyChoice} onChange={event => { setAssemblyChoice(event.target.value); setChainChoices([]); }}>
+              <select id="assembly-choice" className="select-input" value={assemblyChoice} onChange={event => { editProteinSelectionDraft(); setAssemblyChoice(event.target.value); setChainChoices([]); }}>
                 {model.assemblies.length > 0 && <option value="" disabled>Choose an assembly</option>}
                 <option value="deposited">Deposited coordinates</option>
                 {model.assemblies.map(item => <option key={item.name} value={item.name}>Biological assembly {item.name}</option>)}
@@ -2224,7 +2224,7 @@ export function ProteinInMembraneWorkspace() {
                   (!previewRequired || readyPreview?.chainIds.includes(chain.copyId))
                     ? sourceChainColors.colors[chain.copyId] ?? sourceChainColors.colors[`${modelNumber}:${chain.copyId}`] : undefined;
                 return <div className="chain-choice" key={key}>
-                  <label className="checkbox-line"><input type="checkbox" checked={chainChoices.includes(key)} onChange={event => setChainChoices(previous => event.target.checked ? [...previous, key] : previous.filter(value => value !== key))} />
+                  <label className="checkbox-line"><input type="checkbox" checked={chainChoices.includes(key)} onChange={event => { editProteinSelectionDraft(); setChainChoices(previous => event.target.checked ? [...previous, key] : previous.filter(value => value !== key)); }} />
                     <span>{chain.sourceChain === chain.copyId ? `Chain ${chain.sourceChain}` : `Chain ${chain.sourceChain} · copy ${chain.copyId}`}</span></label>
                   {visibleColor && <i className="chain-color-swatch" style={{ backgroundColor: visibleColor }} role="img" aria-label={`Viewer colour ${visibleColor}`} title={`Actual viewer colour ${visibleColor}`} />}
                   {visibleColor && <button className="text-link" type="button" onClick={() => setChainFocus(previous => ({ chainId: chain.copyId, serial: (previous?.serial ?? 0) + 1 }))}>Focus in viewer</button>}
@@ -2273,8 +2273,8 @@ export function ProteinInMembraneWorkspace() {
                   {copies.length > 1 && <small>This choice applies to every assembly copy ({copies.map(copy => copy.copyId).join(', ')}). Independently different occupancy needs a separately identified structure.</small>}
                   {copies.length === 1 && copies[0].copyId !== partner.chain && <small>Applies to copy {copies[0].copyId}.</small>}
                   <div className="inline-fields">
-                    <label className="checkbox-line"><input type="radio" name={`partner-${partner.sourceId}`} checked={partnerChoices[partner.sourceId]?.retain === true} onChange={() => { setPartnerActionReceipt(null); setPartnerChoices(previous => ({ ...previous, [partner.sourceId]: { sourceId: partner.sourceId, retain: true } })); }} />Keep</label>
-                    <label className="checkbox-line"><input type="radio" name={`partner-${partner.sourceId}`} checked={partnerChoices[partner.sourceId]?.retain === false} onChange={() => { setPartnerActionReceipt(null); setPartnerChoices(previous => ({ ...previous, [partner.sourceId]: { sourceId: partner.sourceId, retain: false } })); }} />Exclude</label>
+                    <label className="checkbox-line"><input type="radio" name={`partner-${partner.sourceId}`} checked={partnerChoices[partner.sourceId]?.retain === true} onChange={() => { editProteinSelectionDraft(); setPartnerActionReceipt(null); setPartnerChoices(previous => ({ ...previous, [partner.sourceId]: { sourceId: partner.sourceId, retain: true } })); }} />Keep</label>
+                    <label className="checkbox-line"><input type="radio" name={`partner-${partner.sourceId}`} checked={partnerChoices[partner.sourceId]?.retain === false} onChange={() => { editProteinSelectionDraft(); setPartnerActionReceipt(null); setPartnerChoices(previous => ({ ...previous, [partner.sourceId]: { sourceId: partner.sourceId, retain: false } })); }} />Exclude</label>
                   </div>
                 </div>;})}
                     </details>}
@@ -2293,12 +2293,12 @@ export function ProteinInMembraneWorkspace() {
                 <div className="altloc-list">
                   {ambiguousResidues.map(residue => <label key={residueKey(residue.address)} className="altloc-row">
                     <span className="tabular">{residue.name} · {residue.address.chain}{residue.address.residue}{residue.address.insertionCode} · copy {residue.address.copyId}</span>
-                    <select className="select-input" value={altlocChoices[residueKey(residue.address)] ?? ''} onChange={event => setAltlocChoices(previous => {
+                    <select className="select-input" value={altlocChoices[residueKey(residue.address)] ?? ''} onChange={event => { editProteinSelectionDraft(); setAltlocChoices(previous => {
                       const next = { ...previous };
                       if (event.target.value === '') delete next[residueKey(residue.address)];
                       else next[residueKey(residue.address)] = Number(event.target.value);
                       return next;
-                    })}>
+                    }); }}>
                       <option value="">Choose location</option>
                       {residue.alternateLocations.map((altloc, index) => <option value={index} key={`${index}:${altloc}`}>{altloc || '(unlabelled)'}</option>)}
                     </select>
@@ -2729,11 +2729,6 @@ export function ProteinInMembraneWorkspace() {
             <p className="help-text">The molecular viewer still shows {viewerSubjectHeading(state.inspection,
               state.stages.find(stage => stage.stageId === state.inspection?.subjectId), state.study?.selectedSourceLabel)}. This is not a placement proposal.</p>
           </section> : null}
-        proteinGeometry={displayedState.inspection?.representationKind === 'intendedProtein' && state.protein?.sourceGeometry
-          ? <GeometrySummary geometry={state.protein.sourceGeometry} label="Selected source coordinates" models={state.sourceModels} />
-          : (displayedState.inspection?.representationKind === 'preparedProtein' ||
-            displayedState.inspection?.representationKind === 'unqualifiedProteinCandidate') && state.protein?.geometry
-            ? <GeometrySummary geometry={state.protein.geometry} label="Prepared protein coordinates" models={state.sourceModels} /> : null}
         proteinDraft={activeArea === 'protein' && sourceId && !sourceIntent && !proteinTask ?
           <section className="account-card protein-draft-account" aria-label="Protein selection draft">
             <dl className="detail-grid">
@@ -2752,7 +2747,8 @@ export function ProteinInMembraneWorkspace() {
           <div className="protein-outcome-summary"><strong>{proteinTask.standing === 'assessed' ? 'Preparation complete' :
             proteinTask.standing === 'preparing' ? 'Preparing and checking protein…' :
             proteinTask.standing === 'failed' ? 'No prepared protein established' :
-            proteinTask.standing === 'unavailable' ? 'Outcome not verified' : 'Preparation blocked'}</strong>
+            proteinTask.standing === 'unavailable' ? 'Outcome not verified' :
+            proteinTask.reviewMoleculeSelection ? 'Protein preparation blocked' : 'Preparation blocked'}</strong>
             <p>{proteinTask.message}</p></div>
           <p><strong>Selected protein</strong><br />{state.study?.selectedSourceLabel ?? proteinTask.sourceId} · {proteinTask.chains.map(chain =>
             chain.sourceChain === chain.copyId ? `Chain ${chain.sourceChain}` : `Chain ${chain.sourceChain}, copy ${chain.copyId}`).join(' and ')}</p>

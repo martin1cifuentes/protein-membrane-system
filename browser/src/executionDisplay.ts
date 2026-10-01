@@ -25,7 +25,7 @@ export function operationLabel(phase: string | null | undefined, status?: string
 export function measurementLabel(name: string): string {
   const names: Record<string, string> = {
     covalentBond: 'Measured bond lengths', chainContinuity: 'Backbone connections',
-    nonbondedDistance: 'Nonbonded distances',
+    nonbondedDistance: 'Nonbonded atom distances',
     bondLength: 'Measured bond lengths', bondLengths: 'Measured bond lengths',
     backboneConnection: 'Backbone connections', backboneConnections: 'Backbone connections',
     atomsWithinMembraneGuide: 'Atoms within membrane guide',

@@ -20,6 +20,7 @@ import { clearStructureTransparency, setStructureTransparency } from 'molstar/li
 import type { PreparationAssessmentResult, ScientificEvidence, ScientificFinding, WorkspaceState } from './ProteinInMembraneWorkspace';
 import { AttemptReviewAccount, StageReviewAccount } from './ExecutionReviewAccount';
 import { measurementLabel } from './executionDisplay';
+import { GeometrySummary, type ProteinGeometryObservations } from './ProteinGeometrySummary';
 
 export interface StructureFocus {
   authAsymId: string;
@@ -59,6 +60,7 @@ export interface InspectionAccount {
   focus: StructureFocus | null;
   annotations: InspectionAnnotation[];
   metrics: InspectionMetric[];
+  geometry?: { observations: ProteinGeometryObservations; evidenceIds: string[] } | null;
 }
 
 export interface StructureLoadStatus {
@@ -1353,7 +1355,6 @@ export function ConnectedStructuralInspection({
   proteinOutcome,
   proteinDraft,
   placementOutcome,
-  proteinGeometry,
   proposalDecision,
   exportFault = null,
   reviewAttempt = false,
@@ -1380,7 +1381,6 @@ export function ConnectedStructuralInspection({
   proteinOutcome?: ReactNode;
   proteinDraft?: ReactNode;
   placementOutcome?: ReactNode;
-  proteinGeometry?: ReactNode;
   proposalDecision?: ReactNode;
   exportFault?: string | null;
   reviewAttempt?: boolean;
@@ -1401,11 +1401,8 @@ export function ConnectedStructuralInspection({
   requestedAreaView?: { area: string; subjectId: string; failure: string | null } | null;
 }) {
   const inspection = state.inspection;
-  const coveredGeometryKinds = new Set((proteinGeometry ?
-    inspection?.representationKind === 'intendedProtein' ? state.protein?.sourceGeometry?.kinds :
-      state.protein?.geometry?.kinds : null)?.map(item => item.kind) ?? []);
-  const coveredGeometryEvidence = new Set(inspection?.evidence.filter(item =>
-    coveredGeometryKinds.has(item.method)).map(item => item.id) ?? []);
+  const coveredGeometryEvidence = new Set(inspection?.geometry?.evidenceIds ?? []);
+  const geometryBasis = inspection?.evidence.find(item => coveredGeometryEvidence.has(item.id));
   const preparationObservations = inspection?.representationKind === 'preparedProtein'
     ? inspection.evidence.filter(item => item.method === 'Observed structural preparation') : [];
   const unlinkedPreparationObservations = preparationObservations.filter(item =>
@@ -1951,8 +1948,13 @@ export function ConnectedStructuralInspection({
             <p className="help-text">Click a visible molecule to identify it.</p></>}
           <p className="help-text">Selection and display do not alter coordinates, retained chemistry or scientific standing.</p>
         </section>}
-        {proteinGeometry && <section className="account-card protein-geometry-account" aria-label="Protein geometry measurements">
-          {proteinGeometry}
+        {!stage && inspection.geometry && <section className="account-card protein-geometry-account" aria-label="Protein geometry measurements">
+          <GeometrySummary geometry={inspection.geometry.observations}
+            label={inspection.representationKind === 'intendedProtein' ? 'Selected source coordinates' :
+              inspection.representationKind === 'unqualifiedProteinCandidate' ? 'Unqualified candidate coordinates' : 'Prepared protein coordinates'}
+            models={inspection.studyRevisionId === state.study?.id ? state.sourceModels : []}
+            evidence={inspection.evidence} evidenceIds={inspection.geometry.evidenceIds}
+            scope={geometryBasis ? evidenceScope(geometryBasis, inspection) : undefined} />
         </section>}
         {!stage && (inspection.findings.length > 0 || supportingEvidence.length > 0) &&
           <section className="evidence-section inspection-connected-account" aria-label="Selected subject findings and evidence">
@@ -2072,9 +2074,6 @@ export function ConnectedStructuralInspection({
 }
 
 const metricNames: Record<string, string> = {
-  covalentBond: 'Measured bond lengths',
-  chainContinuity: 'Backbone connections',
-  nonbondedDistance: 'Nonbonded atom distances',
   atomsWithinCore: 'Atoms within membrane guide',
   atomsAboveCore: 'Atoms above membrane guide',
   atomsBelowCore: 'Atoms below membrane guide',
@@ -2099,7 +2098,7 @@ function readableMetricName(name: string): string {
       extreme[1] === 'chainContinuity' ? 'backbone connection' : 'nonbonded atom distance';
     return `${extreme[2] === 'minimum' ? 'Shortest' : 'Longest'} measured ${kind}${scope.length ? ` · ${scope.join(' · ')}` : ''}`;
   }
-  const label = metricNames[measure] ?? measure
+  const label = metricNames[measure] ?? measurementLabel(measure)
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/([A-Za-z])([0-9])/g, '$1 $2')
     .replace(/\bRms\b/g, 'RMS')

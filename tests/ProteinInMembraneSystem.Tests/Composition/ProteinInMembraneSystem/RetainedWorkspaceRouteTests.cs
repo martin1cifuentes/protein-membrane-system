@@ -362,6 +362,9 @@ public sealed class RetainedWorkspaceRouteTests
         Assert.Equal(originalEvidence.Length, originalEvidence.Select(item => item.Id)
             .Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(originalEvidence, laterEvidence);
+        Assert.NotNull(original.Geometry);
+        Assert.Equal(original.Geometry.EvidenceIds, later.Geometry?.EvidenceIds);
+        Assert.Equal(original.Geometry.Observations, later.Geometry?.Observations);
         var ids = originalEvidence.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         Assert.All(originalEvidence, item => Assert.Contains(original.Metrics,
             metric => metric.EvidenceId == item.Id));

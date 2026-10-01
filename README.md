@@ -4,6 +4,21 @@ Protein–Membrane Workspace is a local scientific application for preparing all
 
 This document describes what the application enables a researcher to do and explains how those activities were translated into requirements, a conceptual model, software abstractions, contracts, and implementation.
 
+## Run locally
+
+On Linux or WSL, install the .NET 10 SDK, Node.js 22.12 or newer with npm, Python 3.11 with `venv` and `pip`, and Git. For the PACKMOL-Memgen construction route, also install `micromamba`; the build script uses it to create the pinned AmberTools environment if that environment is missing. The first build needs network access for package downloads. Check that `node --version` reports at least 22.12 before building.
+
+From the repository root:
+
+```bash
+scripts/build-local.sh
+scripts/start-local.sh
+```
+
+The build script installs the pinned browser and Python packages, builds the browser, publishes the .NET host, and attempts to prepare AmberTools when `micromamba` is available. It does **not** start the app. If AmberTools cannot be prepared, the PACKMOL-Memgen route is unavailable.
+
+The start script opens **http://127.0.0.1:4185/**; use `Ctrl+C` to stop it. Studies and results persist in `out/workspace` across restarts. To use another port, start with `PIM_PORT=4186 scripts/start-local.sh`. Optional PPM orientation is detected at `out/ppm2/immers` or through `PIM_PPM_EXECUTABLE`; otherwise it is shown as unavailable.
+
 ## The researcher’s workflow
 
 The workflow begins with a source protein structure. The researcher inspects the structure, selects an assembly and its chains, and decides which associated molecules belong in the intended construct. The application supports reviewing and applying a preparation plan, including structural repairs and chemical-state choices.

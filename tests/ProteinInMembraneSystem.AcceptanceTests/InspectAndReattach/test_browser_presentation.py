@@ -335,6 +335,116 @@ def controlled_account_server():
 
 
 class BrowserPresentationTests(unittest.TestCase):
+    def test_late_selection_response_cannot_replace_a_newer_subject_or_show_its_receipt(self):
+        """Controlled reply ordering checks browser attribution; no scientific result is claimed."""
+        self.assertTrue((DIST / "index.html").is_file(), "Build browser/ before this focused test")
+        with controlled_account_server() as (host, base), sync_playwright() as playwright:
+            value = account()
+            value.update(attempt=None, inspection=inspection("source-one", "structuralSource"))
+            value["study"].update(selectedSourceId="source-one", selectedSourceLabel="Controlled source")
+            value["sourceModels"] = [{
+                "index": 0, "sourceModelId": "1", "atomCount": 4,
+                "chains": [{"name": "A", "residueCount": 1, "atomCount": 4}],
+                "assemblies": [], "partners": [],
+                "residues": [{"address": {"model": 0, "chain": "A", "residue": 1,
+                                            "insertionCode": "", "copyId": ""},
+                              "name": "ALA", "residueKind": "protein",
+                              "backboneHeavyAtomsComplete": True, "alternateLocations": []}],
+            }]
+            value["actions"].append({"kind": "selectProteinModel", "subjectId": None,
+                                     "enabled": True, "reason": None})
+            host.replace(value)
+            old = deepcopy(value)
+            old["revision"] = 11
+            old["study"].update(id="revision-old", modelIndex=0, chainIds=["A"])
+            old["proteinTask"] = {"studyRevisionId": "revision-old", "intendedProteinId": "protein-old",
+                                  "sourceId": "source-one", "chains": [{"sourceChain": "A", "copyId": "A"}],
+                                  "standing": "blocked", "message": "Older selection is blocked.",
+                                  "preparedProteinId": None, "retryAvailable": False,
+                                  "reviewMoleculeSelection": False}
+            newer = deepcopy(old)
+            newer["revision"] = 12
+            newer["study"]["id"] = "revision-new"
+            newer["proteinTask"].update(studyRevisionId="revision-new",
+                                        intendedProteinId="protein-new",
+                                        message="Newer selection is current.")
+            release_old_reply = threading.Event()
+            release_submitted_reply = threading.Event()
+            release_failed_reply = threading.Event()
+            submitted = deepcopy(newer)
+            submitted["revision"] = 13
+            submitted["study"]["id"] = "revision-submitted"
+            submitted["proteinTask"].update(studyRevisionId="revision-submitted",
+                                            intendedProteinId="protein-submitted",
+                                            message="Submitted selection is current.")
+
+            def delayed_selection(handler, command):
+                if command["kind"] != "selectProteinModel":
+                    return False
+                host.commands.append(command["kind"])
+                if len(host.commands) == 1:
+                    self.assertEqual(command["expectedRevision"], 10)
+                    host.replace(newer)
+                    if not release_old_reply.wait(15):
+                        raise AssertionError("The controlled old reply was never released")
+                    handler.json_response(old)
+                elif len(host.commands) == 2:
+                    self.assertEqual(command["expectedRevision"], 12)
+                    if not release_submitted_reply.wait(15):
+                        raise AssertionError("The submitted reply was never released")
+                    host.replace(submitted)
+                    handler.json_response(submitted)
+                else:
+                    self.assertEqual(command["expectedRevision"], 13)
+                    if not release_failed_reply.wait(15):
+                        raise AssertionError("The old draft failure was never released")
+                    handler.json_response({"reason": "Old selection was refused."}, 422)
+                return True
+
+            host.command_handler = delayed_selection
+            browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
+                                                 args=["--disable-dev-shm-usage", "--use-angle=swiftshader"])
+            try:
+                page = browser.new_page(viewport={"width": 1024, "height": 800})
+                page.goto(base, wait_until="domcontentloaded")
+                page.get_by_label("Chain A", exact=True).check()
+                page.get_by_role("button", name="Assess selected protein").click()
+                expect(page.get_by_role("region", name="Current protein result"))\
+                    .to_contain_text("Newer selection is current.")
+                release_old_reply.set()
+                page.wait_for_timeout(400)
+                expect(page.get_by_role("region", name="Current protein result"))\
+                    .to_contain_text("Newer selection is current.")
+                expect(page.get_by_text("Older selection is blocked.")).to_have_count(0)
+                expect(page.locator(".action-feedback").filter(has_text="Selection recorded"))\
+                    .to_have_count(0)
+                page.get_by_role("button", name="Selection details and source").click()
+                page.get_by_role("button", name="Assess selected protein").click()
+                page.get_by_label("Chain A", exact=True).uncheck()
+                release_submitted_reply.set()
+                expect(page.get_by_role("region", name="Current protein result"))\
+                    .to_contain_text("Submitted selection is current.")
+                expect(page.get_by_label("Chain A", exact=True)).not_to_be_checked()
+                expect(page.locator(".action-feedback").filter(has_text="Selection recorded"))\
+                    .to_have_count(0)
+                page.get_by_label("Chain A", exact=True).check()
+                page.get_by_role("button", name="Assess selected protein").click()
+                expect(page.locator(".work-pending")).to_have_count(1)
+                page.get_by_label("Chain A", exact=True).uncheck()
+                with page.expect_response(lambda response: response.url.endswith("/api/commands")
+                                          and response.status == 422):
+                    release_failed_reply.set()
+                expect(page.locator(".work-pending")).to_have_count(0)
+                expect(page.get_by_text("Old selection was refused.")).to_have_count(0)
+                expect(page.locator(".action-feedback").filter(has_text="Old selection was refused"))\
+                    .to_have_count(0)
+                self.assertEqual(host.commands, ["selectProteinModel"] * 3)
+            finally:
+                release_old_reply.set()
+                release_submitted_reply.set()
+                release_failed_reply.set()
+                browser.close()
+
     def test_current_warnings_follow_phase_and_resolution_without_policy_version_clutter(self):
         """Controlled account checks display scope; the Host owns issue applicability."""
         self.assertTrue((DIST / "index.html").is_file(), "Build browser/ before this focused test")
@@ -421,23 +531,59 @@ class BrowserPresentationTests(unittest.TestCase):
             value["attempt"] = None
             value["inspection"] = inspection("protein-one", "preparedProtein")
             values = [1.4999999999, 1.5000000001, 31.669000000000004] + [1.43] * 77
+            kind_id = "inspection-derived-geometry-kind"
+            pair_ids = [f"inspection-derived-geometry-pair-{index}" for index in range(80)]
             geometry = {"standing": "Observed", "kinds": [{
                 "kind": "covalentBond", "standing": "Observed", "eligibleCount": 80,
                 "measuredCount": 80, "minimumDistanceAngstrom": min(values),
                 "maximumDistanceAngstrom": max(values), "unavailableReason": None,
             }], "locatedDistances": [{
                 "kind": "covalentBond", "distanceAngstrom": distance,
-                "radiusSumAngstrom": None,
+                "radiusSumAngstrom": 2.75 if index == 0 else None,
                 "first": {"residue": {"model": 0, "chain": "A", "residue": index + 1,
-                                       "insertionCode": "", "copyId": "A"}, "atomName": "C"},
+                                       "insertionCode": "", "copyId": "B" if index == 0 else "A"}, "atomName": "C"},
                 "second": {"residue": {"model": 0, "chain": "A", "residue": index + 2,
                                         "insertionCode": "", "copyId": "A"}, "atomName": "N"},
             } for index, distance in enumerate(values)],
                 "limitations": ["Controlled coordinates are presentation evidence only."]}
+            value["inspection"]["geometry"] = {"observations": geometry,
+                                                   "evidenceIds": [kind_id, *pair_ids]}
+            value["inspection"]["evidence"].extend([{
+                "id": evidence_id, "subjectId": "protein-one", "source": "local scientific worker",
+                "method": "covalentBond", "observation": f"Geometry-only observation {index}",
+                "applicability": "Exact inspected preparedProtein protein-one",
+                "uncertainty": "Addressed numerical observation; no unverified spatial focus is inferred.",
+                "bearing": "context",
+            } for index, evidence_id in enumerate([kind_id, *pair_ids])])
+            value["inspection"]["metrics"].extend([{
+                "name": f"Geometry-only metric {index}", "value": str(distance), "unit": "Å",
+                "subjectPartId": "protein-one", "evidenceId": evidence_id,
+            } for index, (evidence_id, distance) in enumerate(zip(pair_ids, values))])
+            value["inspection"]["annotations"].append({
+                "id": "geometry-only-annotation", "subjectPartId": "protein-one",
+                "label": "Geometry-only annotation", "meaning": "Already shown with geometry",
+                "evidenceId": pair_ids[0], "geometryFocus": None,
+            })
+            value["inspection"]["evidence"].append({
+                "id": "independent-covalent", "subjectId": "protein-one",
+                "source": "independent observation", "method": "covalentBond",
+                "observation": "Independent same-method observation",
+                "applicability": "This prepared protein", "uncertainty": "Separate measurement scope",
+                "bearing": "context",
+            })
+            value["inspection"]["metrics"].append({
+                "name": "Independent quantity", "value": "7", "unit": "Å",
+                "subjectPartId": "protein-one", "evidenceId": "independent-covalent",
+            })
+            value["inspection"]["annotations"].append({
+                "id": "independent-annotation", "subjectPartId": "protein-one",
+                "label": "Independent annotation", "meaning": "Separate measurement scope",
+                "evidenceId": "independent-covalent", "geometryFocus": None,
+            })
             value["protein"] = {"subjectId": "protein-one", "status": "assessed",
                                 "summary": "Controlled prepared protein", "atomCount": 162,
                                 "changes": [], "findings": [], "prediction": None,
-                                "geometry": geometry, "sourceGeometry": None}
+                                "geometry": None, "sourceGeometry": None}
             host.replace(value)
             browser = playwright.chromium.launch(executable_path=CHROMIUM, headless=True,
                                                  args=["--disable-dev-shm-usage", "--use-angle=swiftshader"])
@@ -447,6 +593,7 @@ class BrowserPresentationTests(unittest.TestCase):
                 page.get_by_role("navigation", name="Research work areas").get_by_role(
                     "button", name="Protein").click()
                 geometry_account = page.get_by_label("Protein geometry measurements")
+                expect(geometry_account).to_have_count(1)
                 geometry_account.get_by_text("Measurement details").click()
                 expect(geometry_account).to_contain_text("80 of 80 applicable distances measured")
                 expect(geometry_account).not_to_contain_text("80 checks passed")
@@ -458,9 +605,38 @@ class BrowserPresentationTests(unittest.TestCase):
                 expect(addressed).to_contain_text("1.5000000001 Å")
                 expect(addressed).to_contain_text("31.669 Å")
                 expect(addressed).to_contain_text("Model 1 · chain A · residue 80 · atom C")
-                expect(addressed).to_contain_text("Method: distance between the identified atom coordinates")
-                expect(addressed).to_contain_text("Scope: prepared protein coordinates")
+                expect(addressed).to_contain_text("Model 1 · chain A, copy B · residue 1 · atom C")
+                expect(addressed).to_contain_text("Reference radii sum 2.75 Å")
+                expect(geometry_account).to_contain_text("Method: distance between the identified atom coordinates")
+                expect(geometry_account).to_contain_text("Scope: This prepared protein")
+                expect(geometry_account).to_contain_text("Source: Local structural measurement")
+                expect(geometry_account).to_contain_text("Controlled coordinates are presentation evidence only")
+                details = page.locator(".evidence-panel")
+                expect(details).to_contain_text("Independent same-method observation")
+                expect(details).to_contain_text("Independent Quantity")
+                expect(details).to_contain_text("Independent annotation")
+                expect(details).not_to_contain_text("Geometry-only observation")
+                expect(details).not_to_contain_text("Geometry-only metric")
+                expect(details).not_to_contain_text("Geometry-only annotation")
                 self.assertEqual(host.commands, [], "Reading measurements must not change the scientific account")
+
+                task_value = deepcopy(value)
+                task_value["revision"] += 1
+                task_value["protein"]["geometry"] = geometry
+                task_value["proteinTask"] = {
+                    "studyRevisionId": "revision-one", "intendedProteinId": "intended-one",
+                    "sourceId": "source-one", "chains": [{"sourceChain": "A", "copyId": "A"}],
+                    "standing": "assessed", "message": "Prepared protein checked.",
+                    "preparedProteinId": "protein-one", "retryAvailable": False,
+                    "reviewMoleculeSelection": False,
+                }
+                host.replace(task_value)
+                result = page.get_by_role("region", name="Current protein result")
+                expect(result).to_contain_text("Prepared protein checked.")
+                expect(page.get_by_label("Protein geometry measurements")).to_have_count(0)
+                result.get_by_text("Structure checks and limitations").click()
+                expect(result).to_contain_text("80 of 80 applicable distances measured")
+                self.assertEqual(host.commands, [], "Switching presentation must not change the account")
             finally:
                 browser.close()
 

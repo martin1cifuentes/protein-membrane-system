@@ -28,6 +28,8 @@ public sealed record NativePatchInstallation(string SpeciesId, string Path, stri
 /// </summary>
 public sealed class ProteinInMembraneSystem
 {
+    private sealed record ProteinSelectionIssue(string Message, bool ReviewMoleculeSelection = false);
+
     private readonly object _gate = new();
     private readonly SemaphoreSlim _commands = new(1, 1);
     private readonly ExternalSourceExchange _sources;
@@ -82,7 +84,7 @@ public sealed class ProteinInMembraneSystem
     private AssessedPreparedProtein? _protein;
     private ProteinPreparationDiagnostic? _proteinDiagnostic;
     private bool _proteinSelectionRunning;
-    private string? _proteinSelectionIssue;
+    private ProteinSelectionIssue? _proteinSelectionIssue;
     private bool _proteinPreparationRunning;
     private string? _proteinPreparationFailure;
     private bool _proteinPreparationRetryable;
@@ -618,12 +620,21 @@ public sealed class ProteinInMembraneSystem
         StudyRevision revision;
         ProteinChemicalStatePolicy? chemicalPolicy;
         ProteinStructuralAssessmentPolicy? structuralPolicy;
+        ProteinSelectionIssue? selectionIssue;
         lock (_gate)
         {
             AdvanceStudyLocked(intended, _study.Membrane, null);
             revision = _study;
-            chemicalPolicy = SelectChemicalPolicyLocked(model, intended);
+            var chemicalCompatibility = SelectChemicalPolicyWithCompatibilityLocked(model, intended);
+            chemicalPolicy = chemicalCompatibility.Policy;
             structuralPolicy = SelectStructuralPolicyLocked(model, intended);
+            selectionIssue = chemicalCompatibility.UnsupportedPartners.Length > 0 &&
+                structuralPolicy is not null && chemicalCompatibility.CorePolicyAvailable &&
+                chemicalCompatibility.AllPartnersKnown
+                    ? new ProteinSelectionIssue(
+                        "This preparation method does not yet support the selected molecules: " +
+                        string.Join(", ", chemicalCompatibility.UnsupportedPartners.Select(UnsupportedPartnerLabel)) + ".", true)
+                    : null;
             var carriedMembrane = CarryMembraneLocked(revision);
             _preparationProposals = null;
             _preparationPlan = null;
@@ -651,7 +662,8 @@ public sealed class ProteinInMembraneSystem
                 if (_study.Id == revision.Id)
                 {
                     _proteinSelectionRunning = false;
-                    _proteinSelectionIssue = "No qualified protein chemical-state and structural assessment policies cover this selected structure.";
+                    _proteinSelectionIssue = selectionIssue ?? new ProteinSelectionIssue(
+                        "No qualified protein chemical-state and structural assessment policies cover this selected structure.");
                     TouchLocked();
                 }
             }
@@ -671,7 +683,8 @@ public sealed class ProteinInMembraneSystem
             {
                 if (_study.Id != revision.Id) return null;
                 _proteinSelectionRunning = false;
-                _proteinSelectionIssue = $"The selected protein could not be assessed: {exception.Message}";
+                _proteinSelectionIssue = new ProteinSelectionIssue(
+                    $"The selected protein could not be assessed: {exception.Message}");
                 TouchLocked();
             }
             Changed?.Invoke();
@@ -682,7 +695,8 @@ public sealed class ProteinInMembraneSystem
             if (_study.Id != revision.Id) return null;
             _proteinSelectionRunning = false;
             _preparationProposals = proposed.Value;
-            _proteinSelectionIssue = proposed.Value is null ? proposed.Reason : null;
+            _proteinSelectionIssue = proposed.Value is null && proposed.Reason is { } reason
+                ? new ProteinSelectionIssue(reason) : null;
             TouchLocked();
         }
         Changed?.Invoke();
@@ -1181,7 +1195,8 @@ public sealed class ProteinInMembraneSystem
                 options.Add(new PreparationDecisionOptionAccount(item.Proposal.Id, item.Proposal.ProposedChange,
                     disposition, choice?.Id, evidenceReason is null, confirmationBlocker,
                     false, false, report.Evidence.Where(evidence => evidence.SubjectId == item.Proposal.Id).ToImmutableArray(),
-                    item.Proposal.Kind == PreparationChangeKind.ResidueState ? "modelAssumption" : "observed"));
+                    item.Proposal.Kind == PreparationChangeKind.ResidueState
+                        ? PreparationInformationRole.ModelAssumption : PreparationInformationRole.Observed));
             }
             decisions.Add(new PreparationDecisionAccount(proposals[0].Id, group.Key.Kind,
                 group.Key.Residue, group.Key.PartnerResidue, group.Key.AtomName, decisionStanding,
@@ -1221,19 +1236,19 @@ public sealed class ProteinInMembraneSystem
             }, DecisionInspectionRelationLocked(intended));
     }
 
-    private string DecisionInspectionRelationLocked(IntendedProteinModel intended)
+    private DecisionInspectionRelation DecisionInspectionRelationLocked(IntendedProteinModel intended)
     {
         var inspected = _inspection.Current;
-        if (inspected is null) return "unavailable";
-        if (inspected.StudyRevisionId != _study.Id) return "historical";
+        if (inspected is null) return DecisionInspectionRelation.Unavailable;
+        if (inspected.StudyRevisionId != _study.Id) return DecisionInspectionRelation.Historical;
         if (inspected.SubjectId == intended.Id || inspected.SubjectId == intended.Source.Id ||
             _preparationProposals?.Changes.Any(change => change.Id == inspected.SubjectId) == true)
-            return "beforePreparation";
+            return DecisionInspectionRelation.BeforePreparation;
         if (_protein is not null && _protein.Intended.Id == intended.Id &&
-            inspected.SubjectId == _protein.Id) return "preparedResult";
+            inspected.SubjectId == _protein.Id) return DecisionInspectionRelation.PreparedResult;
         if (_proteinDiagnostic is not null && inspected.SubjectId == _proteinDiagnostic.Candidate.Id)
-            return "unqualifiedCandidate";
-        return "otherSubject";
+            return DecisionInspectionRelation.UnqualifiedCandidate;
+        return DecisionInspectionRelation.OtherSubject;
     }
 
     private ProteinTaskAccount? BuildProteinTaskLocked(ProteinPreparationReviewAccount? review)
@@ -1258,14 +1273,15 @@ public sealed class ProteinInMembraneSystem
                 "The current protein preparation account is unavailable. Refresh the study before continuing.",
             "failed" => _proteinPreparationFailure,
             "assessing" => "Assessing the selected model and its required preparation choices…",
-            "blocked" => _proteinSelectionIssue ?? review?.Blockers.FirstOrDefault(),
+            "blocked" => _proteinSelectionIssue?.Message ?? review?.Blockers.FirstOrDefault(),
             "planReady" => "A jointly checked starting-state plan is ready for explicit authorization or review.",
             "awaitingDecisions" => $"{review!.RemainingCount} preparation decision{(review.RemainingCount == 1 ? "" : "s")} remain.",
             _ => "The selected protein is ready for preparation once its current prerequisites are confirmed."
         };
         return new ProteinTaskAccount(_study.Id, intended.Id, intended.Source.Id, intended.Chains,
             standing, message, _protein?.Id, standing == "failed" && _proteinPreparationRetryable &&
-            _preparationProposals?.StudyRevisionId == _study.Id);
+            _preparationProposals?.StudyRevisionId == _study.Id,
+            _proteinSelectionIssue?.ReviewMoleculeSelection == true);
     }
 
     private PreparationPlanAccount? BuildPreparationPlanAccountLocked()
@@ -2731,14 +2747,18 @@ public sealed class ProteinInMembraneSystem
     // not advertise spatial focus until a verified view mapping exists.
     private static InspectionSubject WithGeometry(InspectionSubject subject, ProteinGeometryObservations? geometry)
     {
-        if (geometry is null || geometry.Kinds.IsDefault) return subject;
+        if (geometry is null) return subject;
         var evidence = subject.Evidence.ToBuilder();
         var metrics = subject.Metrics.ToBuilder();
-        for (var index = 0; index < geometry.Kinds.Length; index++)
+        var geometryEvidenceIds = ImmutableArray.CreateBuilder<string>();
+        var kinds = geometry.Kinds.IsDefault
+            ? ImmutableArray<ProteinGeometryKindObservation>.Empty : geometry.Kinds;
+        for (var index = 0; index < kinds.Length; index++)
         {
-            var kind = geometry.Kinds[index];
+            var kind = kinds[index];
             var evidenceId = DerivedInspectionEvidenceId(subject, "geometry-kind", kind.Kind,
                 index, evidence);
+            geometryEvidenceIds.Add(evidenceId);
             evidence.Add(new ScientificEvidence(evidenceId, subject.Id, "local scientific worker",
                 kind.Kind, $"{kind.MeasuredCount} of {kind.EligibleCount} eligible observations; standing {kind.Standing}",
                 $"Exact inspected {subject.RepresentationKind} {subject.Id}",
@@ -2762,13 +2782,15 @@ public sealed class ProteinInMembraneSystem
                 $"{second.Chain}/{second.CopyId}:{second.Residue}{second.InsertionCode}/{distance.Second.AtomName}";
             var evidenceId = DerivedInspectionEvidenceId(subject, "located-geometry", label,
                 index, evidence);
+            geometryEvidenceIds.Add(evidenceId);
             evidence.Add(new ScientificEvidence(evidenceId, subject.Id, "local scientific worker", distance.Kind,
                 $"Located atom-pair separation for {label}", $"Exact inspected {subject.RepresentationKind} {subject.Id}",
                 "Addressed numerical observation; no unverified spatial focus is inferred.", EvidenceBearing.Context));
             metrics.Add(new InspectionMetric(label, distance.DistanceAngstrom.ToString("G6", CultureInfo.InvariantCulture),
                 "Å", subject.Id, evidenceId));
         }
-        return subject with { Evidence = evidence.ToImmutable(), Metrics = metrics.ToImmutable() };
+        return subject with { Evidence = evidence.ToImmutable(), Metrics = metrics.ToImmutable(),
+            Geometry = new InspectionGeometryAccount(geometry, geometryEvidenceIds.ToImmutable()) };
     }
 
     private static InspectionSubject WithStageMeasurements(InspectionSubject subject, CompletedStage stage,
@@ -3009,7 +3031,7 @@ public sealed class ProteinInMembraneSystem
                     "protein", "protein");
         if (_study.IntendedProtein is { } intended && _protein is null)
         {
-            Add("protein-selection", "error", _proteinSelectionIssue, intended.Id, "protein", "protein");
+            Add("protein-selection", "error", _proteinSelectionIssue?.Message, intended.Id, "protein", "protein");
             Add("preparation-outcome", "error", _proteinPreparationObservationIssue ??
                 _proteinPreparationFailure, intended.Id, "protein", "protein", "placement", "preparation");
             if (_preparationPlan is null && !_recommendationRunning)
@@ -3292,20 +3314,49 @@ public sealed class ProteinInMembraneSystem
     }
 
     private ProteinChemicalStatePolicy? SelectChemicalPolicyLocked(SourceModelObservation? model,
-        IntendedProteinModel? intended)
+        IntendedProteinModel? intended) => SelectChemicalPolicyWithCompatibilityLocked(model, intended).Policy;
+
+    private (ProteinChemicalStatePolicy? Policy, ImmutableArray<SourcePartnerObservation> UnsupportedPartners,
+        bool CorePolicyAvailable, bool AllPartnersKnown) SelectChemicalPolicyWithCompatibilityLocked(
+        SourceModelObservation? model, IntendedProteinModel? intended)
     {
-        if (model is null || intended is null || _catalogue is null ||
-            intended.Partners.Where(partner => partner.Retain).Any(partner =>
-            {
-                var source = model.Partners.FirstOrDefault(item => item.SourceId == partner.SourceId);
-                return source is null || source.Kind switch
-                {
-                    "water" => source.Label is not ("HOH" or "WAT" or "H2O") ||
-                        source.AtomCount is not (1 or 3),
-                    "ion" => source.Label is not ("NA" or "CL") || source.AtomCount != 1,
-                    _ => true
-                };
-            })) return null;
+        if (model is null || intended is null || _catalogue is null)
+            return (null, ImmutableArray<SourcePartnerObservation>.Empty, false, false);
+        var corePolicy = SelectChemicalPolicyForProteinCoreLocked(model, intended);
+        var unsupported = ImmutableArray.CreateBuilder<SourcePartnerObservation>();
+        var allPartnersKnown = true;
+        foreach (var partner in intended.Partners.Where(partner => partner.Retain))
+        {
+            var source = model.Partners.FirstOrDefault(item => item.SourceId == partner.SourceId);
+            if (source is null) allPartnersKnown = false;
+            else if (!SupportedRetainedPartner(source)) unsupported.Add(source);
+        }
+        return (allPartnersKnown && unsupported.Count == 0 ? corePolicy : null,
+            unsupported.ToImmutable(), corePolicy is not null, allPartnersKnown);
+    }
+
+    private static bool SupportedRetainedPartner(SourcePartnerObservation source) => source.Kind switch
+    {
+        "water" => source.Label is ("HOH" or "WAT" or "H2O") && source.AtomCount is (1 or 3),
+        "ion" => source.Label is ("NA" or "CL") && source.AtomCount == 1,
+        _ => false
+    };
+
+    private static string UnsupportedPartnerLabel(SourcePartnerObservation source)
+    {
+        var name = source.DisplayName?.Trim();
+        var component = string.IsNullOrEmpty(name) || name.All(char.IsDigit) ||
+            string.Equals(name, source.Label, StringComparison.OrdinalIgnoreCase)
+                ? source.Label : $"{name} ({source.Label})";
+        var chain = string.IsNullOrWhiteSpace(source.Chain) ? "" : $" · Chain {source.Chain}";
+        var residue = source.Residue is null ? "" : $" · Residue {source.Residue}{source.InsertionCode}";
+        return component + chain + residue;
+    }
+
+    private ProteinChemicalStatePolicy? SelectChemicalPolicyForProteinCoreLocked(
+        SourceModelObservation model, IntendedProteinModel intended)
+    {
+        if (_catalogue is null) return null;
         var canonical = new HashSet<string>("ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL"
             .Split(' '), StringComparer.Ordinal);
         var selectedChainResidues = model.Residues.Where(item =>

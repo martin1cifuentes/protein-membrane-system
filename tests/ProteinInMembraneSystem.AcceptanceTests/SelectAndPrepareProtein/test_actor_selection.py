@@ -64,6 +64,61 @@ def expand_partner_group(group) -> None:
 
 
 class ActorSelectionBrowserTests(unittest.TestCase):
+    def test_unsupported_retained_partner_reports_blocked_selection_without_claiming_findings(self):
+        """Controlled HEM inventory checks the real selection command and its visible receipt."""
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "retained-heme-software-fixture.pdb"
+            source.write_text(mixed_partner_source())
+            with running_host(directory / "workspace") as base, sync_playwright() as playwright:
+                browser = chromium(playwright)
+                try:
+                    page = browser.new_page(viewport={"width": 1024, "height": 800})
+                    page.goto(base)
+                    page.locator("#source-upload").set_input_files(str(source))
+                    page.locator("#upload-provenance").select_option("experimental")
+                    page.get_by_role("button", name="Upload source").click()
+                    expect(page.locator(".source-context")).to_contain_text(
+                        "Structure displayed", timeout=120000)
+                    page.get_by_label("Chain A", exact=True).check()
+                    page.get_by_role("region", name="Source waters (2)")\
+                        .get_by_role("button", name="Exclude all source waters").click()
+                    page.get_by_role("region", name="Ions (1)")\
+                        .get_by_role("button", name="Exclude all ions").click()
+                    ligands = page.get_by_role("region", name="Ligands and cofactors (2)")
+                    ligands.get_by_role("button", name="Exclude all ligands and cofactors").click()
+                    expand_partner_group(ligands)
+                    ligands.locator(".partner-choice").filter(has_text="Chain D · Residue 40")\
+                        .get_by_label("Keep").check()
+                    page.get_by_role("button", name="Assess selected protein").click()
+
+                    task = page.get_by_role("region", name="Protein task outcome")
+                    expect(task).to_contain_text("Protein preparation blocked", timeout=120000)
+                    state = page.request.get(base + "/api/state").json()
+                    self.assertIn("Heme (HEM)", state["proteinTask"]["message"] or "",
+                                  state["proteinTask"])
+                    expect(page.get_by_role("region", name="Current protein result"))\
+                        .to_contain_text("Heme (HEM)")
+                    receipt = page.locator(".action-feedback").filter(has_text="Selection recorded")
+                    expect(receipt).to_contain_text("Protein preparation is blocked")
+                    expect(receipt).not_to_contain_text("assessment returned findings")
+                    self.assertEqual(state["proteinTask"]["standing"], "blocked")
+                    self.assertTrue(state["proteinTask"]["reviewMoleculeSelection"])
+                    self.assertFalse(next(action for action in state["actions"]
+                                          if action["kind"] == "startProteinPreparation")["enabled"])
+                    self.assertEqual([partner["retain"] for partner in state["study"]["partners"]
+                                      if partner["sourceId"].endswith("HEM")], [True, False])
+
+                    page.get_by_role("button", name="Review molecule selection").click()
+                    ligands.locator(".partner-choice").filter(has_text="Chain D · Residue 40")\
+                        .get_by_label("Exclude").check()
+                    expect(receipt).to_have_count(0)
+                    self.assertEqual([partner["retain"] for partner in page.request.get(
+                        base + "/api/state").json()["study"]["partners"]
+                        if partner["sourceId"].endswith("HEM")], [True, False])
+                finally:
+                    browser.close()
+
     def test_bulk_receipt_counts_54_current_waters_and_withdraws_on_override(self):
         """Controlled source-membership UI case; no preparation is claimed."""
         with tempfile.TemporaryDirectory() as temporary:

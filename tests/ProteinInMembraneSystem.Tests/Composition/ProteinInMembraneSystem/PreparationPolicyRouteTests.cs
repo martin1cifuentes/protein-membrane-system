@@ -26,7 +26,7 @@ public sealed class PreparationPolicyRouteTests
             item.Construction.Route == ConstructionRouteKind.PackmolMemgen);
         Assert.Null(general.Scope);
         Assert.Equal(SaltConventionKind.MemgenChargeCompensated, general.Construction.SaltConvention);
-        Assert.Equal(900, general.Construction.MaximumConstructionSeconds);
+        Assert.All(policies, policy => Assert.Equal(3000, policy.Construction.MaximumConstructionSeconds));
         Assert.Equal(20000, general.MaximumMinimizationIterations);
         Assert.Equal(10, general.FinalUnrestrainedRmsForceTargetKjMolNm);
         Assert.Equal(23, general.Construction.Memgen?.LeafletEnvelopeAngstrom);

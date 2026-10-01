@@ -41,6 +41,9 @@ public sealed class ConnectedStructuralInspection
         if (findings.Any(item => !evidenceIds.Contains(item.EvidenceId)) ||
             annotations.Any(item => item.EvidenceId is not null && !evidenceIds.Contains(item.EvidenceId)) ||
             metrics.Any(item => item.EvidenceId is not null && !evidenceIds.Contains(item.EvidenceId)) ||
+            subject.Geometry is { } geometry && (geometry.EvidenceIds.IsDefault ||
+                geometry.EvidenceIds.Distinct(StringComparer.Ordinal).Count() != geometry.EvidenceIds.Length ||
+                geometry.EvidenceIds.Any(id => !evidenceIds.Contains(id))) ||
             subject.Assessment is { } assessment && !assessment.Evidence.IsDefault &&
                 assessment.Evidence.Any(item => item.SubjectId != subject.Id))
             return BoundaryOutcome<InspectionAccount>.Unavailable("A spatial mark or numerical value lacks corresponding evidence for this subject.");
@@ -50,7 +53,7 @@ public sealed class ConnectedStructuralInspection
             subject.Id, subject.StructureUrl, subject.RepresentationKind,
             subject.OmittedMolecules.IsDefault ? ImmutableArray<string>.Empty : subject.OmittedMolecules,
             null, null, annotations, metrics, revision.Id, revision.Number,
-            evidence, findings, subject.Assessment);
+            evidence, findings, subject.Assessment, subject.Geometry);
         return BoundaryOutcome<InspectionAccount>.Success(_account);
     }
 

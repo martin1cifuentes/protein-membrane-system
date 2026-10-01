@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using ProteinInMembrane.Host.ProteinInMembraneSystem;
 using InspectionOwner = ProteinInMembrane.Host.ProteinInMembraneSystem.ConnectedStructuralInspection.ConnectedStructuralInspection;
 using Xunit;
@@ -7,6 +8,39 @@ namespace ProteinInMembraneSystem.Tests;
 
 public sealed class ConnectedStructuralInspectionOwnerTests
 {
+    [Fact]
+    public void Geometry_stays_with_its_exact_subject_and_supporting_evidence()
+    {
+        var inspection = new InspectionOwner();
+        var revision = Revision("current", 1);
+        var residue = new ResidueAddress(0, "A", 42, "", "A");
+        var geometry = new ProteinGeometryObservations(ObservationStanding.Observed,
+            ImmutableArray.Create(new ProteinGeometryKindObservation("covalentBond",
+                GeometryKindStanding.Observed, 1, 1, 1.4999999999, 1.4999999999, null)),
+            ImmutableArray.Create(new GeometryDistanceObservation("covalentBond",
+                new AtomAddress(residue, "C"), new AtomAddress(residue with { Residue = 43 }, "N"),
+                1.4999999999, 1.5)),
+            ImmutableArray.Create("One identified pair was measured."));
+        var subject = Subject("protein", revision.Id, "geometry-evidence", "A:42", 42) with
+        { Geometry = new InspectionGeometryAccount(geometry, ImmutableArray.Create("geometry-evidence")) };
+
+        var selected = inspection.Select(revision, subject);
+
+        Assert.True(selected.Established, selected.Reason);
+        Assert.Same(geometry, selected.Value!.Geometry?.Observations);
+        Assert.Equal("geometry-evidence", Assert.Single(selected.Value.Geometry!.EvidenceIds));
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(selected.Value,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.Equal(1.4999999999, json.RootElement.GetProperty("geometry")
+            .GetProperty("observations").GetProperty("locatedDistances")[0]
+            .GetProperty("distanceAngstrom").GetDouble());
+        var invalid = inspection.Select(revision, subject with
+        { Geometry = subject.Geometry with { EvidenceIds = ImmutableArray.Create("other-evidence") } });
+        Assert.False(invalid.Established);
+        Assert.Equal("protein", inspection.Current?.SubjectId);
+        Assert.Same(geometry, inspection.Current?.Geometry?.Observations);
+    }
+
     [Fact]
     public void Selection_keeps_the_exact_origin_evidence_finding_assessment_and_focused_part()
     {
