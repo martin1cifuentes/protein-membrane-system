@@ -1,8 +1,26 @@
 # Protein–Membrane Workspace
 
-Protein–Membrane Workspace is a local scientific application for preparing all-atom protein–membrane systems. It connects protein preparation, membrane specification, molecular positioning, system construction, energy minimization, and structural inspection within one workflow.
+A local scientific application for preparing, constructing and inspecting all-atom protein–membrane systems through a connected workflow.
 
-This document describes what the application enables a researcher to do and explains how those activities were translated into requirements, a conceptual model, software abstractions, contracts, and implementation.
+**AmberTools / PACKMOL-Memgen · OpenMM · Mol\***
+
+**Protein preparation → membrane specification → placement → construction → minimization → inspection and export**
+
+## Overview
+
+Protein–Membrane Workspace connects the major steps required to prepare an all-atom protein–membrane system while preserving the relationship between researcher choices, scientific operations and the molecular results they produce.
+
+## What the application enables
+
+- **Protein preparation:** inspect a source structure, select the intended construct, and review structural repairs and chemical-state choices.
+- **Membrane specification:** define the lipid composition of each leaflet, including asymmetric membranes.
+- **Protein positioning:** translate and rotate the prepared protein relative to the membrane, with optional orientation assistance.
+- **System construction:** build an explicit molecular system through AmberTools / PACKMOL-Memgen.
+- **Energy minimization:** minimize the constructed system with OpenMM.
+- **Structural inspection:** inspect molecular structures interactively with Mol\*.
+- **Export:** save completed molecular artifacts with their parameters and provenance.
+
+The sections below describe the researcher’s workflow and how it informs the requirements, conceptual model, abstraction boundaries, contracts and implementation.
 
 ## Run locally
 
@@ -17,7 +35,7 @@ scripts/start-local.sh
 
 The build script installs the pinned browser and Python packages, builds the browser, publishes the .NET host, and attempts to prepare AmberTools when `micromamba` is available. It does **not** start the app. If AmberTools cannot be prepared, the PACKMOL-Memgen route is unavailable.
 
-The start script opens **http://127.0.0.1:4185/**; use `Ctrl+C` to stop it. Studies and results persist in `out/workspace` across restarts. To use another port, start with `PIM_PORT=4186 scripts/start-local.sh`. Optional PPM orientation is detected at `out/ppm2/immers` or through `PIM_PPM_EXECUTABLE`; otherwise it is shown as unavailable.
+The start script runs the local host. Open **http://127.0.0.1:4185/** in a browser; use `Ctrl+C` in the terminal to stop the host. Studies and results persist in `out/workspace` across restarts. To use another port, start with `PIM_PORT=4186 scripts/start-local.sh`. Optional PPM orientation is detected at `out/ppm2/immers` or through `PIM_PPM_EXECUTABLE`; otherwise it is shown as unavailable.
 
 ## The researcher’s workflow
 
